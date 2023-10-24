@@ -267,7 +267,7 @@ interface MonitorConfig {
     timezone?: SerializedMonitorConfig['timezone'];
 }
 
-type DataCategory = 'default' | 'error' | 'transaction' | 'replay' | 'security' | 'attachment' | 'session' | 'internal' | 'profile' | 'monitor';
+type DataCategory = 'default' | 'error' | 'transaction' | 'replay' | 'security' | 'attachment' | 'session' | 'internal' | 'profile' | 'monitor' | 'unknown';
 
 type EventDropReason = 'before_send' | 'event_processor' | 'network_error' | 'queue_overflow' | 'ratelimit_backoff' | 'sample_rate' | 'send_error' | 'internal_sdk_error';
 type Outcome = {
@@ -1260,7 +1260,7 @@ type DynamicSamplingContext = {
     replay_id?: string;
     sampled?: string;
 };
-type EnvelopeItemType = 'client_report' | 'user_report' | 'session' | 'sessions' | 'transaction' | 'attachment' | 'event' | 'profile' | 'replay_event' | 'replay_recording' | 'check_in';
+type EnvelopeItemType = 'client_report' | 'user_report' | 'session' | 'sessions' | 'transaction' | 'attachment' | 'event' | 'profile' | 'replay_event' | 'replay_recording' | 'check_in' | 'statsd';
 type BaseEnvelopeHeaders = {
     [key: string]: unknown;
     dsn?: string;
@@ -1333,8 +1333,8 @@ type EventEnvelope = BaseEnvelope<EventEnvelopeHeaders, EventItem | AttachmentIt
 type SessionEnvelope = BaseEnvelope<SessionEnvelopeHeaders, SessionItem>;
 type ClientReportEnvelope = BaseEnvelope<ClientReportEnvelopeHeaders, ClientReportItem>;
 type ReplayEnvelope = [ReplayEnvelopeHeaders, [ReplayEventItem, ReplayRecordingItem]];
-type CheckInEvelope = BaseEnvelope<CheckInEnvelopeHeaders, CheckInItem>;
-type Envelope = EventEnvelope | SessionEnvelope | ClientReportEnvelope | ReplayEnvelope | CheckInEvelope;
+type CheckInEnvelope = BaseEnvelope<CheckInEnvelopeHeaders, CheckInItem>;
+type Envelope = EventEnvelope | SessionEnvelope | ClientReportEnvelope | ReplayEnvelope | CheckInEnvelope;
 
 /**
  * Internal class used to make sure we always have the latest internal functions
@@ -3424,7 +3424,7 @@ declare function addGlobalEventProcessor(callback: EventProcessor): void;
  */
 declare function createTransport(options: InternalBaseTransportOptions, makeRequest: TransportRequestExecutor, buffer?: PromiseBuffer<void | TransportMakeRequestResponse>): Transport;
 
-declare const SDK_VERSION = "7.74.2-alpha.1";
+declare const SDK_VERSION = "7.75.0";
 
 /** Patch toString calls to return proper name for wrapped functions */
 declare class FunctionToString implements Integration {

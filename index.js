@@ -512,6 +512,10 @@ function htmlTreeAsString(
   options = {},
 ) {
 
+  if (!elem) {
+    return '<unknown>';
+  }
+
   // try/catch both:
   // - accessing event.target (see getsentry/raven-js#838, #768)
   // - `htmlTreeAsString` because it's complex, and just accessing the DOM incorrectly
@@ -1620,6 +1624,8 @@ function instrumentXHR() {
 
   fill(xhrproto, 'open', function (originalOpen) {
     return function ( ...args) {
+      const startTimestamp = Date.now();
+
       const url = args[1];
       const xhrInfo = (this[SENTRY_XHR_DATA_KEY] = {
         // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
@@ -1654,7 +1660,7 @@ function instrumentXHR() {
           triggerHandlers('xhr', {
             args: args ,
             endTimestamp: Date.now(),
-            startTimestamp: Date.now(),
+            startTimestamp,
             xhr: this,
           } );
         }
@@ -2013,6 +2019,60 @@ function instrumentUnhandledRejection() {
   WINDOW$2.onunhandledrejection.__SENTRY_INSTRUMENTED__ = true;
 }
 
+/*
+ * This module exists for optimizations in the build process through rollup and terser.  We define some global
+ * constants, which can be overridden during build. By guarding certain pieces of code with functions that return these
+ * constants, we can control whether or not they appear in the final bundle. (Any code guarded by a false condition will
+ * never run, and will hence be dropped during treeshaking.) The two primary uses for this are stripping out calls to
+ * `logger` and preventing node-related code from appearing in browser bundles.
+ *
+ * Attention:
+ * This file should not be used to define constants/flags that are intended to be used for tree-shaking conducted by
+ * users. These flags should live in their respective packages, as we identified user tooling (specifically webpack)
+ * having issues tree-shaking these constants across package boundaries.
+ * An example for this is the __SENTRY_DEBUG__ constant. It is declared in each package individually because we want
+ * users to be able to shake away expressions that it guards.
+ */
+
+/**
+ * Figures out if we're building a browser bundle.
+ *
+ * @returns true if this is a browser bundle build.
+ */
+function isBrowserBundle() {
+  return typeof __SENTRY_BROWSER_BUNDLE__ !== 'undefined' && !!__SENTRY_BROWSER_BUNDLE__;
+}
+
+/**
+ * NOTE: In order to avoid circular dependencies, if you add a function to this module and it needs to print something,
+ * you must either a) use `console.log` rather than the logger, or b) put your function elsewhere.
+ */
+
+/**
+ * Checks whether we're in the Node.js or Browser environment
+ *
+ * @returns Answer to given question
+ */
+function isNodeEnv() {
+  // explicitly check for browser bundles as those can be optimized statically
+  // by terser/rollup.
+  return (
+    !isBrowserBundle() &&
+    Object.prototype.toString.call(typeof process !== 'undefined' ? process : 0) === '[object process]'
+  );
+}
+
+/**
+ * Requires a module which is protected against bundler minification.
+ *
+ * @param request The module path to resolve
+ */
+// eslint-disable-next-line @typescript-eslint/explicit-module-boundary-types, @typescript-eslint/no-explicit-any
+function dynamicRequire(mod, request) {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+  return mod.require(request);
+}
+
 /* eslint-disable @typescript-eslint/no-unsafe-member-access */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -2225,60 +2285,6 @@ function checkOrSetAlreadyCaught(exception) {
  */
 function arrayify(maybeArray) {
   return Array.isArray(maybeArray) ? maybeArray : [maybeArray];
-}
-
-/*
- * This module exists for optimizations in the build process through rollup and terser.  We define some global
- * constants, which can be overridden during build. By guarding certain pieces of code with functions that return these
- * constants, we can control whether or not they appear in the final bundle. (Any code guarded by a false condition will
- * never run, and will hence be dropped during treeshaking.) The two primary uses for this are stripping out calls to
- * `logger` and preventing node-related code from appearing in browser bundles.
- *
- * Attention:
- * This file should not be used to define constants/flags that are intended to be used for tree-shaking conducted by
- * users. These flags should live in their respective packages, as we identified user tooling (specifically webpack)
- * having issues tree-shaking these constants across package boundaries.
- * An example for this is the __SENTRY_DEBUG__ constant. It is declared in each package individually because we want
- * users to be able to shake away expressions that it guards.
- */
-
-/**
- * Figures out if we're building a browser bundle.
- *
- * @returns true if this is a browser bundle build.
- */
-function isBrowserBundle() {
-  return typeof __SENTRY_BROWSER_BUNDLE__ !== 'undefined' && !!__SENTRY_BROWSER_BUNDLE__;
-}
-
-/**
- * NOTE: In order to avoid circular dependencies, if you add a function to this module and it needs to print something,
- * you must either a) use `console.log` rather than the logger, or b) put your function elsewhere.
- */
-
-/**
- * Checks whether we're in the Node.js or Browser environment
- *
- * @returns Answer to given question
- */
-function isNodeEnv() {
-  // explicitly check for browser bundles as those can be optimized statically
-  // by terser/rollup.
-  return (
-    !isBrowserBundle() &&
-    Object.prototype.toString.call(typeof process !== 'undefined' ? process : 0) === '[object process]'
-  );
-}
-
-/**
- * Requires a module which is protected against bundler minification.
- *
- * @param request The module path to resolve
- */
-// eslint-disable-next-line @typescript-eslint/explicit-module-boundary-types, @typescript-eslint/no-explicit-any
-function dynamicRequire(mod, request) {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-  return mod.require(request);
 }
 
 /**
@@ -3258,6 +3264,8 @@ const ITEM_TYPE_TO_DATA_CATEGORY_MAP = {
   replay_event: 'replay',
   replay_recording: 'replay',
   check_in: 'monitor',
+  // TODO: This is a temporary workaround until we have a proper data category for metrics
+  statsd: 'unknown',
 };
 
 /**
@@ -8019,7 +8027,7 @@ function getEventForEnvelopeItem(item, type) {
   return Array.isArray(item) ? (item )[1] : undefined;
 }
 
-const SDK_VERSION = '7.74.2-alpha.1';
+const SDK_VERSION = '7.75.0';
 
 let originalFunctionToString;
 
