@@ -8027,7 +8027,7 @@ function getEventForEnvelopeItem(item, type) {
   return Array.isArray(item) ? (item )[1] : undefined;
 }
 
-const SDK_VERSION = '7.75.0';
+const SDK_VERSION = '7.75.1';
 
 let originalFunctionToString;
 
