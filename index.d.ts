@@ -3432,7 +3432,7 @@ declare function addGlobalEventProcessor(callback: EventProcessor): void;
  */
 declare function createTransport(options: InternalBaseTransportOptions, makeRequest: TransportRequestExecutor, buffer?: PromiseBuffer<void | TransportMakeRequestResponse>): Transport;
 
-declare const SDK_VERSION = "7.76.0";
+declare const SDK_VERSION = "7.77.0";
 
 /** Patch toString calls to return proper name for wrapped functions */
 declare class FunctionToString implements Integration {
@@ -3479,6 +3479,39 @@ declare class InboundFilters implements Integration {
     setupOnce(_addGlobaleventProcessor: unknown, _getCurrentHub: unknown): void;
     /** @inheritDoc */
     processEvent(event: Event, _eventHint: EventHint, client: Client): Event | null;
+}
+
+/** Adds SDK info to an event. */
+declare class LinkedErrors implements Integration {
+    /**
+     * @inheritDoc
+     */
+    static id: string;
+    /**
+     * @inheritDoc
+     */
+    readonly name: string;
+    /**
+     * @inheritDoc
+     */
+    private readonly _key;
+    /**
+     * @inheritDoc
+     */
+    private readonly _limit;
+    /**
+     * @inheritDoc
+     */
+    constructor(options?: {
+        key?: string;
+        limit?: number;
+    });
+    /** @inheritdoc */
+    setupOnce(): void;
+    /**
+     * @inheritDoc
+     */
+    preprocessEvent(event: Event, hint: EventHint | undefined, client: Client): void;
 }
 
 /**
@@ -3537,40 +3570,6 @@ declare class Breadcrumbs implements Integration {
      *  - History API
      */
     setupOnce(): void;
-}
-
-interface LinkedErrorsOptions {
-    key: string;
-    limit: number;
-}
-/** Adds SDK info to an event. */
-declare class LinkedErrors implements Integration {
-    /**
-     * @inheritDoc
-     */
-    static id: string;
-    /**
-     * @inheritDoc
-     */
-    readonly name: string;
-    /**
-     * @inheritDoc
-     */
-    private readonly _key;
-    /**
-     * @inheritDoc
-     */
-    private readonly _limit;
-    /**
-     * @inheritDoc
-     */
-    constructor(options?: Partial<LinkedErrorsOptions>);
-    /** @inheritdoc */
-    setupOnce(): void;
-    /**
-     * @inheritDoc
-     */
-    preprocessEvent(event: Event, hint: EventHint | undefined, client: Client): void;
 }
 
 /** Deduplication filter */
@@ -3677,7 +3676,7 @@ declare class ContextLines implements Integration {
     addSourceContextToFrames(frames: StackFrame[]): Promise<void>;
 }
 
-declare const defaultIntegrations: (DenoContext | GlobalHandlers | NormalizePaths | ContextLines | InboundFilters | FunctionToString | Dedupe | LinkedErrors | Breadcrumbs)[];
+declare const defaultIntegrations: (DenoContext | GlobalHandlers | NormalizePaths | ContextLines | InboundFilters | FunctionToString | LinkedErrors | Dedupe | Breadcrumbs)[];
 /**
  * The Sentry Deno SDK Client.
  *
@@ -3742,6 +3741,7 @@ declare const INTEGRATIONS: {
     ContextLines: typeof ContextLines;
     FunctionToString: typeof FunctionToString;
     InboundFilters: typeof InboundFilters;
+    LinkedErrors: typeof LinkedErrors;
 };
 
 export { type AddRequestDataToEventOptions, type Breadcrumb, type BreadcrumbHint, DenoClient, type DenoOptions, type Event, type EventHint, type Exception, Hub, INTEGRATIONS as Integrations, type PolymorphicRequest, type Request, SDK_VERSION, Scope, type SdkInfo, type Session, Severity, type SeverityLevel, type Span$1 as Span, type SpanStatusType, type StackFrame, type Stacktrace, type Thread, type Transaction, type User, addBreadcrumb, addGlobalEventProcessor, captureCheckIn, captureEvent, captureException, captureMessage, close, configureScope, createTransport, defaultIntegrations, extractTraceparentData, flush, getActiveSpan, getActiveTransaction, getCurrentHub, getHubFromCarrier, init, lastEventId, makeMain, runWithAsyncContext, setContext, setExtra, setExtras, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSpan, startSpanManual, startTransaction, trace, withMonitor, withScope };
