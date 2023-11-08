@@ -113,159 +113,7 @@ interface WorkerLocation {
 }
 type Primitive = number | string | boolean | bigint | symbol | null | undefined;
 
-type Context = Record<string, unknown>;
-interface Contexts extends Record<string, Context | undefined> {
-    app?: AppContext;
-    device?: DeviceContext;
-    os?: OsContext;
-    culture?: CultureContext;
-    response?: ResponseContext;
-    trace?: TraceContext;
-    cloud_resource?: CloudResourceContext;
-    state?: StateContext;
-}
-interface StateContext extends Record<string, unknown> {
-    state: {
-        type: string;
-        value: Record<string, unknown>;
-    };
-}
-interface AppContext extends Record<string, unknown> {
-    app_name?: string;
-    app_start_time?: string;
-    app_version?: string;
-    app_identifier?: string;
-    build_type?: string;
-    app_memory?: number;
-}
-interface DeviceContext extends Record<string, unknown> {
-    name?: string;
-    family?: string;
-    model?: string;
-    model_id?: string;
-    arch?: string;
-    battery_level?: number;
-    orientation?: 'portrait' | 'landscape';
-    manufacturer?: string;
-    brand?: string;
-    screen_resolution?: string;
-    screen_height_pixels?: number;
-    screen_width_pixels?: number;
-    screen_density?: number;
-    screen_dpi?: number;
-    online?: boolean;
-    charging?: boolean;
-    low_memory?: boolean;
-    simulator?: boolean;
-    memory_size?: number;
-    free_memory?: number;
-    usable_memory?: number;
-    storage_size?: number;
-    free_storage?: number;
-    external_storage_size?: number;
-    external_free_storage?: number;
-    boot_time?: string;
-    processor_count?: number;
-    cpu_description?: string;
-    processor_frequency?: number;
-    device_type?: string;
-    battery_status?: string;
-    device_unique_identifier?: string;
-    supports_vibration?: boolean;
-    supports_accelerometer?: boolean;
-    supports_gyroscope?: boolean;
-    supports_audio?: boolean;
-    supports_location_service?: boolean;
-}
-interface OsContext extends Record<string, unknown> {
-    name?: string;
-    version?: string;
-    build?: string;
-    kernel_version?: string;
-}
-interface CultureContext extends Record<string, unknown> {
-    calendar?: string;
-    display_name?: string;
-    locale?: string;
-    is_24_hour_format?: boolean;
-    timezone?: string;
-}
-interface ResponseContext extends Record<string, unknown> {
-    type?: string;
-    cookies?: string[][] | Record<string, string>;
-    headers?: Record<string, string>;
-    status_code?: number;
-    body_size?: number;
-}
-interface TraceContext extends Record<string, unknown> {
-    data?: {
-        [key: string]: any;
-    };
-    description?: string;
-    op?: string;
-    parent_span_id?: string;
-    span_id: string;
-    status?: string;
-    tags?: {
-        [key: string]: Primitive;
-    };
-    trace_id: string;
-}
-interface CloudResourceContext extends Record<string, unknown> {
-    ['cloud.provider']?: string;
-    ['cloud.account.id']?: string;
-    ['cloud.region']?: string;
-    ['cloud.availability_zone']?: string;
-    ['cloud.platform']?: string;
-    ['host.id']?: string;
-    ['host.type']?: string;
-}
-
-interface CrontabSchedule {
-    type: 'crontab';
-    value: string;
-}
-interface IntervalSchedule {
-    type: 'interval';
-    value: number;
-    unit: 'year' | 'month' | 'week' | 'day' | 'hour' | 'minute';
-}
-type MonitorSchedule = CrontabSchedule | IntervalSchedule;
-interface SerializedCheckIn {
-    check_in_id: string;
-    monitor_slug: string;
-    status: 'in_progress' | 'ok' | 'error';
-    duration?: number;
-    release?: string;
-    environment?: string;
-    monitor_config?: {
-        schedule: MonitorSchedule;
-        checkin_margin?: number;
-        max_runtime?: number;
-        timezone?: string;
-    };
-    contexts?: {
-        trace?: TraceContext;
-    };
-}
-interface InProgressCheckIn {
-    monitorSlug: SerializedCheckIn['monitor_slug'];
-    status: 'in_progress';
-}
-interface FinishedCheckIn {
-    monitorSlug: SerializedCheckIn['monitor_slug'];
-    status: 'ok' | 'error';
-    checkInId: SerializedCheckIn['check_in_id'];
-    duration?: SerializedCheckIn['duration'];
-}
-type CheckIn = InProgressCheckIn | FinishedCheckIn;
-type SerializedMonitorConfig = NonNullable<SerializedCheckIn['monitor_config']>;
-interface MonitorConfig {
-    schedule: MonitorSchedule;
-    checkinMargin?: SerializedMonitorConfig['checkin_margin'];
-    maxRuntime?: SerializedMonitorConfig['max_runtime'];
-    timezone?: SerializedMonitorConfig['timezone'];
-}
+type Instrumenter = 'sentry' | 'otel';
 
 type DataCategory = 'default' | 'error' | 'transaction' | 'replay' | 'security' | 'attachment' | 'session' | 'internal' | 'profile' | 'monitor' | 'unknown';
 
@@ -546,7 +394,376 @@ interface SerializedSession {
     };
 }
 
-type Instrumenter = 'sentry' | 'otel';
+type TracePropagationTargets = (string | RegExp)[];
+interface PropagationContext {
+    traceId: string;
+    spanId: string;
+    sampled?: boolean;
+    parentSpanId?: string;
+    dsc?: DynamicSamplingContext;
+}
+
+/** JSDocs */
+type CaptureContext = Scope$1 | Partial<ScopeContext> | ((scope: Scope$1) => Scope$1);
+/** JSDocs */
+interface ScopeContext {
+    user: User;
+    level: Severity | SeverityLevel;
+    extra: Extras;
+    contexts: Contexts;
+    tags: {
+        [key: string]: Primitive;
+    };
+    fingerprint: string[];
+    requestSession: RequestSession;
+    propagationContext: PropagationContext;
+}
+/**
+ * Holds additional event information. {@link Scope.applyToEvent} will be called by the client before an event is sent.
+ */
+interface Scope$1 {
+    /** Add new event processor that will be called after {@link applyToEvent}. */
+    addEventProcessor(callback: EventProcessor): this;
+    /**
+     * Updates user context information for future events.
+     *
+     * @param user User context object to be set in the current context. Pass `null` to unset the user.
+     */
+    setUser(user: User | null): this;
+    /**
+     * Returns the `User` if there is one
+     */
+    getUser(): User | undefined;
+    /**
+     * Set an object that will be merged sent as tags data with the event.
+     * @param tags Tags context object to merge into current context.
+     */
+    setTags(tags: {
+        [key: string]: Primitive;
+    }): this;
+    /**
+     * Set key:value that will be sent as tags data with the event.
+     *
+     * Can also be used to unset a tag by passing `undefined`.
+     *
+     * @param key String key of tag
+     * @param value Value of tag
+     */
+    setTag(key: string, value: Primitive): this;
+    /**
+     * Set an object that will be merged sent as extra data with the event.
+     * @param extras Extras object to merge into current context.
+     */
+    setExtras(extras: Extras): this;
+    /**
+     * Set key:value that will be sent as extra data with the event.
+     * @param key String of extra
+     * @param extra Any kind of data. This data will be normalized.
+     */
+    setExtra(key: string, extra: Extra): this;
+    /**
+     * Sets the fingerprint on the scope to send with the events.
+     * @param fingerprint string[] to group events in Sentry.
+     */
+    setFingerprint(fingerprint: string[]): this;
+    /**
+     * Sets the level on the scope for future events.
+     * @param level string {@link SeverityLevel}
+     */
+    setLevel(level: Severity | SeverityLevel): this;
+    /**
+     * Sets the transaction name on the scope for future events.
+     */
+    setTransactionName(name?: string): this;
+    /**
+     * Sets context data with the given name.
+     * @param name of the context
+     * @param context an object containing context data. This data will be normalized. Pass `null` to unset the context.
+     */
+    setContext(name: string, context: Context | null): this;
+    /**
+     * Sets the Span on the scope.
+     * @param span Span
+     */
+    setSpan(span?: Span$1): this;
+    /**
+     * Returns the `Span` if there is one
+     */
+    getSpan(): Span$1 | undefined;
+    /**
+     * Returns the `Transaction` attached to the scope (if there is one)
+     */
+    getTransaction(): Transaction | undefined;
+    /**
+     * Returns the `Session` if there is one
+     */
+    getSession(): Session | undefined;
+    /**
+     * Sets the `Session` on the scope
+     */
+    setSession(session?: Session): this;
+    /**
+     * Returns the `RequestSession` if there is one
+     */
+    getRequestSession(): RequestSession | undefined;
+    /**
+     * Sets the `RequestSession` on the scope
+     */
+    setRequestSession(requestSession?: RequestSession): this;
+    /**
+     * Updates the scope with provided data. Can work in three variations:
+     * - plain object containing updatable attributes
+     * - Scope instance that'll extract the attributes from
+     * - callback function that'll receive the current scope as an argument and allow for modifications
+     * @param captureContext scope modifier to be used
+     */
+    update(captureContext?: CaptureContext): this;
+    /** Clears the current scope and resets its properties. */
+    clear(): this;
+    /**
+     * Sets the breadcrumbs in the scope
+     * @param breadcrumbs Breadcrumb
+     * @param maxBreadcrumbs number of max breadcrumbs to merged into event.
+     */
+    addBreadcrumb(breadcrumb: Breadcrumb, maxBreadcrumbs?: number): this;
+    /**
+     * Get the last breadcrumb.
+     */
+    getLastBreadcrumb(): Breadcrumb | undefined;
+    /**
+     * Clears all currently set Breadcrumbs.
+     */
+    clearBreadcrumbs(): this;
+    /**
+     * Adds an attachment to the scope
+     * @param attachment Attachment options
+     */
+    addAttachment(attachment: Attachment): this;
+    /**
+     * Returns an array of attachments on the scope
+     */
+    getAttachments(): Attachment[];
+    /**
+     * Clears attachments from the scope
+     */
+    clearAttachments(): this;
+    /**
+     * Add data which will be accessible during event processing but won't get sent to Sentry
+     */
+    setSDKProcessingMetadata(newData: {
+        [key: string]: unknown;
+    }): this;
+    /**
+     * Add propagation context to the scope, used for distributed tracing
+     */
+    setPropagationContext(context: PropagationContext): this;
+    /**
+     * Get propagation context from the scope, used for distributed tracing
+     */
+    getPropagationContext(): PropagationContext;
+}
+
+/** JSDoc */
+interface Package {
+    name: string;
+    version: string;
+    dependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
+}
+
+interface SdkInfo {
+    name?: string;
+    version?: string;
+    integrations?: string[];
+    packages?: Package[];
+}
+
+/** JSDoc */
+interface Thread {
+    id?: number;
+    name?: string;
+    stacktrace?: Stacktrace;
+    crashed?: boolean;
+    current?: boolean;
+}
+
+/** JSDoc */
+interface Event {
+    event_id?: string;
+    message?: string;
+    timestamp?: number;
+    start_timestamp?: number;
+    level?: Severity | SeverityLevel;
+    platform?: string;
+    logger?: string;
+    server_name?: string;
+    release?: string;
+    dist?: string;
+    environment?: string;
+    sdk?: SdkInfo;
+    request?: Request;
+    transaction?: string;
+    modules?: {
+        [key: string]: string;
+    };
+    fingerprint?: string[];
+    exception?: {
+        values?: Exception[];
+    };
+    breadcrumbs?: Breadcrumb[];
+    contexts?: Contexts;
+    tags?: {
+        [key: string]: Primitive;
+    };
+    extra?: Extras;
+    user?: User;
+    type?: EventType;
+    spans?: Span$1[];
+    measurements?: Measurements;
+    debug_meta?: DebugMeta;
+    sdkProcessingMetadata?: {
+        [key: string]: any;
+    };
+    transaction_info?: {
+        source: TransactionSource;
+    };
+    threads?: {
+        values: Thread[];
+    };
+}
+/**
+ * The type of an `Event`.
+ * Note that `ErrorEvent`s do not have a type (hence its undefined),
+ * while all other events are required to have one.
+ */
+type EventType = 'transaction' | 'profile' | 'replay_event' | undefined;
+interface ErrorEvent extends Event {
+    type: undefined;
+}
+interface TransactionEvent extends Event {
+    type: 'transaction';
+}
+/** JSDoc */
+interface EventHint {
+    event_id?: string;
+    captureContext?: CaptureContext;
+    syntheticException?: Error | null;
+    originalException?: unknown;
+    attachments?: Attachment[];
+    data?: any;
+    integrations?: string[];
+}
+
+/**
+ * NOTE: These types are still considered Beta and subject to change.
+ * @hidden
+ */
+interface ReplayEvent extends Event {
+    urls: string[];
+    replay_start_timestamp?: number;
+    error_ids: string[];
+    trace_ids: string[];
+    replay_id: string;
+    segment_id: number;
+    replay_type: ReplayRecordingMode;
+}
+/**
+ * NOTE: These types are still considered Beta and subject to change.
+ * @hidden
+ */
+type ReplayRecordingData = string | Uint8Array;
+/**
+ * NOTE: These types are still considered Beta and subject to change.
+ * @hidden
+ */
+type ReplayRecordingMode = 'session' | 'buffer';
+
+type DynamicSamplingContext = {
+    trace_id: Transaction['traceId'];
+    public_key: DsnComponents['publicKey'];
+    sample_rate?: string;
+    release?: string;
+    environment?: string;
+    transaction?: string;
+    user_segment?: string;
+    replay_id?: string;
+    sampled?: string;
+};
+type EnvelopeItemType = 'client_report' | 'user_report' | 'session' | 'sessions' | 'transaction' | 'attachment' | 'event' | 'profile' | 'replay_event' | 'replay_recording' | 'check_in' | 'statsd';
+type BaseEnvelopeHeaders = {
+    [key: string]: unknown;
+    dsn?: string;
+    sdk?: SdkInfo;
+};
+type BaseEnvelopeItemHeaders = {
+    [key: string]: unknown;
+    type: EnvelopeItemType;
+    length?: number;
+};
+type BaseEnvelopeItem<ItemHeader, P> = [ItemHeader & BaseEnvelopeItemHeaders, P];
+type BaseEnvelope<EnvelopeHeader, Item> = [
+    EnvelopeHeader & BaseEnvelopeHeaders,
+    Array<Item & BaseEnvelopeItem<BaseEnvelopeItemHeaders, unknown>>
+];
+type EventItemHeaders = {
+    type: 'event' | 'transaction' | 'profile';
+};
+type AttachmentItemHeaders = {
+    type: 'attachment';
+    length: number;
+    filename: string;
+    content_type?: string;
+    attachment_type?: string;
+};
+type UserFeedbackItemHeaders = {
+    type: 'user_report';
+};
+type SessionItemHeaders = {
+    type: 'session';
+};
+type SessionAggregatesItemHeaders = {
+    type: 'sessions';
+};
+type ClientReportItemHeaders = {
+    type: 'client_report';
+};
+type ReplayEventItemHeaders = {
+    type: 'replay_event';
+};
+type ReplayRecordingItemHeaders = {
+    type: 'replay_recording';
+    length: number;
+};
+type CheckInItemHeaders = {
+    type: 'check_in';
+};
+type EventItem = BaseEnvelopeItem<EventItemHeaders, Event>;
+type AttachmentItem = BaseEnvelopeItem<AttachmentItemHeaders, string | Uint8Array>;
+type UserFeedbackItem = BaseEnvelopeItem<UserFeedbackItemHeaders, UserFeedback>;
+type SessionItem = BaseEnvelopeItem<SessionItemHeaders, Session | SerializedSession> | BaseEnvelopeItem<SessionAggregatesItemHeaders, SessionAggregates>;
+type ClientReportItem = BaseEnvelopeItem<ClientReportItemHeaders, ClientReport>;
+type CheckInItem = BaseEnvelopeItem<CheckInItemHeaders, SerializedCheckIn>;
+type ReplayEventItem = BaseEnvelopeItem<ReplayEventItemHeaders, ReplayEvent>;
+type ReplayRecordingItem = BaseEnvelopeItem<ReplayRecordingItemHeaders, ReplayRecordingData>;
+type EventEnvelopeHeaders = {
+    event_id: string;
+    sent_at: string;
+    trace?: DynamicSamplingContext;
+};
+type SessionEnvelopeHeaders = {
+    sent_at: string;
+};
+type CheckInEnvelopeHeaders = {
+    trace?: DynamicSamplingContext;
+};
+type ClientReportEnvelopeHeaders = BaseEnvelopeHeaders;
+type ReplayEnvelopeHeaders = BaseEnvelopeHeaders;
+type EventEnvelope = BaseEnvelope<EventEnvelopeHeaders, EventItem | AttachmentItem | UserFeedbackItem>;
+type SessionEnvelope = BaseEnvelope<SessionEnvelopeHeaders, SessionItem>;
+type ClientReportEnvelope = BaseEnvelope<ClientReportEnvelopeHeaders, ClientReportItem>;
+type ReplayEnvelope = [ReplayEnvelopeHeaders, [ReplayEventItem, ReplayRecordingItem]];
+type CheckInEnvelope = BaseEnvelope<CheckInEnvelopeHeaders, CheckInItem>;
+type Envelope = EventEnvelope | SessionEnvelope | ClientReportEnvelope | ReplayEnvelope | CheckInEnvelope;
 
 /** A `Request` type compatible with Node, Express, browser, etc., because everything is optional */
 type PolymorphicRequest = BaseRequest & BrowserRequest & NodeRequest & ExpressRequest & KoaRequest & NextjsRequest;
@@ -965,376 +1182,160 @@ interface Span$1 extends SpanContext {
     };
 }
 
-type TracePropagationTargets = (string | RegExp)[];
-interface PropagationContext {
-    traceId: string;
-    spanId: string;
-    sampled?: boolean;
-    parentSpanId?: string;
-    dsc?: DynamicSamplingContext;
+type Context = Record<string, unknown>;
+interface Contexts extends Record<string, Context | undefined> {
+    app?: AppContext;
+    device?: DeviceContext;
+    os?: OsContext;
+    culture?: CultureContext;
+    response?: ResponseContext;
+    trace?: TraceContext;
+    cloud_resource?: CloudResourceContext;
+    state?: StateContext;
 }
-
-/** JSDocs */
-type CaptureContext = Scope$1 | Partial<ScopeContext> | ((scope: Scope$1) => Scope$1);
-/** JSDocs */
-interface ScopeContext {
-    user: User;
-    level: Severity | SeverityLevel;
-    extra: Extras;
-    contexts: Contexts;
-    tags: {
-        [key: string]: Primitive;
+interface StateContext extends Record<string, unknown> {
+    state: {
+        type: string;
+        value: Record<string, unknown>;
     };
-    fingerprint: string[];
-    requestSession: RequestSession;
-    propagationContext: PropagationContext;
 }
-/**
- * Holds additional event information. {@link Scope.applyToEvent} will be called by the client before an event is sent.
- */
-interface Scope$1 {
-    /** Add new event processor that will be called after {@link applyToEvent}. */
-    addEventProcessor(callback: EventProcessor): this;
-    /**
-     * Updates user context information for future events.
-     *
-     * @param user User context object to be set in the current context. Pass `null` to unset the user.
-     */
-    setUser(user: User | null): this;
-    /**
-     * Returns the `User` if there is one
-     */
-    getUser(): User | undefined;
-    /**
-     * Set an object that will be merged sent as tags data with the event.
-     * @param tags Tags context object to merge into current context.
-     */
-    setTags(tags: {
-        [key: string]: Primitive;
-    }): this;
-    /**
-     * Set key:value that will be sent as tags data with the event.
-     *
-     * Can also be used to unset a tag by passing `undefined`.
-     *
-     * @param key String key of tag
-     * @param value Value of tag
-     */
-    setTag(key: string, value: Primitive): this;
-    /**
-     * Set an object that will be merged sent as extra data with the event.
-     * @param extras Extras object to merge into current context.
-     */
-    setExtras(extras: Extras): this;
-    /**
-     * Set key:value that will be sent as extra data with the event.
-     * @param key String of extra
-     * @param extra Any kind of data. This data will be normalized.
-     */
-    setExtra(key: string, extra: Extra): this;
-    /**
-     * Sets the fingerprint on the scope to send with the events.
-     * @param fingerprint string[] to group events in Sentry.
-     */
-    setFingerprint(fingerprint: string[]): this;
-    /**
-     * Sets the level on the scope for future events.
-     * @param level string {@link SeverityLevel}
-     */
-    setLevel(level: Severity | SeverityLevel): this;
-    /**
-     * Sets the transaction name on the scope for future events.
-     */
-    setTransactionName(name?: string): this;
-    /**
-     * Sets context data with the given name.
-     * @param name of the context
-     * @param context an object containing context data. This data will be normalized. Pass `null` to unset the context.
-     */
-    setContext(name: string, context: Context | null): this;
-    /**
-     * Sets the Span on the scope.
-     * @param span Span
-     */
-    setSpan(span?: Span$1): this;
-    /**
-     * Returns the `Span` if there is one
-     */
-    getSpan(): Span$1 | undefined;
-    /**
-     * Returns the `Transaction` attached to the scope (if there is one)
-     */
-    getTransaction(): Transaction | undefined;
-    /**
-     * Returns the `Session` if there is one
-     */
-    getSession(): Session | undefined;
-    /**
-     * Sets the `Session` on the scope
-     */
-    setSession(session?: Session): this;
-    /**
-     * Returns the `RequestSession` if there is one
-     */
-    getRequestSession(): RequestSession | undefined;
-    /**
-     * Sets the `RequestSession` on the scope
-     */
-    setRequestSession(requestSession?: RequestSession): this;
-    /**
-     * Updates the scope with provided data. Can work in three variations:
-     * - plain object containing updatable attributes
-     * - Scope instance that'll extract the attributes from
-     * - callback function that'll receive the current scope as an argument and allow for modifications
-     * @param captureContext scope modifier to be used
-     */
-    update(captureContext?: CaptureContext): this;
-    /** Clears the current scope and resets its properties. */
-    clear(): this;
-    /**
-     * Sets the breadcrumbs in the scope
-     * @param breadcrumbs Breadcrumb
-     * @param maxBreadcrumbs number of max breadcrumbs to merged into event.
-     */
-    addBreadcrumb(breadcrumb: Breadcrumb, maxBreadcrumbs?: number): this;
-    /**
-     * Get the last breadcrumb.
-     */
-    getLastBreadcrumb(): Breadcrumb | undefined;
-    /**
-     * Clears all currently set Breadcrumbs.
-     */
-    clearBreadcrumbs(): this;
-    /**
-     * Adds an attachment to the scope
-     * @param attachment Attachment options
-     */
-    addAttachment(attachment: Attachment): this;
-    /**
-     * Returns an array of attachments on the scope
-     */
-    getAttachments(): Attachment[];
-    /**
-     * Clears attachments from the scope
-     */
-    clearAttachments(): this;
-    /**
-     * Add data which will be accessible during event processing but won't get sent to Sentry
-     */
-    setSDKProcessingMetadata(newData: {
-        [key: string]: unknown;
-    }): this;
-    /**
-     * Add propagation context to the scope, used for distributed tracing
-     */
-    setPropagationContext(context: PropagationContext): this;
-    /**
-     * Get propagation context from the scope, used for distributed tracing
-     */
-    getPropagationContext(): PropagationContext;
+interface AppContext extends Record<string, unknown> {
+    app_name?: string;
+    app_start_time?: string;
+    app_version?: string;
+    app_identifier?: string;
+    build_type?: string;
+    app_memory?: number;
 }
-
-/** JSDoc */
-interface Package {
-    name: string;
-    version: string;
-    dependencies?: Record<string, string>;
-    devDependencies?: Record<string, string>;
+interface DeviceContext extends Record<string, unknown> {
+    name?: string;
+    family?: string;
+    model?: string;
+    model_id?: string;
+    arch?: string;
+    battery_level?: number;
+    orientation?: 'portrait' | 'landscape';
+    manufacturer?: string;
+    brand?: string;
+    screen_resolution?: string;
+    screen_height_pixels?: number;
+    screen_width_pixels?: number;
+    screen_density?: number;
+    screen_dpi?: number;
+    online?: boolean;
+    charging?: boolean;
+    low_memory?: boolean;
+    simulator?: boolean;
+    memory_size?: number;
+    free_memory?: number;
+    usable_memory?: number;
+    storage_size?: number;
+    free_storage?: number;
+    external_storage_size?: number;
+    external_free_storage?: number;
+    boot_time?: string;
+    processor_count?: number;
+    cpu_description?: string;
+    processor_frequency?: number;
+    device_type?: string;
+    battery_status?: string;
+    device_unique_identifier?: string;
+    supports_vibration?: boolean;
+    supports_accelerometer?: boolean;
+    supports_gyroscope?: boolean;
+    supports_audio?: boolean;
+    supports_location_service?: boolean;
 }
-
-interface SdkInfo {
+interface OsContext extends Record<string, unknown> {
     name?: string;
     version?: string;
-    integrations?: string[];
-    packages?: Package[];
+    build?: string;
+    kernel_version?: string;
 }
-
-/** JSDoc */
-interface Thread {
-    id?: number;
-    name?: string;
-    stacktrace?: Stacktrace;
-    crashed?: boolean;
-    current?: boolean;
+interface CultureContext extends Record<string, unknown> {
+    calendar?: string;
+    display_name?: string;
+    locale?: string;
+    is_24_hour_format?: boolean;
+    timezone?: string;
 }
-
-/** JSDoc */
-interface Event {
-    event_id?: string;
-    message?: string;
-    timestamp?: number;
-    start_timestamp?: number;
-    level?: Severity | SeverityLevel;
-    platform?: string;
-    logger?: string;
-    server_name?: string;
-    release?: string;
-    dist?: string;
-    environment?: string;
-    sdk?: SdkInfo;
-    request?: Request;
-    transaction?: string;
-    modules?: {
-        [key: string]: string;
+interface ResponseContext extends Record<string, unknown> {
+    type?: string;
+    cookies?: string[][] | Record<string, string>;
+    headers?: Record<string, string>;
+    status_code?: number;
+    body_size?: number;
+}
+interface TraceContext extends Record<string, unknown> {
+    data?: {
+        [key: string]: any;
     };
-    fingerprint?: string[];
-    exception?: {
-        values?: Exception[];
-    };
-    breadcrumbs?: Breadcrumb[];
-    contexts?: Contexts;
+    description?: string;
+    op?: string;
+    parent_span_id?: string;
+    span_id: string;
+    status?: string;
     tags?: {
         [key: string]: Primitive;
     };
-    extra?: Extras;
-    user?: User;
-    type?: EventType;
-    spans?: Span$1[];
-    measurements?: Measurements;
-    debug_meta?: DebugMeta;
-    sdkProcessingMetadata?: {
-        [key: string]: any;
-    };
-    transaction_info?: {
-        source: TransactionSource;
-    };
-    threads?: {
-        values: Thread[];
-    };
+    trace_id: string;
+    origin?: SpanOrigin;
 }
-/**
- * The type of an `Event`.
- * Note that `ErrorEvent`s do not have a type (hence its undefined),
- * while all other events are required to have one.
- */
-type EventType = 'transaction' | 'profile' | 'replay_event' | undefined;
-interface ErrorEvent extends Event {
-    type: undefined;
-}
-interface TransactionEvent extends Event {
-    type: 'transaction';
-}
-/** JSDoc */
-interface EventHint {
-    event_id?: string;
-    captureContext?: CaptureContext;
-    syntheticException?: Error | null;
-    originalException?: unknown;
-    attachments?: Attachment[];
-    data?: any;
-    integrations?: string[];
+interface CloudResourceContext extends Record<string, unknown> {
+    ['cloud.provider']?: string;
+    ['cloud.account.id']?: string;
+    ['cloud.region']?: string;
+    ['cloud.availability_zone']?: string;
+    ['cloud.platform']?: string;
+    ['host.id']?: string;
+    ['host.type']?: string;
 }
 
-/**
- * NOTE: These types are still considered Beta and subject to change.
- * @hidden
- */
-interface ReplayEvent extends Event {
-    urls: string[];
-    replay_start_timestamp?: number;
-    error_ids: string[];
-    trace_ids: string[];
-    replay_id: string;
-    segment_id: number;
-    replay_type: ReplayRecordingMode;
+interface CrontabSchedule {
+    type: 'crontab';
+    value: string;
 }
-/**
- * NOTE: These types are still considered Beta and subject to change.
- * @hidden
- */
-type ReplayRecordingData = string | Uint8Array;
-/**
- * NOTE: These types are still considered Beta and subject to change.
- * @hidden
- */
-type ReplayRecordingMode = 'session' | 'buffer';
-
-type DynamicSamplingContext = {
-    trace_id: Transaction['traceId'];
-    public_key: DsnComponents['publicKey'];
-    sample_rate?: string;
+interface IntervalSchedule {
+    type: 'interval';
+    value: number;
+    unit: 'year' | 'month' | 'week' | 'day' | 'hour' | 'minute';
+}
+type MonitorSchedule = CrontabSchedule | IntervalSchedule;
+interface SerializedCheckIn {
+    check_in_id: string;
+    monitor_slug: string;
+    status: 'in_progress' | 'ok' | 'error';
+    duration?: number;
     release?: string;
     environment?: string;
-    transaction?: string;
-    user_segment?: string;
-    replay_id?: string;
-    sampled?: string;
-};
-type EnvelopeItemType = 'client_report' | 'user_report' | 'session' | 'sessions' | 'transaction' | 'attachment' | 'event' | 'profile' | 'replay_event' | 'replay_recording' | 'check_in' | 'statsd';
-type BaseEnvelopeHeaders = {
-    [key: string]: unknown;
-    dsn?: string;
-    sdk?: SdkInfo;
-};
-type BaseEnvelopeItemHeaders = {
-    [key: string]: unknown;
-    type: EnvelopeItemType;
-    length?: number;
-};
-type BaseEnvelopeItem<ItemHeader, P> = [ItemHeader & BaseEnvelopeItemHeaders, P];
-type BaseEnvelope<EnvelopeHeader, Item> = [
-    EnvelopeHeader & BaseEnvelopeHeaders,
-    Array<Item & BaseEnvelopeItem<BaseEnvelopeItemHeaders, unknown>>
-];
-type EventItemHeaders = {
-    type: 'event' | 'transaction' | 'profile';
-};
-type AttachmentItemHeaders = {
-    type: 'attachment';
-    length: number;
-    filename: string;
-    content_type?: string;
-    attachment_type?: string;
-};
-type UserFeedbackItemHeaders = {
-    type: 'user_report';
-};
-type SessionItemHeaders = {
-    type: 'session';
-};
-type SessionAggregatesItemHeaders = {
-    type: 'sessions';
-};
-type ClientReportItemHeaders = {
-    type: 'client_report';
-};
-type ReplayEventItemHeaders = {
-    type: 'replay_event';
-};
-type ReplayRecordingItemHeaders = {
-    type: 'replay_recording';
-    length: number;
-};
-type CheckInItemHeaders = {
-    type: 'check_in';
-};
-type EventItem = BaseEnvelopeItem<EventItemHeaders, Event>;
-type AttachmentItem = BaseEnvelopeItem<AttachmentItemHeaders, string | Uint8Array>;
-type UserFeedbackItem = BaseEnvelopeItem<UserFeedbackItemHeaders, UserFeedback>;
-type SessionItem = BaseEnvelopeItem<SessionItemHeaders, Session | SerializedSession> | BaseEnvelopeItem<SessionAggregatesItemHeaders, SessionAggregates>;
-type ClientReportItem = BaseEnvelopeItem<ClientReportItemHeaders, ClientReport>;
-type CheckInItem = BaseEnvelopeItem<CheckInItemHeaders, SerializedCheckIn>;
-type ReplayEventItem = BaseEnvelopeItem<ReplayEventItemHeaders, ReplayEvent>;
-type ReplayRecordingItem = BaseEnvelopeItem<ReplayRecordingItemHeaders, ReplayRecordingData>;
-type EventEnvelopeHeaders = {
-    event_id: string;
-    sent_at: string;
-    trace?: DynamicSamplingContext;
-};
-type SessionEnvelopeHeaders = {
-    sent_at: string;
-};
-type CheckInEnvelopeHeaders = {
-    trace?: DynamicSamplingContext;
-};
-type ClientReportEnvelopeHeaders = BaseEnvelopeHeaders;
-type ReplayEnvelopeHeaders = BaseEnvelopeHeaders;
-type EventEnvelope = BaseEnvelope<EventEnvelopeHeaders, EventItem | AttachmentItem | UserFeedbackItem>;
-type SessionEnvelope = BaseEnvelope<SessionEnvelopeHeaders, SessionItem>;
-type ClientReportEnvelope = BaseEnvelope<ClientReportEnvelopeHeaders, ClientReportItem>;
-type ReplayEnvelope = [ReplayEnvelopeHeaders, [ReplayEventItem, ReplayRecordingItem]];
-type CheckInEnvelope = BaseEnvelope<CheckInEnvelopeHeaders, CheckInItem>;
-type Envelope = EventEnvelope | SessionEnvelope | ClientReportEnvelope | ReplayEnvelope | CheckInEnvelope;
+    monitor_config?: {
+        schedule: MonitorSchedule;
+        checkin_margin?: number;
+        max_runtime?: number;
+        timezone?: string;
+    };
+    contexts?: {
+        trace?: TraceContext;
+    };
+}
+interface InProgressCheckIn {
+    monitorSlug: SerializedCheckIn['monitor_slug'];
+    status: 'in_progress';
+}
+interface FinishedCheckIn {
+    monitorSlug: SerializedCheckIn['monitor_slug'];
+    status: 'ok' | 'error';
+    checkInId: SerializedCheckIn['check_in_id'];
+    duration?: SerializedCheckIn['duration'];
+}
+type CheckIn = InProgressCheckIn | FinishedCheckIn;
+type SerializedMonitorConfig = NonNullable<SerializedCheckIn['monitor_config']>;
+interface MonitorConfig {
+    schedule: MonitorSchedule;
+    checkinMargin?: SerializedMonitorConfig['checkin_margin'];
+    maxRuntime?: SerializedMonitorConfig['max_runtime'];
+    timezone?: SerializedMonitorConfig['timezone'];
+}
 
 /**
  * Internal class used to make sure we always have the latest internal functions
@@ -3432,7 +3433,7 @@ declare function addGlobalEventProcessor(callback: EventProcessor): void;
  */
 declare function createTransport(options: InternalBaseTransportOptions, makeRequest: TransportRequestExecutor, buffer?: PromiseBuffer<void | TransportMakeRequestResponse>): Transport;
 
-declare const SDK_VERSION = "7.78.0";
+declare const SDK_VERSION = "7.79.0";
 
 /** Patch toString calls to return proper name for wrapped functions */
 declare class FunctionToString implements Integration {
