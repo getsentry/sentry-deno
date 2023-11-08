@@ -8083,7 +8083,7 @@ function getEventForEnvelopeItem(item, type) {
   return Array.isArray(item) ? (item )[1] : undefined;
 }
 
-const SDK_VERSION = '7.77.0';
+const SDK_VERSION = '7.78.0';
 
 let originalFunctionToString;
 
@@ -8433,7 +8433,7 @@ class DenoClient extends ServerRuntimeClient {
 
     const clientOptions = {
       ...options,
-      platform: 'deno',
+      platform: 'javascript',
       runtime: { name: 'deno', version: Deno.version.deno },
       serverName: options.serverName || getHostName(),
     };
