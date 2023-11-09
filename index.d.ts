@@ -115,7 +115,7 @@ type Primitive = number | string | boolean | bigint | symbol | null | undefined;
 
 type Instrumenter = 'sentry' | 'otel';
 
-type DataCategory = 'default' | 'error' | 'transaction' | 'replay' | 'security' | 'attachment' | 'session' | 'internal' | 'profile' | 'monitor' | 'unknown';
+type DataCategory = 'default' | 'error' | 'transaction' | 'replay' | 'security' | 'attachment' | 'session' | 'internal' | 'profile' | 'monitor' | 'feedback' | 'unknown';
 
 type EventDropReason = 'before_send' | 'event_processor' | 'network_error' | 'queue_overflow' | 'ratelimit_backoff' | 'sample_rate' | 'send_error' | 'internal_sdk_error';
 type Outcome = {
@@ -636,7 +636,7 @@ interface Event {
  * Note that `ErrorEvent`s do not have a type (hence its undefined),
  * while all other events are required to have one.
  */
-type EventType = 'transaction' | 'profile' | 'replay_event' | undefined;
+type EventType = 'transaction' | 'profile' | 'replay_event' | 'feedback' | undefined;
 interface ErrorEvent extends Event {
     type: undefined;
 }
@@ -652,6 +652,24 @@ interface EventHint {
     attachments?: Attachment[];
     data?: any;
     integrations?: string[];
+}
+
+interface FeedbackContext extends Record<string, unknown> {
+    message: string;
+    contact_email?: string;
+    name?: string;
+    replay_id?: string;
+    url?: string;
+}
+/**
+ * NOTE: These types are still considered Alpha and subject to change.
+ * @hidden
+ */
+interface FeedbackEvent extends Event {
+    type: 'feedback';
+    contexts: Event['contexts'] & {
+        feedback: FeedbackContext;
+    };
 }
 
 /**
@@ -689,7 +707,7 @@ type DynamicSamplingContext = {
     replay_id?: string;
     sampled?: string;
 };
-type EnvelopeItemType = 'client_report' | 'user_report' | 'session' | 'sessions' | 'transaction' | 'attachment' | 'event' | 'profile' | 'replay_event' | 'replay_recording' | 'check_in' | 'statsd';
+type EnvelopeItemType = 'client_report' | 'user_report' | 'feedback' | 'session' | 'sessions' | 'transaction' | 'attachment' | 'event' | 'profile' | 'replay_event' | 'replay_recording' | 'check_in' | 'statsd';
 type BaseEnvelopeHeaders = {
     [key: string]: unknown;
     dsn?: string;
@@ -706,7 +724,7 @@ type BaseEnvelope<EnvelopeHeader, Item> = [
     Array<Item & BaseEnvelopeItem<BaseEnvelopeItemHeaders, unknown>>
 ];
 type EventItemHeaders = {
-    type: 'event' | 'transaction' | 'profile';
+    type: 'event' | 'transaction' | 'profile' | 'feedback';
 };
 type AttachmentItemHeaders = {
     type: 'attachment';
@@ -717,6 +735,9 @@ type AttachmentItemHeaders = {
 };
 type UserFeedbackItemHeaders = {
     type: 'user_report';
+};
+type FeedbackItemHeaders = {
+    type: 'feedback';
 };
 type SessionItemHeaders = {
     type: 'session';
@@ -745,6 +766,7 @@ type ClientReportItem = BaseEnvelopeItem<ClientReportItemHeaders, ClientReport>;
 type CheckInItem = BaseEnvelopeItem<CheckInItemHeaders, SerializedCheckIn>;
 type ReplayEventItem = BaseEnvelopeItem<ReplayEventItemHeaders, ReplayEvent>;
 type ReplayRecordingItem = BaseEnvelopeItem<ReplayRecordingItemHeaders, ReplayRecordingData>;
+type FeedbackItem = BaseEnvelopeItem<FeedbackItemHeaders, FeedbackEvent>;
 type EventEnvelopeHeaders = {
     event_id: string;
     sent_at: string;
@@ -758,7 +780,7 @@ type CheckInEnvelopeHeaders = {
 };
 type ClientReportEnvelopeHeaders = BaseEnvelopeHeaders;
 type ReplayEnvelopeHeaders = BaseEnvelopeHeaders;
-type EventEnvelope = BaseEnvelope<EventEnvelopeHeaders, EventItem | AttachmentItem | UserFeedbackItem>;
+type EventEnvelope = BaseEnvelope<EventEnvelopeHeaders, EventItem | AttachmentItem | UserFeedbackItem | FeedbackItem>;
 type SessionEnvelope = BaseEnvelope<SessionEnvelopeHeaders, SessionItem>;
 type ClientReportEnvelope = BaseEnvelope<ClientReportEnvelopeHeaders, ClientReportItem>;
 type ReplayEnvelope = [ReplayEnvelopeHeaders, [ReplayEventItem, ReplayRecordingItem]];
@@ -3433,7 +3455,7 @@ declare function addGlobalEventProcessor(callback: EventProcessor): void;
  */
 declare function createTransport(options: InternalBaseTransportOptions, makeRequest: TransportRequestExecutor, buffer?: PromiseBuffer<void | TransportMakeRequestResponse>): Transport;
 
-declare const SDK_VERSION = "7.79.0";
+declare const SDK_VERSION = "7.80.0";
 
 /** Patch toString calls to return proper name for wrapped functions */
 declare class FunctionToString implements Integration {
