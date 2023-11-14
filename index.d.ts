@@ -2175,13 +2175,30 @@ interface AddRequestDataToEventOptions {
 }
 
 /**
+ * Takes a baggage header and turns it into Dynamic Sampling Context, by extracting all the "sentry-" prefixed values
+ * from it.
+ *
+ * @param baggageHeader A very bread definition of a baggage header as it might appear in various frameworks.
+ * @returns The Dynamic Sampling Context that was found on `baggageHeader`, if there was any, `undefined` otherwise.
+ */
+declare function baggageHeaderToDynamicSamplingContext(baggageHeader: string | string[] | number | null | undefined | boolean): Partial<DynamicSamplingContext> | undefined;
+
+/**
  * Extract transaction context data from a `sentry-trace` header.
  *
  * @param traceparent Traceparent string
  *
  * @returns Object containing data from the header, or undefined if traceparent string is malformed
  */
-declare function extractTraceparentData(traceparent?: string): TraceparentData | undefined;
+declare function extractTraceparentData$1(traceparent?: string): TraceparentData | undefined;
+/**
+ * Create tracing context from incoming headers.
+ */
+declare function tracingContextFromHeaders(sentryTrace: Parameters<typeof extractTraceparentData$1>[0], baggage: Parameters<typeof baggageHeaderToDynamicSamplingContext>[0]): {
+    traceparentData: ReturnType<typeof extractTraceparentData$1>;
+    dynamicSamplingContext: ReturnType<typeof baggageHeaderToDynamicSamplingContext>;
+    propagationContext: PropagationContext;
+};
 
 interface DenoTransportOptions extends BaseTransportOptions {
     /** Custom headers for the transport. Used by the XHRTransport and FetchTransport */
@@ -3230,6 +3247,20 @@ declare function spanStatusfromHttpCode(httpStatus: number): SpanStatusType;
 declare function getActiveTransaction<T extends Transaction>(maybeHub?: Hub): T | undefined;
 
 /**
+ * The `extractTraceparentData` function and `TRACEPARENT_REGEXP` constant used
+ * to be declared in this file. It was later moved into `@sentry/utils` as part of a
+ * move to remove `@sentry/tracing` dependencies from `@sentry/node` (`extractTraceparentData`
+ * is the only tracing function used by `@sentry/node`).
+ *
+ * These exports are kept here for backwards compatability's sake.
+ *
+ * See https://github.com/getsentry/sentry-javascript/issues/4642 for more details.
+ *
+ * @deprecated Import this function from `@sentry/utils` instead
+ */
+declare const extractTraceparentData: typeof extractTraceparentData$1;
+
+/**
  * Wraps a function with a transaction/span and finishes the span after the function is done.
  *
  * Note that if you have not enabled tracing extensions via `addTracingExtensions`
@@ -3281,6 +3312,18 @@ declare function startInactiveSpan(context: TransactionContext): Span | undefine
  * Returns the currently active span.
  */
 declare function getActiveSpan(): Span | undefined;
+/**
+ * Continue a trace from `sentry-trace` and `baggage` values.
+ * These values can be obtained from incoming request headers,
+ * or in the browser from `<meta name="sentry-trace">` and `<meta name="baggage">` HTML tags.
+ *
+ * It also takes an optional `request` option, which if provided will also be added to the scope & transaction metadata.
+ * The callback receives a transactionContext that may be used for `startTransaction` or `startSpan`.
+ */
+declare function continueTrace<V>({ sentryTrace, baggage, }: {
+    sentryTrace: Parameters<typeof tracingContextFromHeaders>[0];
+    baggage: Parameters<typeof tracingContextFromHeaders>[1];
+}, callback: (transactionContext: Partial<TransactionContext>) => V): V;
 
 /**
  * Adds a measurement to the current active transaction.
@@ -3455,7 +3498,7 @@ declare function addGlobalEventProcessor(callback: EventProcessor): void;
  */
 declare function createTransport(options: InternalBaseTransportOptions, makeRequest: TransportRequestExecutor, buffer?: PromiseBuffer<void | TransportMakeRequestResponse>): Transport;
 
-declare const SDK_VERSION = "7.80.1";
+declare const SDK_VERSION = "7.80.2-alpha.0";
 
 /** Patch toString calls to return proper name for wrapped functions */
 declare class FunctionToString implements Integration {
@@ -3767,4 +3810,4 @@ declare const INTEGRATIONS: {
     LinkedErrors: typeof LinkedErrors;
 };
 
-export { type AddRequestDataToEventOptions, type Breadcrumb, type BreadcrumbHint, DenoClient, type DenoOptions, type Event, type EventHint, type Exception, Hub, INTEGRATIONS as Integrations, type PolymorphicRequest, type Request, SDK_VERSION, Scope, type SdkInfo, type Session, Severity, type SeverityLevel, type Span$1 as Span, type SpanStatusType, type StackFrame, type Stacktrace, type Thread, type Transaction, type User, addBreadcrumb, addGlobalEventProcessor, captureCheckIn, captureEvent, captureException, captureMessage, close, configureScope, createTransport, defaultIntegrations, extractTraceparentData, flush, getActiveSpan, getActiveTransaction, getCurrentHub, getHubFromCarrier, init, lastEventId, makeMain, runWithAsyncContext, setContext, setExtra, setExtras, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSpan, startSpanManual, startTransaction, trace, withMonitor, withScope };
+export { type AddRequestDataToEventOptions, type Breadcrumb, type BreadcrumbHint, DenoClient, type DenoOptions, type Event, type EventHint, type Exception, Hub, INTEGRATIONS as Integrations, type PolymorphicRequest, type Request, SDK_VERSION, Scope, type SdkInfo, type Session, Severity, type SeverityLevel, type Span$1 as Span, type SpanStatusType, type StackFrame, type Stacktrace, type Thread, type Transaction, type User, addBreadcrumb, addGlobalEventProcessor, captureCheckIn, captureEvent, captureException, captureMessage, close, configureScope, continueTrace, createTransport, defaultIntegrations, extractTraceparentData, flush, getActiveSpan, getActiveTransaction, getCurrentHub, getHubFromCarrier, init, lastEventId, makeMain, runWithAsyncContext, setContext, setExtra, setExtras, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSpan, startSpanManual, startTransaction, trace, withMonitor, withScope };
