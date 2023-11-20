@@ -3498,7 +3498,7 @@ declare function addGlobalEventProcessor(callback: EventProcessor): void;
  */
 declare function createTransport(options: InternalBaseTransportOptions, makeRequest: TransportRequestExecutor, buffer?: PromiseBuffer<void | TransportMakeRequestResponse>): Transport;
 
-declare const SDK_VERSION = "7.80.2-alpha.1";
+declare const SDK_VERSION = "7.81.0";
 
 /** Patch toString calls to return proper name for wrapped functions */
 declare class FunctionToString implements Integration {
