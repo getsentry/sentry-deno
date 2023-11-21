@@ -2090,6 +2090,14 @@ interface Client<O extends ClientOptions = ClientOptions> {
         drop: boolean;
     }) => void): void;
     /**
+     * Register a callback when a Feedback event has been prepared.
+     * This should be used to mutate the event. The options argument can hint
+     * about what kind of mutation it expects.
+     */
+    on?(hook: 'beforeSendFeedback', callback: (feedback: FeedbackEvent, options?: {
+        includeReplay?: boolean;
+    }) => void): void;
+    /**
      * Fire a hook event for transaction start.
      * Expects to be given a transaction as the second argument.
      */
@@ -2127,6 +2135,14 @@ interface Client<O extends ClientOptions = ClientOptions> {
      */
     emit?(hook: 'otelSpanEnd', otelSpan: unknown, mutableOptions: {
         drop: boolean;
+    }): void;
+    /**
+     * Fire a hook event for after preparing a feedback event. Events to be given
+     * a feedback event as the second argument, and an optional options object as
+     * third argument.
+     */
+    emit?(hook: 'beforeSendFeedback', feedback: FeedbackEvent, options?: {
+        includeReplay?: boolean;
     }): void;
 }
 
@@ -2845,6 +2861,10 @@ declare abstract class BaseClient<O extends ClientOptions> implements Client<O> 
         drop: boolean;
     }) => void): void;
     /** @inheritdoc */
+    on(hook: 'beforeSendFeedback', callback: (feedback: FeedbackEvent, options?: {
+        includeReplay: boolean;
+    }) => void): void;
+    /** @inheritdoc */
     emit(hook: 'startTransaction', transaction: Transaction): void;
     /** @inheritdoc */
     emit(hook: 'finishTransaction', transaction: Transaction): void;
@@ -2863,6 +2883,10 @@ declare abstract class BaseClient<O extends ClientOptions> implements Client<O> 
     /** @inheritdoc */
     emit(hook: 'otelSpanEnd', otelSpan: unknown, mutableOptions: {
         drop: boolean;
+    }): void;
+    /** @inheritdoc */
+    emit(hook: 'beforeSendFeedback', feedback: FeedbackEvent, options?: {
+        includeReplay: boolean;
     }): void;
     /** Updates existing session based on the provided event */
     protected _updateSessionFromEvent(session: Session, event: Event): void;
@@ -3498,7 +3522,7 @@ declare function addGlobalEventProcessor(callback: EventProcessor): void;
  */
 declare function createTransport(options: InternalBaseTransportOptions, makeRequest: TransportRequestExecutor, buffer?: PromiseBuffer<void | TransportMakeRequestResponse>): Transport;
 
-declare const SDK_VERSION = "7.81.0";
+declare const SDK_VERSION = "7.81.1";
 
 /** Patch toString calls to return proper name for wrapped functions */
 declare class FunctionToString implements Integration {
