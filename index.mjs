@@ -615,7 +615,15 @@ function _htmlElementAsString(el, keyAttrs) {
 /** Prefix for logging strings */
 const PREFIX = 'Sentry Logger ';
 
-const CONSOLE_LEVELS = ['debug', 'info', 'warn', 'error', 'log', 'assert', 'trace'] ;
+const CONSOLE_LEVELS = [
+  'debug',
+  'info',
+  'warn',
+  'error',
+  'log',
+  'assert',
+  'trace',
+] ;
 
 /** This may be mutated by the console instrumentation. */
 const originalConsoleMethods
@@ -1066,177 +1074,6 @@ function _dropUndefinedKeys(inputValue, memoizationMap) {
 }
 
 /**
- * UUID4 generator
- *
- * @returns string Generated UUID4.
- */
-function uuid4() {
-  const gbl = GLOBAL_OBJ ;
-  const crypto = gbl.crypto || gbl.msCrypto;
-
-  let getRandomByte = () => Math.random() * 16;
-  try {
-    if (crypto && crypto.randomUUID) {
-      return crypto.randomUUID().replace(/-/g, '');
-    }
-    if (crypto && crypto.getRandomValues) {
-      getRandomByte = () => crypto.getRandomValues(new Uint8Array(1))[0];
-    }
-  } catch (_) {
-    // some runtimes can crash invoking crypto
-    // https://github.com/getsentry/sentry-javascript/issues/8935
-  }
-
-  // http://stackoverflow.com/questions/105034/how-to-create-a-guid-uuid-in-javascript/2117523#2117523
-  // Concatenating the following numbers as strings results in '10000000100040008000100000000000'
-  return (([1e7] ) + 1e3 + 4e3 + 8e3 + 1e11).replace(/[018]/g, c =>
-    // eslint-disable-next-line no-bitwise
-    ((c ) ^ ((getRandomByte() & 15) >> ((c ) / 4))).toString(16),
-  );
-}
-
-function getFirstException(event) {
-  return event.exception && event.exception.values ? event.exception.values[0] : undefined;
-}
-
-/**
- * Extracts either message or type+value from an event that can be used for user-facing logs
- * @returns event's description
- */
-function getEventDescription(event) {
-  const { message, event_id: eventId } = event;
-  if (message) {
-    return message;
-  }
-
-  const firstException = getFirstException(event);
-  if (firstException) {
-    if (firstException.type && firstException.value) {
-      return `${firstException.type}: ${firstException.value}`;
-    }
-    return firstException.type || firstException.value || eventId || '<unknown>';
-  }
-  return eventId || '<unknown>';
-}
-
-/**
- * Adds exception values, type and value to an synthetic Exception.
- * @param event The event to modify.
- * @param value Value of the exception.
- * @param type Type of the exception.
- * @hidden
- */
-function addExceptionTypeValue(event, value, type) {
-  const exception = (event.exception = event.exception || {});
-  const values = (exception.values = exception.values || []);
-  const firstException = (values[0] = values[0] || {});
-  if (!firstException.value) {
-    firstException.value = value || '';
-  }
-  if (!firstException.type) {
-    firstException.type = type || 'Error';
-  }
-}
-
-/**
- * Adds exception mechanism data to a given event. Uses defaults if the second parameter is not passed.
- *
- * @param event The event to modify.
- * @param newMechanism Mechanism data to add to the event.
- * @hidden
- */
-function addExceptionMechanism(event, newMechanism) {
-  const firstException = getFirstException(event);
-  if (!firstException) {
-    return;
-  }
-
-  const defaultMechanism = { type: 'generic', handled: true };
-  const currentMechanism = firstException.mechanism;
-  firstException.mechanism = { ...defaultMechanism, ...currentMechanism, ...newMechanism };
-
-  if (newMechanism && 'data' in newMechanism) {
-    const mergedData = { ...(currentMechanism && currentMechanism.data), ...newMechanism.data };
-    firstException.mechanism.data = mergedData;
-  }
-}
-
-/**
- * This function adds context (pre/post/line) lines to the provided frame
- *
- * @param lines string[] containing all lines
- * @param frame StackFrame that will be mutated
- * @param linesOfContext number of context lines we want to add pre/post
- */
-function addContextToFrame(lines, frame, linesOfContext = 5) {
-  // When there is no line number in the frame, attaching context is nonsensical and will even break grouping
-  if (frame.lineno === undefined) {
-    return;
-  }
-
-  const maxLines = lines.length;
-  const sourceLine = Math.max(Math.min(maxLines - 1, frame.lineno - 1), 0);
-
-  frame.pre_context = lines
-    .slice(Math.max(0, sourceLine - linesOfContext), sourceLine)
-    .map((line) => snipLine(line, 0));
-
-  frame.context_line = snipLine(lines[Math.min(maxLines - 1, sourceLine)], frame.colno || 0);
-
-  frame.post_context = lines
-    .slice(Math.min(sourceLine + 1, maxLines), sourceLine + 1 + linesOfContext)
-    .map((line) => snipLine(line, 0));
-}
-
-/**
- * Checks whether or not we've already captured the given exception (note: not an identical exception - the very object
- * in question), and marks it captured if not.
- *
- * This is useful because it's possible for an error to get captured by more than one mechanism. After we intercept and
- * record an error, we rethrow it (assuming we've intercepted it before it's reached the top-level global handlers), so
- * that we don't interfere with whatever effects the error might have had were the SDK not there. At that point, because
- * the error has been rethrown, it's possible for it to bubble up to some other code we've instrumented. If it's not
- * caught after that, it will bubble all the way up to the global handlers (which of course we also instrument). This
- * function helps us ensure that even if we encounter the same error more than once, we only record it the first time we
- * see it.
- *
- * Note: It will ignore primitives (always return `false` and not mark them as seen), as properties can't be set on
- * them. {@link: Object.objectify} can be used on exceptions to convert any that are primitives into their equivalent
- * object wrapper forms so that this check will always work. However, because we need to flag the exact object which
- * will get rethrown, and because that rethrowing happens outside of the event processing pipeline, the objectification
- * must be done before the exception captured.
- *
- * @param A thrown exception to check or flag as having been seen
- * @returns `true` if the exception has already been captured, `false` if not (with the side effect of marking it seen)
- */
-function checkOrSetAlreadyCaught(exception) {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-  if (exception && (exception ).__sentry_captured__) {
-    return true;
-  }
-
-  try {
-    // set it this way rather than by assignment so that it's not ennumerable and therefore isn't recorded by the
-    // `ExtraErrorData` integration
-    addNonEnumerableProperty(exception , '__sentry_captured__', true);
-  } catch (err) {
-    // `exception` is a primitive, so we can't mark it seen
-  }
-
-  return false;
-}
-
-/**
- * Checks whether the given input is already an array, and if it isn't, wraps it in one.
- *
- * @param maybeArray Input to turn into an array, if necessary
- * @returns The input, if already an array, or an array with the input as the only element, if not
- */
-function arrayify(maybeArray) {
-  return Array.isArray(maybeArray) ? maybeArray : [maybeArray];
-}
-
-/**
  * Does this filename look like it's part of the app code?
  */
 function filenameIsInApp(filename, isNative = false) {
@@ -1481,180 +1318,32 @@ function nodeStackLineParser(getModule) {
   return [90, node(getModule)];
 }
 
-// eslint-disable-next-line deprecation/deprecation
-const WINDOW$4 = getGlobalObject();
-
-/**
- * Tells whether current environment supports Fetch API
- * {@link supportsFetch}.
- *
- * @returns Answer to the given question.
- */
-function supportsFetch() {
-  if (!('fetch' in WINDOW$4)) {
-    return false;
-  }
-
-  try {
-    new Headers();
-    new Request('http://www.example.com');
-    new Response();
-    return true;
-  } catch (e) {
-    return false;
-  }
-}
-/**
- * isNativeFetch checks if the given function is a native implementation of fetch()
- */
-// eslint-disable-next-line @typescript-eslint/ban-types
-function isNativeFetch(func) {
-  return func && /^function fetch\(\)\s+\{\s+\[native code\]\s+\}$/.test(func.toString());
-}
-
-/**
- * Tells whether current environment supports Fetch API natively
- * {@link supportsNativeFetch}.
- *
- * @returns true if `window.fetch` is natively implemented, false otherwise
- */
-function supportsNativeFetch() {
-  if (typeof EdgeRuntime === 'string') {
-    return true;
-  }
-
-  if (!supportsFetch()) {
-    return false;
-  }
-
-  // Fast path to avoid DOM I/O
-  // eslint-disable-next-line @typescript-eslint/unbound-method
-  if (isNativeFetch(WINDOW$4.fetch)) {
-    return true;
-  }
-
-  // window.fetch is implemented, but is polyfilled or already wrapped (e.g: by a chrome extension)
-  // so create a "pure" iframe to see if that has native fetch
-  let result = false;
-  const doc = WINDOW$4.document;
-  // eslint-disable-next-line deprecation/deprecation
-  if (doc && typeof (doc.createElement ) === 'function') {
-    try {
-      const sandbox = doc.createElement('iframe');
-      sandbox.hidden = true;
-      doc.head.appendChild(sandbox);
-      if (sandbox.contentWindow && sandbox.contentWindow.fetch) {
-        // eslint-disable-next-line @typescript-eslint/unbound-method
-        result = isNativeFetch(sandbox.contentWindow.fetch);
-      }
-      doc.head.removeChild(sandbox);
-    } catch (err) {
-      (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) &&
-        logger.warn('Could not create sandbox iframe for pure fetch check, bailing to window.fetch: ', err);
-    }
-  }
-
-  return result;
-}
-
-// Based on https://github.com/angular/angular.js/pull/13945/files
-
-// eslint-disable-next-line deprecation/deprecation
-const WINDOW$3 = getGlobalObject();
-
-/**
- * Tells whether current environment supports History API
- * {@link supportsHistory}.
- *
- * @returns Answer to the given question.
- */
-function supportsHistory() {
-  // NOTE: in Chrome App environment, touching history.pushState, *even inside
-  //       a try/catch block*, will cause Chrome to output an error to console.error
-  // borrowed from: https://github.com/angular/angular.js/pull/13945/files
-  /* eslint-disable @typescript-eslint/no-unsafe-member-access */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const chrome = (WINDOW$3 ).chrome;
-  const isChromePackagedApp = chrome && chrome.app && chrome.app.runtime;
-  /* eslint-enable @typescript-eslint/no-unsafe-member-access */
-  const hasHistoryApi = 'history' in WINDOW$3 && !!WINDOW$3.history.pushState && !!WINDOW$3.history.replaceState;
-
-  return !isChromePackagedApp && hasHistoryApi;
-}
-
-// eslint-disable-next-line deprecation/deprecation
-const WINDOW$2 = getGlobalObject();
-
-const SENTRY_XHR_DATA_KEY = '__sentry_xhr_v2__';
-
-/**
- * Instrument native APIs to call handlers that can be used to create breadcrumbs, APM spans etc.
- *  - Console API
- *  - Fetch API
- *  - XHR API
- *  - History API
- *  - DOM API (click/typing)
- *  - Error API
- *  - UnhandledRejection API
- */
-
+// We keep the handlers globally
 const handlers = {};
 const instrumented = {};
 
-/** Instruments given API */
-function instrument(type) {
-  if (instrumented[type]) {
-    return;
-  }
-
-  instrumented[type] = true;
-
-  switch (type) {
-    case 'console':
-      instrumentConsole();
-      break;
-    case 'dom':
-      instrumentDOM();
-      break;
-    case 'xhr':
-      instrumentXHR();
-      break;
-    case 'fetch':
-      instrumentFetch();
-      break;
-    case 'history':
-      instrumentHistory();
-      break;
-    case 'error':
-      instrumentError();
-      break;
-    case 'unhandledrejection':
-      instrumentUnhandledRejection();
-      break;
-    default:
-      (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.warn('unknown instrumentation type:', type);
-      return;
-  }
-}
-
-/**
- * Add handler that will be called when given type of instrumentation triggers.
- * Use at your own risk, this might break without changelog notice, only used internally.
- * @hidden
- */
-function addInstrumentationHandler(type, callback) {
+/** Add a handler function. */
+function addHandler(type, handler) {
   handlers[type] = handlers[type] || [];
-  (handlers[type] ).push(callback);
-  instrument(type);
+  (handlers[type] ).push(handler);
 }
 
-/** JSDoc */
+/** Maybe run an instrumentation function, unless it was already called. */
+function maybeInstrument(type, instrumentFn) {
+  if (!instrumented[type]) {
+    instrumentFn();
+    instrumented[type] = true;
+  }
+}
+
+/** Trigger handlers for a given instrumentation type. */
 function triggerHandlers(type, data) {
-  if (!type || !handlers[type]) {
+  const typeHandlers = type && handlers[type];
+  if (!typeHandlers) {
     return;
   }
 
-  for (const handler of handlers[type] || []) {
+  for (const handler of typeHandlers) {
     try {
       handler(data);
     } catch (e) {
@@ -1667,7 +1356,18 @@ function triggerHandlers(type, data) {
   }
 }
 
-/** JSDoc */
+/**
+ * Add an instrumentation handler for when a console.xxx method is called.
+ *
+ * Use at your own risk, this might break without changelog notice, only used internally.
+ * @hidden
+ */
+function addConsoleInstrumentationHandler(handler) {
+  const type = 'console';
+  addHandler(type, handler);
+  maybeInstrument(type, instrumentConsole);
+}
+
 function instrumentConsole() {
   if (!('console' in GLOBAL_OBJ)) {
     return;
@@ -1682,7 +1382,8 @@ function instrumentConsole() {
       originalConsoleMethods[level] = originalConsoleMethod;
 
       return function (...args) {
-        triggerHandlers('console', { args, level });
+        const handlerData = { args, level };
+        triggerHandlers('console', handlerData);
 
         const log = originalConsoleMethods[level];
         log && log.apply(GLOBAL_OBJ.console, args);
@@ -1691,381 +1392,199 @@ function instrumentConsole() {
   });
 }
 
-/** JSDoc */
-function instrumentFetch() {
-  if (!supportsNativeFetch()) {
-    return;
+/**
+ * UUID4 generator
+ *
+ * @returns string Generated UUID4.
+ */
+function uuid4() {
+  const gbl = GLOBAL_OBJ ;
+  const crypto = gbl.crypto || gbl.msCrypto;
+
+  let getRandomByte = () => Math.random() * 16;
+  try {
+    if (crypto && crypto.randomUUID) {
+      return crypto.randomUUID().replace(/-/g, '');
+    }
+    if (crypto && crypto.getRandomValues) {
+      getRandomByte = () => crypto.getRandomValues(new Uint8Array(1))[0];
+    }
+  } catch (_) {
+    // some runtimes can crash invoking crypto
+    // https://github.com/getsentry/sentry-javascript/issues/8935
   }
 
-  fill(GLOBAL_OBJ, 'fetch', function (originalFetch) {
-    return function (...args) {
-      const { method, url } = parseFetchArgs(args);
-
-      const handlerData = {
-        args,
-        fetchData: {
-          method,
-          url,
-        },
-        startTimestamp: Date.now(),
-      };
-
-      triggerHandlers('fetch', {
-        ...handlerData,
-      });
-
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-      return originalFetch.apply(GLOBAL_OBJ, args).then(
-        (response) => {
-          triggerHandlers('fetch', {
-            ...handlerData,
-            endTimestamp: Date.now(),
-            response,
-          });
-          return response;
-        },
-        (error) => {
-          triggerHandlers('fetch', {
-            ...handlerData,
-            endTimestamp: Date.now(),
-            error,
-          });
-          // NOTE: If you are a Sentry user, and you are seeing this stack frame,
-          //       it means the sentry.javascript SDK caught an error invoking your application code.
-          //       This is expected behavior and NOT indicative of a bug with sentry.javascript.
-          throw error;
-        },
-      );
-    };
-  });
+  // http://stackoverflow.com/questions/105034/how-to-create-a-guid-uuid-in-javascript/2117523#2117523
+  // Concatenating the following numbers as strings results in '10000000100040008000100000000000'
+  return (([1e7] ) + 1e3 + 4e3 + 8e3 + 1e11).replace(/[018]/g, c =>
+    // eslint-disable-next-line no-bitwise
+    ((c ) ^ ((getRandomByte() & 15) >> ((c ) / 4))).toString(16),
+  );
 }
 
-function hasProp(obj, prop) {
-  return !!obj && typeof obj === 'object' && !!(obj )[prop];
-}
-
-function getUrlFromResource(resource) {
-  if (typeof resource === 'string') {
-    return resource;
-  }
-
-  if (!resource) {
-    return '';
-  }
-
-  if (hasProp(resource, 'url')) {
-    return resource.url;
-  }
-
-  if (resource.toString) {
-    return resource.toString();
-  }
-
-  return '';
+function getFirstException(event) {
+  return event.exception && event.exception.values ? event.exception.values[0] : undefined;
 }
 
 /**
- * Parses the fetch arguments to find the used Http method and the url of the request
+ * Extracts either message or type+value from an event that can be used for user-facing logs
+ * @returns event's description
  */
-function parseFetchArgs(fetchArgs) {
-  if (fetchArgs.length === 0) {
-    return { method: 'GET', url: '' };
+function getEventDescription(event) {
+  const { message, event_id: eventId } = event;
+  if (message) {
+    return message;
   }
 
-  if (fetchArgs.length === 2) {
-    const [url, options] = fetchArgs ;
-
-    return {
-      url: getUrlFromResource(url),
-      method: hasProp(options, 'method') ? String(options.method).toUpperCase() : 'GET',
-    };
-  }
-
-  const arg = fetchArgs[0];
-  return {
-    url: getUrlFromResource(arg ),
-    method: hasProp(arg, 'method') ? String(arg.method).toUpperCase() : 'GET',
-  };
-}
-
-/** JSDoc */
-function instrumentXHR() {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-  if (!(WINDOW$2 ).XMLHttpRequest) {
-    return;
-  }
-
-  const xhrproto = XMLHttpRequest.prototype;
-
-  fill(xhrproto, 'open', function (originalOpen) {
-    return function ( ...args) {
-      const startTimestamp = Date.now();
-
-      const url = args[1];
-      const xhrInfo = (this[SENTRY_XHR_DATA_KEY] = {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-        method: isString(args[0]) ? args[0].toUpperCase() : args[0],
-        url: args[1],
-        request_headers: {},
-      });
-
-      // if Sentry key appears in URL, don't capture it as a request
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-      if (isString(url) && xhrInfo.method === 'POST' && url.match(/sentry_key/)) {
-        this.__sentry_own_request__ = true;
-      }
-
-      const onreadystatechangeHandler = () => {
-        // For whatever reason, this is not the same instance here as from the outer method
-        const xhrInfo = this[SENTRY_XHR_DATA_KEY];
-
-        if (!xhrInfo) {
-          return;
-        }
-
-        if (this.readyState === 4) {
-          try {
-            // touching statusCode in some platforms throws
-            // an exception
-            xhrInfo.status_code = this.status;
-          } catch (e) {
-            /* do nothing */
-          }
-
-          triggerHandlers('xhr', {
-            args: args ,
-            endTimestamp: Date.now(),
-            startTimestamp,
-            xhr: this,
-          } );
-        }
-      };
-
-      if ('onreadystatechange' in this && typeof this.onreadystatechange === 'function') {
-        fill(this, 'onreadystatechange', function (original) {
-          return function ( ...readyStateArgs) {
-            onreadystatechangeHandler();
-            return original.apply(this, readyStateArgs);
-          };
-        });
-      } else {
-        this.addEventListener('readystatechange', onreadystatechangeHandler);
-      }
-
-      // Intercepting `setRequestHeader` to access the request headers of XHR instance.
-      // This will only work for user/library defined headers, not for the default/browser-assigned headers.
-      // Request cookies are also unavailable for XHR, as `Cookie` header can't be defined by `setRequestHeader`.
-      fill(this, 'setRequestHeader', function (original) {
-        return function ( ...setRequestHeaderArgs) {
-          const [header, value] = setRequestHeaderArgs ;
-
-          const xhrInfo = this[SENTRY_XHR_DATA_KEY];
-
-          if (xhrInfo) {
-            xhrInfo.request_headers[header.toLowerCase()] = value;
-          }
-
-          return original.apply(this, setRequestHeaderArgs);
-        };
-      });
-
-      return originalOpen.apply(this, args);
-    };
-  });
-
-  fill(xhrproto, 'send', function (originalSend) {
-    return function ( ...args) {
-      const sentryXhrData = this[SENTRY_XHR_DATA_KEY];
-      if (sentryXhrData && args[0] !== undefined) {
-        sentryXhrData.body = args[0];
-      }
-
-      triggerHandlers('xhr', {
-        args,
-        startTimestamp: Date.now(),
-        xhr: this,
-      });
-
-      return originalSend.apply(this, args);
-    };
-  });
-}
-
-let lastHref;
-
-/** JSDoc */
-function instrumentHistory() {
-  if (!supportsHistory()) {
-    return;
-  }
-
-  const oldOnPopState = WINDOW$2.onpopstate;
-  WINDOW$2.onpopstate = function ( ...args) {
-    const to = WINDOW$2.location.href;
-    // keep track of the current URL state, as we always receive only the updated state
-    const from = lastHref;
-    lastHref = to;
-    triggerHandlers('history', {
-      from,
-      to,
-    });
-    if (oldOnPopState) {
-      // Apparently this can throw in Firefox when incorrectly implemented plugin is installed.
-      // https://github.com/getsentry/sentry-javascript/issues/3344
-      // https://github.com/bugsnag/bugsnag-js/issues/469
-      try {
-        return oldOnPopState.apply(this, args);
-      } catch (_oO) {
-        // no-empty
-      }
+  const firstException = getFirstException(event);
+  if (firstException) {
+    if (firstException.type && firstException.value) {
+      return `${firstException.type}: ${firstException.value}`;
     }
-  };
-
-  /** @hidden */
-  function historyReplacementFunction(originalHistoryFunction) {
-    return function ( ...args) {
-      const url = args.length > 2 ? args[2] : undefined;
-      if (url) {
-        // coerce to string (this is what pushState does)
-        const from = lastHref;
-        const to = String(url);
-        // keep track of the current URL state, as we always receive only the updated state
-        lastHref = to;
-        triggerHandlers('history', {
-          from,
-          to,
-        });
-      }
-      return originalHistoryFunction.apply(this, args);
-    };
+    return firstException.type || firstException.value || eventId || '<unknown>';
   }
-
-  fill(WINDOW$2.history, 'pushState', historyReplacementFunction);
-  fill(WINDOW$2.history, 'replaceState', historyReplacementFunction);
+  return eventId || '<unknown>';
 }
 
+/**
+ * Adds exception values, type and value to an synthetic Exception.
+ * @param event The event to modify.
+ * @param value Value of the exception.
+ * @param type Type of the exception.
+ * @hidden
+ */
+function addExceptionTypeValue(event, value, type) {
+  const exception = (event.exception = event.exception || {});
+  const values = (exception.values = exception.values || []);
+  const firstException = (values[0] = values[0] || {});
+  if (!firstException.value) {
+    firstException.value = value || '';
+  }
+  if (!firstException.type) {
+    firstException.type = type || 'Error';
+  }
+}
+
+/**
+ * Adds exception mechanism data to a given event. Uses defaults if the second parameter is not passed.
+ *
+ * @param event The event to modify.
+ * @param newMechanism Mechanism data to add to the event.
+ * @hidden
+ */
+function addExceptionMechanism(event, newMechanism) {
+  const firstException = getFirstException(event);
+  if (!firstException) {
+    return;
+  }
+
+  const defaultMechanism = { type: 'generic', handled: true };
+  const currentMechanism = firstException.mechanism;
+  firstException.mechanism = { ...defaultMechanism, ...currentMechanism, ...newMechanism };
+
+  if (newMechanism && 'data' in newMechanism) {
+    const mergedData = { ...(currentMechanism && currentMechanism.data), ...newMechanism.data };
+    firstException.mechanism.data = mergedData;
+  }
+}
+
+/**
+ * This function adds context (pre/post/line) lines to the provided frame
+ *
+ * @param lines string[] containing all lines
+ * @param frame StackFrame that will be mutated
+ * @param linesOfContext number of context lines we want to add pre/post
+ */
+function addContextToFrame(lines, frame, linesOfContext = 5) {
+  // When there is no line number in the frame, attaching context is nonsensical and will even break grouping
+  if (frame.lineno === undefined) {
+    return;
+  }
+
+  const maxLines = lines.length;
+  const sourceLine = Math.max(Math.min(maxLines - 1, frame.lineno - 1), 0);
+
+  frame.pre_context = lines
+    .slice(Math.max(0, sourceLine - linesOfContext), sourceLine)
+    .map((line) => snipLine(line, 0));
+
+  frame.context_line = snipLine(lines[Math.min(maxLines - 1, sourceLine)], frame.colno || 0);
+
+  frame.post_context = lines
+    .slice(Math.min(sourceLine + 1, maxLines), sourceLine + 1 + linesOfContext)
+    .map((line) => snipLine(line, 0));
+}
+
+/**
+ * Checks whether or not we've already captured the given exception (note: not an identical exception - the very object
+ * in question), and marks it captured if not.
+ *
+ * This is useful because it's possible for an error to get captured by more than one mechanism. After we intercept and
+ * record an error, we rethrow it (assuming we've intercepted it before it's reached the top-level global handlers), so
+ * that we don't interfere with whatever effects the error might have had were the SDK not there. At that point, because
+ * the error has been rethrown, it's possible for it to bubble up to some other code we've instrumented. If it's not
+ * caught after that, it will bubble all the way up to the global handlers (which of course we also instrument). This
+ * function helps us ensure that even if we encounter the same error more than once, we only record it the first time we
+ * see it.
+ *
+ * Note: It will ignore primitives (always return `false` and not mark them as seen), as properties can't be set on
+ * them. {@link: Object.objectify} can be used on exceptions to convert any that are primitives into their equivalent
+ * object wrapper forms so that this check will always work. However, because we need to flag the exact object which
+ * will get rethrown, and because that rethrowing happens outside of the event processing pipeline, the objectification
+ * must be done before the exception captured.
+ *
+ * @param A thrown exception to check or flag as having been seen
+ * @returns `true` if the exception has already been captured, `false` if not (with the side effect of marking it seen)
+ */
+function checkOrSetAlreadyCaught(exception) {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+  if (exception && (exception ).__sentry_captured__) {
+    return true;
+  }
+
+  try {
+    // set it this way rather than by assignment so that it's not ennumerable and therefore isn't recorded by the
+    // `ExtraErrorData` integration
+    addNonEnumerableProperty(exception , '__sentry_captured__', true);
+  } catch (err) {
+    // `exception` is a primitive, so we can't mark it seen
+  }
+
+  return false;
+}
+
+/**
+ * Checks whether the given input is already an array, and if it isn't, wraps it in one.
+ *
+ * @param maybeArray Input to turn into an array, if necessary
+ * @returns The input, if already an array, or an array with the input as the only element, if not
+ */
+function arrayify(maybeArray) {
+  return Array.isArray(maybeArray) ? maybeArray : [maybeArray];
+}
+
+const WINDOW$6 = GLOBAL_OBJ ;
 const DEBOUNCE_DURATION = 1000;
+
 let debounceTimerID;
 let lastCapturedEventType;
 let lastCapturedEventTargetId;
 
 /**
- * Check whether the event is similar to the last captured one. For example, two click events on the same button.
- */
-function isSimilarToLastCapturedEvent(event) {
-  // If both events have different type, then user definitely performed two separate actions. e.g. click + keypress.
-  if (event.type !== lastCapturedEventType) {
-    return false;
-  }
-
-  try {
-    // If both events have the same type, it's still possible that actions were performed on different targets.
-    // e.g. 2 clicks on different buttons.
-    if (!event.target || (event.target )._sentryId !== lastCapturedEventTargetId) {
-      return false;
-    }
-  } catch (e) {
-    // just accessing `target` property can throw an exception in some rare circumstances
-    // see: https://github.com/getsentry/sentry-javascript/issues/838
-  }
-
-  // If both events have the same type _and_ same `target` (an element which triggered an event, _not necessarily_
-  // to which an event listener was attached), we treat them as the same action, as we want to capture
-  // only one breadcrumb. e.g. multiple clicks on the same button, or typing inside a user input box.
-  return true;
-}
-
-/**
- * Decide whether an event should be captured.
- * @param event event to be captured
- */
-function shouldSkipDOMEvent(eventType, target) {
-  // We are only interested in filtering `keypress` events for now.
-  if (eventType !== 'keypress') {
-    return false;
-  }
-
-  if (!target || !target.tagName) {
-    return true;
-  }
-
-  // Only consider keypress events on actual input elements. This will disregard keypresses targeting body
-  // e.g.tabbing through elements, hotkeys, etc.
-  if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
-    return false;
-  }
-
-  return true;
-}
-
-function getEventTarget(event) {
-  try {
-    return event.target ;
-  } catch (e) {
-    // just accessing `target` property can throw an exception in some rare circumstances
-    // see: https://github.com/getsentry/sentry-javascript/issues/838
-    return null;
-  }
-}
-
-/**
- * Wraps addEventListener to capture UI breadcrumbs
- * @param handler function that will be triggered
- * @param globalListener indicates whether event was captured by the global event listener
- * @returns wrapped breadcrumb events handler
+ * Add an instrumentation handler for when a click or a keypress happens.
+ *
+ * Use at your own risk, this might break without changelog notice, only used internally.
  * @hidden
  */
-function makeDOMEventHandler(handler, globalListener = false) {
-  return (event) => {
-    // It's possible this handler might trigger multiple times for the same
-    // event (e.g. event propagation through node ancestors).
-    // Ignore if we've already captured that event.
-    if (!event || event['_sentryCaptured']) {
-      return;
-    }
-
-    const target = getEventTarget(event);
-
-    // We always want to skip _some_ events.
-    if (shouldSkipDOMEvent(event.type, target)) {
-      return;
-    }
-
-    // Mark event as "seen"
-    addNonEnumerableProperty(event, '_sentryCaptured', true);
-
-    if (target && !target._sentryId) {
-      // Add UUID to event target so we can identify if
-      addNonEnumerableProperty(target, '_sentryId', uuid4());
-    }
-
-    const name = event.type === 'keypress' ? 'input' : event.type;
-
-    // If there is no last captured event, it means that we can safely capture the new event and store it for future comparisons.
-    // If there is a last captured event, see if the new event is different enough to treat it as a unique one.
-    // If that's the case, emit the previous event and store locally the newly-captured DOM event.
-    if (!isSimilarToLastCapturedEvent(event)) {
-      handler({
-        event: event,
-        name,
-        global: globalListener,
-      });
-      lastCapturedEventType = event.type;
-      lastCapturedEventTargetId = target ? target._sentryId : undefined;
-    }
-
-    // Start a new debounce timer that will prevent us from capturing multiple events that should be grouped together.
-    clearTimeout(debounceTimerID);
-    debounceTimerID = WINDOW$2.setTimeout(() => {
-      lastCapturedEventTargetId = undefined;
-      lastCapturedEventType = undefined;
-    }, DEBOUNCE_DURATION);
-  };
+function addClickKeypressInstrumentationHandler(handler) {
+  const type = 'dom';
+  addHandler(type, handler);
+  maybeInstrument(type, instrumentDOM);
 }
 
-/** JSDoc */
+/** Exported for tests only. */
 function instrumentDOM() {
-  if (!WINDOW$2.document) {
+  if (!WINDOW$6.document) {
     return;
   }
 
@@ -2074,8 +1593,8 @@ function instrumentDOM() {
   // we instrument `addEventListener` so that we don't end up attaching this handler twice.
   const triggerDOMHandler = triggerHandlers.bind(null, 'dom');
   const globalDOMEventHandler = makeDOMEventHandler(triggerDOMHandler, true);
-  WINDOW$2.document.addEventListener('click', globalDOMEventHandler, false);
-  WINDOW$2.document.addEventListener('keypress', globalDOMEventHandler, false);
+  WINDOW$6.document.addEventListener('click', globalDOMEventHandler, false);
+  WINDOW$6.document.addEventListener('keypress', globalDOMEventHandler, false);
 
   // After hooking into click and keypress events bubbled up to `document`, we also hook into user-handled
   // clicks & keypresses, by adding an event listener of our own to any element to which they add a listener. That
@@ -2084,7 +1603,7 @@ function instrumentDOM() {
   // guaranteed to fire at least once.)
   ['EventTarget', 'Node'].forEach((target) => {
     // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-    const proto = (WINDOW$2 )[target] && (WINDOW$2 )[target].prototype;
+    const proto = (WINDOW$6 )[target] && (WINDOW$6 )[target].prototype;
     // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access, no-prototype-builtins
     if (!proto || !proto.hasOwnProperty || !proto.hasOwnProperty('addEventListener')) {
       return;
@@ -2163,19 +1682,339 @@ function instrumentDOM() {
   });
 }
 
-let _oldOnErrorHandler = null;
-/** JSDoc */
-function instrumentError() {
-  _oldOnErrorHandler = WINDOW$2.onerror;
+/**
+ * Check whether the event is similar to the last captured one. For example, two click events on the same button.
+ */
+function isSimilarToLastCapturedEvent(event) {
+  // If both events have different type, then user definitely performed two separate actions. e.g. click + keypress.
+  if (event.type !== lastCapturedEventType) {
+    return false;
+  }
 
-  WINDOW$2.onerror = function (msg, url, line, column, error) {
-    triggerHandlers('error', {
+  try {
+    // If both events have the same type, it's still possible that actions were performed on different targets.
+    // e.g. 2 clicks on different buttons.
+    if (!event.target || (event.target )._sentryId !== lastCapturedEventTargetId) {
+      return false;
+    }
+  } catch (e) {
+    // just accessing `target` property can throw an exception in some rare circumstances
+    // see: https://github.com/getsentry/sentry-javascript/issues/838
+  }
+
+  // If both events have the same type _and_ same `target` (an element which triggered an event, _not necessarily_
+  // to which an event listener was attached), we treat them as the same action, as we want to capture
+  // only one breadcrumb. e.g. multiple clicks on the same button, or typing inside a user input box.
+  return true;
+}
+
+/**
+ * Decide whether an event should be captured.
+ * @param event event to be captured
+ */
+function shouldSkipDOMEvent(eventType, target) {
+  // We are only interested in filtering `keypress` events for now.
+  if (eventType !== 'keypress') {
+    return false;
+  }
+
+  if (!target || !target.tagName) {
+    return true;
+  }
+
+  // Only consider keypress events on actual input elements. This will disregard keypresses targeting body
+  // e.g.tabbing through elements, hotkeys, etc.
+  if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Wraps addEventListener to capture UI breadcrumbs
+ */
+function makeDOMEventHandler(
+  handler,
+  globalListener = false,
+) {
+  return (event) => {
+    // It's possible this handler might trigger multiple times for the same
+    // event (e.g. event propagation through node ancestors).
+    // Ignore if we've already captured that event.
+    if (!event || event['_sentryCaptured']) {
+      return;
+    }
+
+    const target = getEventTarget(event);
+
+    // We always want to skip _some_ events.
+    if (shouldSkipDOMEvent(event.type, target)) {
+      return;
+    }
+
+    // Mark event as "seen"
+    addNonEnumerableProperty(event, '_sentryCaptured', true);
+
+    if (target && !target._sentryId) {
+      // Add UUID to event target so we can identify if
+      addNonEnumerableProperty(target, '_sentryId', uuid4());
+    }
+
+    const name = event.type === 'keypress' ? 'input' : event.type;
+
+    // If there is no last captured event, it means that we can safely capture the new event and store it for future comparisons.
+    // If there is a last captured event, see if the new event is different enough to treat it as a unique one.
+    // If that's the case, emit the previous event and store locally the newly-captured DOM event.
+    if (!isSimilarToLastCapturedEvent(event)) {
+      const handlerData = { event, name, global: globalListener };
+      handler(handlerData);
+      lastCapturedEventType = event.type;
+      lastCapturedEventTargetId = target ? target._sentryId : undefined;
+    }
+
+    // Start a new debounce timer that will prevent us from capturing multiple events that should be grouped together.
+    clearTimeout(debounceTimerID);
+    debounceTimerID = WINDOW$6.setTimeout(() => {
+      lastCapturedEventTargetId = undefined;
+      lastCapturedEventType = undefined;
+    }, DEBOUNCE_DURATION);
+  };
+}
+
+function getEventTarget(event) {
+  try {
+    return event.target ;
+  } catch (e) {
+    // just accessing `target` property can throw an exception in some rare circumstances
+    // see: https://github.com/getsentry/sentry-javascript/issues/838
+    return null;
+  }
+}
+
+// eslint-disable-next-line deprecation/deprecation
+const WINDOW$5 = getGlobalObject();
+
+/**
+ * Tells whether current environment supports Fetch API
+ * {@link supportsFetch}.
+ *
+ * @returns Answer to the given question.
+ */
+function supportsFetch() {
+  if (!('fetch' in WINDOW$5)) {
+    return false;
+  }
+
+  try {
+    new Headers();
+    new Request('http://www.example.com');
+    new Response();
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+/**
+ * isNativeFetch checks if the given function is a native implementation of fetch()
+ */
+// eslint-disable-next-line @typescript-eslint/ban-types
+function isNativeFetch(func) {
+  return func && /^function fetch\(\)\s+\{\s+\[native code\]\s+\}$/.test(func.toString());
+}
+
+/**
+ * Tells whether current environment supports Fetch API natively
+ * {@link supportsNativeFetch}.
+ *
+ * @returns true if `window.fetch` is natively implemented, false otherwise
+ */
+function supportsNativeFetch() {
+  if (typeof EdgeRuntime === 'string') {
+    return true;
+  }
+
+  if (!supportsFetch()) {
+    return false;
+  }
+
+  // Fast path to avoid DOM I/O
+  // eslint-disable-next-line @typescript-eslint/unbound-method
+  if (isNativeFetch(WINDOW$5.fetch)) {
+    return true;
+  }
+
+  // window.fetch is implemented, but is polyfilled or already wrapped (e.g: by a chrome extension)
+  // so create a "pure" iframe to see if that has native fetch
+  let result = false;
+  const doc = WINDOW$5.document;
+  // eslint-disable-next-line deprecation/deprecation
+  if (doc && typeof (doc.createElement ) === 'function') {
+    try {
+      const sandbox = doc.createElement('iframe');
+      sandbox.hidden = true;
+      doc.head.appendChild(sandbox);
+      if (sandbox.contentWindow && sandbox.contentWindow.fetch) {
+        // eslint-disable-next-line @typescript-eslint/unbound-method
+        result = isNativeFetch(sandbox.contentWindow.fetch);
+      }
+      doc.head.removeChild(sandbox);
+    } catch (err) {
+      (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) &&
+        logger.warn('Could not create sandbox iframe for pure fetch check, bailing to window.fetch: ', err);
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Add an instrumentation handler for when a fetch request happens.
+ * The handler function is called once when the request starts and once when it ends,
+ * which can be identified by checking if it has an `endTimestamp`.
+ *
+ * Use at your own risk, this might break without changelog notice, only used internally.
+ * @hidden
+ */
+function addFetchInstrumentationHandler(handler) {
+  const type = 'fetch';
+  addHandler(type, handler);
+  maybeInstrument(type, instrumentFetch);
+}
+
+function instrumentFetch() {
+  if (!supportsNativeFetch()) {
+    return;
+  }
+
+  fill(GLOBAL_OBJ, 'fetch', function (originalFetch) {
+    return function (...args) {
+      const { method, url } = parseFetchArgs(args);
+
+      const handlerData = {
+        args,
+        fetchData: {
+          method,
+          url,
+        },
+        startTimestamp: Date.now(),
+      };
+
+      triggerHandlers('fetch', {
+        ...handlerData,
+      });
+
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      return originalFetch.apply(GLOBAL_OBJ, args).then(
+        (response) => {
+          const finishedHandlerData = {
+            ...handlerData,
+            endTimestamp: Date.now(),
+            response,
+          };
+
+          triggerHandlers('fetch', finishedHandlerData);
+          return response;
+        },
+        (error) => {
+          const erroredHandlerData = {
+            ...handlerData,
+            endTimestamp: Date.now(),
+            error,
+          };
+
+          triggerHandlers('fetch', erroredHandlerData);
+          // NOTE: If you are a Sentry user, and you are seeing this stack frame,
+          //       it means the sentry.javascript SDK caught an error invoking your application code.
+          //       This is expected behavior and NOT indicative of a bug with sentry.javascript.
+          throw error;
+        },
+      );
+    };
+  });
+}
+
+function hasProp(obj, prop) {
+  return !!obj && typeof obj === 'object' && !!(obj )[prop];
+}
+
+function getUrlFromResource(resource) {
+  if (typeof resource === 'string') {
+    return resource;
+  }
+
+  if (!resource) {
+    return '';
+  }
+
+  if (hasProp(resource, 'url')) {
+    return resource.url;
+  }
+
+  if (resource.toString) {
+    return resource.toString();
+  }
+
+  return '';
+}
+
+/**
+ * Parses the fetch arguments to find the used Http method and the url of the request.
+ * Exported for tests only.
+ */
+function parseFetchArgs(fetchArgs) {
+  if (fetchArgs.length === 0) {
+    return { method: 'GET', url: '' };
+  }
+
+  if (fetchArgs.length === 2) {
+    const [url, options] = fetchArgs ;
+
+    return {
+      url: getUrlFromResource(url),
+      method: hasProp(options, 'method') ? String(options.method).toUpperCase() : 'GET',
+    };
+  }
+
+  const arg = fetchArgs[0];
+  return {
+    url: getUrlFromResource(arg ),
+    method: hasProp(arg, 'method') ? String(arg.method).toUpperCase() : 'GET',
+  };
+}
+
+let _oldOnErrorHandler = null;
+
+/**
+ * Add an instrumentation handler for when an error is captured by the global error handler.
+ *
+ * Use at your own risk, this might break without changelog notice, only used internally.
+ * @hidden
+ */
+function addGlobalErrorInstrumentationHandler(handler) {
+  const type = 'error';
+  addHandler(type, handler);
+  maybeInstrument(type, instrumentError);
+}
+
+function instrumentError() {
+  _oldOnErrorHandler = GLOBAL_OBJ.onerror;
+
+  GLOBAL_OBJ.onerror = function (
+    msg,
+    url,
+    line,
+    column,
+    error,
+  ) {
+    const handlerData = {
       column,
       error,
       line,
       msg,
       url,
-    });
+    };
+    triggerHandlers('error', handlerData);
 
     if (_oldOnErrorHandler && !_oldOnErrorHandler.__SENTRY_LOADER__) {
       // eslint-disable-next-line prefer-rest-params
@@ -2185,16 +2024,31 @@ function instrumentError() {
     return false;
   };
 
-  WINDOW$2.onerror.__SENTRY_INSTRUMENTED__ = true;
+  GLOBAL_OBJ.onerror.__SENTRY_INSTRUMENTED__ = true;
 }
 
 let _oldOnUnhandledRejectionHandler = null;
-/** JSDoc */
-function instrumentUnhandledRejection() {
-  _oldOnUnhandledRejectionHandler = WINDOW$2.onunhandledrejection;
 
-  WINDOW$2.onunhandledrejection = function (e) {
-    triggerHandlers('unhandledrejection', e);
+/**
+ * Add an instrumentation handler for when an unhandled promise rejection is captured.
+ *
+ * Use at your own risk, this might break without changelog notice, only used internally.
+ * @hidden
+ */
+function addGlobalUnhandledRejectionInstrumentationHandler(
+  handler,
+) {
+  const type = 'unhandledrejection';
+  addHandler(type, handler);
+  maybeInstrument(type, instrumentUnhandledRejection);
+}
+
+function instrumentUnhandledRejection() {
+  _oldOnUnhandledRejectionHandler = GLOBAL_OBJ.onunhandledrejection;
+
+  GLOBAL_OBJ.onunhandledrejection = function (e) {
+    const handlerData = e;
+    triggerHandlers('unhandledrejection', handlerData);
 
     if (_oldOnUnhandledRejectionHandler && !_oldOnUnhandledRejectionHandler.__SENTRY_LOADER__) {
       // eslint-disable-next-line prefer-rest-params
@@ -2204,7 +2058,245 @@ function instrumentUnhandledRejection() {
     return true;
   };
 
-  WINDOW$2.onunhandledrejection.__SENTRY_INSTRUMENTED__ = true;
+  GLOBAL_OBJ.onunhandledrejection.__SENTRY_INSTRUMENTED__ = true;
+}
+
+// Based on https://github.com/angular/angular.js/pull/13945/files
+
+// eslint-disable-next-line deprecation/deprecation
+const WINDOW$4 = getGlobalObject();
+
+/**
+ * Tells whether current environment supports History API
+ * {@link supportsHistory}.
+ *
+ * @returns Answer to the given question.
+ */
+function supportsHistory() {
+  // NOTE: in Chrome App environment, touching history.pushState, *even inside
+  //       a try/catch block*, will cause Chrome to output an error to console.error
+  // borrowed from: https://github.com/angular/angular.js/pull/13945/files
+  /* eslint-disable @typescript-eslint/no-unsafe-member-access */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const chrome = (WINDOW$4 ).chrome;
+  const isChromePackagedApp = chrome && chrome.app && chrome.app.runtime;
+  /* eslint-enable @typescript-eslint/no-unsafe-member-access */
+  const hasHistoryApi = 'history' in WINDOW$4 && !!WINDOW$4.history.pushState && !!WINDOW$4.history.replaceState;
+
+  return !isChromePackagedApp && hasHistoryApi;
+}
+
+const WINDOW$3 = GLOBAL_OBJ ;
+
+let lastHref;
+
+/**
+ * Add an instrumentation handler for when a fetch request happens.
+ * The handler function is called once when the request starts and once when it ends,
+ * which can be identified by checking if it has an `endTimestamp`.
+ *
+ * Use at your own risk, this might break without changelog notice, only used internally.
+ * @hidden
+ */
+function addHistoryInstrumentationHandler(handler) {
+  const type = 'history';
+  addHandler(type, handler);
+  maybeInstrument(type, instrumentHistory);
+}
+
+function instrumentHistory() {
+  if (!supportsHistory()) {
+    return;
+  }
+
+  const oldOnPopState = WINDOW$3.onpopstate;
+  WINDOW$3.onpopstate = function ( ...args) {
+    const to = WINDOW$3.location.href;
+    // keep track of the current URL state, as we always receive only the updated state
+    const from = lastHref;
+    lastHref = to;
+    const handlerData = { from, to };
+    triggerHandlers('history', handlerData);
+    if (oldOnPopState) {
+      // Apparently this can throw in Firefox when incorrectly implemented plugin is installed.
+      // https://github.com/getsentry/sentry-javascript/issues/3344
+      // https://github.com/bugsnag/bugsnag-js/issues/469
+      try {
+        return oldOnPopState.apply(this, args);
+      } catch (_oO) {
+        // no-empty
+      }
+    }
+  };
+
+  function historyReplacementFunction(originalHistoryFunction) {
+    return function ( ...args) {
+      const url = args.length > 2 ? args[2] : undefined;
+      if (url) {
+        // coerce to string (this is what pushState does)
+        const from = lastHref;
+        const to = String(url);
+        // keep track of the current URL state, as we always receive only the updated state
+        lastHref = to;
+        const handlerData = { from, to };
+        triggerHandlers('history', handlerData);
+      }
+      return originalHistoryFunction.apply(this, args);
+    };
+  }
+
+  fill(WINDOW$3.history, 'pushState', historyReplacementFunction);
+  fill(WINDOW$3.history, 'replaceState', historyReplacementFunction);
+}
+
+const WINDOW$2 = GLOBAL_OBJ ;
+
+const SENTRY_XHR_DATA_KEY = '__sentry_xhr_v3__';
+
+/**
+ * Add an instrumentation handler for when an XHR request happens.
+ * The handler function is called once when the request starts and once when it ends,
+ * which can be identified by checking if it has an `endTimestamp`.
+ *
+ * Use at your own risk, this might break without changelog notice, only used internally.
+ * @hidden
+ */
+function addXhrInstrumentationHandler(handler) {
+  const type = 'xhr';
+  addHandler(type, handler);
+  maybeInstrument(type, instrumentXHR);
+}
+
+/** Exported only for tests. */
+function instrumentXHR() {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+  if (!(WINDOW$2 ).XMLHttpRequest) {
+    return;
+  }
+
+  const xhrproto = XMLHttpRequest.prototype;
+
+  fill(xhrproto, 'open', function (originalOpen) {
+    return function ( ...args) {
+      const startTimestamp = Date.now();
+
+      // open() should always be called with two or more arguments
+      // But to be on the safe side, we actually validate this and bail out if we don't have a method & url
+      const method = isString(args[0]) ? args[0].toUpperCase() : undefined;
+      const url = parseUrl$1(args[1]);
+
+      if (!method || !url) {
+        return;
+      }
+
+      this[SENTRY_XHR_DATA_KEY] = {
+        method,
+        url,
+        request_headers: {},
+      };
+
+      // if Sentry key appears in URL, don't capture it as a request
+      if (method === 'POST' && url.match(/sentry_key/)) {
+        this.__sentry_own_request__ = true;
+      }
+
+      const onreadystatechangeHandler = () => {
+        // For whatever reason, this is not the same instance here as from the outer method
+        const xhrInfo = this[SENTRY_XHR_DATA_KEY];
+
+        if (!xhrInfo) {
+          return;
+        }
+
+        if (this.readyState === 4) {
+          try {
+            // touching statusCode in some platforms throws
+            // an exception
+            xhrInfo.status_code = this.status;
+          } catch (e) {
+            /* do nothing */
+          }
+
+          const handlerData = {
+            args: [method, url],
+            endTimestamp: Date.now(),
+            startTimestamp,
+            xhr: this,
+          };
+          triggerHandlers('xhr', handlerData);
+        }
+      };
+
+      if ('onreadystatechange' in this && typeof this.onreadystatechange === 'function') {
+        fill(this, 'onreadystatechange', function (original) {
+          return function ( ...readyStateArgs) {
+            onreadystatechangeHandler();
+            return original.apply(this, readyStateArgs);
+          };
+        });
+      } else {
+        this.addEventListener('readystatechange', onreadystatechangeHandler);
+      }
+
+      // Intercepting `setRequestHeader` to access the request headers of XHR instance.
+      // This will only work for user/library defined headers, not for the default/browser-assigned headers.
+      // Request cookies are also unavailable for XHR, as `Cookie` header can't be defined by `setRequestHeader`.
+      fill(this, 'setRequestHeader', function (original) {
+        return function ( ...setRequestHeaderArgs) {
+          const [header, value] = setRequestHeaderArgs;
+
+          const xhrInfo = this[SENTRY_XHR_DATA_KEY];
+
+          if (xhrInfo && isString(header) && isString(value)) {
+            xhrInfo.request_headers[header.toLowerCase()] = value;
+          }
+
+          return original.apply(this, setRequestHeaderArgs);
+        };
+      });
+
+      return originalOpen.apply(this, args);
+    };
+  });
+
+  fill(xhrproto, 'send', function (originalSend) {
+    return function ( ...args) {
+      const sentryXhrData = this[SENTRY_XHR_DATA_KEY];
+
+      if (!sentryXhrData) {
+        return;
+      }
+
+      if (args[0] !== undefined) {
+        sentryXhrData.body = args[0];
+      }
+
+      const handlerData = {
+        args: [sentryXhrData.method, sentryXhrData.url],
+        startTimestamp: Date.now(),
+        xhr: this,
+      };
+      triggerHandlers('xhr', handlerData);
+
+      return originalSend.apply(this, args);
+    };
+  });
+}
+
+function parseUrl$1(url) {
+  if (isString(url)) {
+    return url;
+  }
+
+  try {
+    // url can be a string or URL
+    // but since URL is not available in IE11, we do not check for it,
+    // but simply assume it is an URL and return `toString()` from it (which returns the full URL)
+    // If that fails, we just return undefined
+    return (url ).toString();
+  } catch (e2) {} // eslint-disable-line no-empty
+
+  return undefined;
 }
 
 /*
@@ -5061,8 +5153,8 @@ function registerErrorInstrumentation() {
   }
 
   errorsInstrumented = true;
-  addInstrumentationHandler('error', errorCallback);
-  addInstrumentationHandler('unhandledrejection', errorCallback);
+  addGlobalErrorInstrumentationHandler(errorCallback);
+  addGlobalUnhandledRejectionInstrumentationHandler(errorCallback);
 }
 
 /**
@@ -5759,6 +5851,651 @@ class Transaction extends Span  {
   }
 }
 
+/**
+ * This type makes sure that we get either a CaptureContext, OR an EventHint.
+ * It does not allow mixing them, which could lead to unexpected outcomes, e.g. this is disallowed:
+ * { user: { id: '123' }, mechanism: { handled: false } }
+ */
+
+/**
+ * Adds common information to events.
+ *
+ * The information includes release and environment from `options`,
+ * breadcrumbs and context (extra, tags and user) from the scope.
+ *
+ * Information that is already present in the event is never overwritten. For
+ * nested objects, such as the context, keys are merged.
+ *
+ * Note: This also triggers callbacks for `addGlobalEventProcessor`, but not `beforeSend`.
+ *
+ * @param event The original event.
+ * @param hint May contain additional information about the original exception.
+ * @param scope A scope containing event metadata.
+ * @returns A new event with more information.
+ * @hidden
+ */
+function prepareEvent(
+  options,
+  event,
+  hint,
+  scope,
+  client,
+) {
+  const { normalizeDepth = 3, normalizeMaxBreadth = 1000 } = options;
+  const prepared = {
+    ...event,
+    event_id: event.event_id || hint.event_id || uuid4(),
+    timestamp: event.timestamp || dateTimestampInSeconds(),
+  };
+  const integrations = hint.integrations || options.integrations.map(i => i.name);
+
+  applyClientOptions(prepared, options);
+  applyIntegrationsMetadata(prepared, integrations);
+
+  // Only put debug IDs onto frames for error events.
+  if (event.type === undefined) {
+    applyDebugIds(prepared, options.stackParser);
+  }
+
+  // If we have scope given to us, use it as the base for further modifications.
+  // This allows us to prevent unnecessary copying of data if `captureContext` is not provided.
+  let finalScope = scope;
+  if (hint.captureContext) {
+    finalScope = Scope.clone(finalScope).update(hint.captureContext);
+  }
+
+  if (hint.mechanism) {
+    addExceptionMechanism(prepared, hint.mechanism);
+  }
+
+  // We prepare the result here with a resolved Event.
+  let result = resolvedSyncPromise(prepared);
+
+  const clientEventProcessors = client && client.getEventProcessors ? client.getEventProcessors() : [];
+
+  // This should be the last thing called, since we want that
+  // {@link Hub.addEventProcessor} gets the finished prepared event.
+  //
+  // We need to check for the existence of `finalScope.getAttachments`
+  // because `getAttachments` can be undefined if users are using an older version
+  // of `@sentry/core` that does not have the `getAttachments` method.
+  // See: https://github.com/getsentry/sentry-javascript/issues/5229
+  if (finalScope) {
+    // Collect attachments from the hint and scope
+    if (finalScope.getAttachments) {
+      const attachments = [...(hint.attachments || []), ...finalScope.getAttachments()];
+
+      if (attachments.length) {
+        hint.attachments = attachments;
+      }
+    }
+
+    // In case we have a hub we reassign it.
+    result = finalScope.applyToEvent(prepared, hint, clientEventProcessors);
+  } else {
+    // Apply client & global event processors even if there is no scope
+    // TODO (v8): Update the order to be Global > Client
+    result = notifyEventProcessors([...clientEventProcessors, ...getGlobalEventProcessors()], prepared, hint);
+  }
+
+  return result.then(evt => {
+    if (evt) {
+      // We apply the debug_meta field only after all event processors have ran, so that if any event processors modified
+      // file names (e.g.the RewriteFrames integration) the filename -> debug ID relationship isn't destroyed.
+      // This should not cause any PII issues, since we're only moving data that is already on the event and not adding
+      // any new data
+      applyDebugMeta(evt);
+    }
+
+    if (typeof normalizeDepth === 'number' && normalizeDepth > 0) {
+      return normalizeEvent(evt, normalizeDepth, normalizeMaxBreadth);
+    }
+    return evt;
+  });
+}
+
+/**
+ *  Enhances event using the client configuration.
+ *  It takes care of all "static" values like environment, release and `dist`,
+ *  as well as truncating overly long values.
+ * @param event event instance to be enhanced
+ */
+function applyClientOptions(event, options) {
+  const { environment, release, dist, maxValueLength = 250 } = options;
+
+  if (!('environment' in event)) {
+    event.environment = 'environment' in options ? environment : DEFAULT_ENVIRONMENT;
+  }
+
+  if (event.release === undefined && release !== undefined) {
+    event.release = release;
+  }
+
+  if (event.dist === undefined && dist !== undefined) {
+    event.dist = dist;
+  }
+
+  if (event.message) {
+    event.message = truncate(event.message, maxValueLength);
+  }
+
+  const exception = event.exception && event.exception.values && event.exception.values[0];
+  if (exception && exception.value) {
+    exception.value = truncate(exception.value, maxValueLength);
+  }
+
+  const request = event.request;
+  if (request && request.url) {
+    request.url = truncate(request.url, maxValueLength);
+  }
+}
+
+const debugIdStackParserCache = new WeakMap();
+
+/**
+ * Puts debug IDs into the stack frames of an error event.
+ */
+function applyDebugIds(event, stackParser) {
+  const debugIdMap = GLOBAL_OBJ._sentryDebugIds;
+
+  if (!debugIdMap) {
+    return;
+  }
+
+  let debugIdStackFramesCache;
+  const cachedDebugIdStackFrameCache = debugIdStackParserCache.get(stackParser);
+  if (cachedDebugIdStackFrameCache) {
+    debugIdStackFramesCache = cachedDebugIdStackFrameCache;
+  } else {
+    debugIdStackFramesCache = new Map();
+    debugIdStackParserCache.set(stackParser, debugIdStackFramesCache);
+  }
+
+  // Build a map of filename -> debug_id
+  const filenameDebugIdMap = Object.keys(debugIdMap).reduce((acc, debugIdStackTrace) => {
+    let parsedStack;
+    const cachedParsedStack = debugIdStackFramesCache.get(debugIdStackTrace);
+    if (cachedParsedStack) {
+      parsedStack = cachedParsedStack;
+    } else {
+      parsedStack = stackParser(debugIdStackTrace);
+      debugIdStackFramesCache.set(debugIdStackTrace, parsedStack);
+    }
+
+    for (let i = parsedStack.length - 1; i >= 0; i--) {
+      const stackFrame = parsedStack[i];
+      if (stackFrame.filename) {
+        acc[stackFrame.filename] = debugIdMap[debugIdStackTrace];
+        break;
+      }
+    }
+    return acc;
+  }, {});
+
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    event.exception.values.forEach(exception => {
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      exception.stacktrace.frames.forEach(frame => {
+        if (frame.filename) {
+          frame.debug_id = filenameDebugIdMap[frame.filename];
+        }
+      });
+    });
+  } catch (e) {
+    // To save bundle size we're just try catching here instead of checking for the existence of all the different objects.
+  }
+}
+
+/**
+ * Moves debug IDs from the stack frames of an error event into the debug_meta field.
+ */
+function applyDebugMeta(event) {
+  // Extract debug IDs and filenames from the stack frames on the event.
+  const filenameDebugIdMap = {};
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    event.exception.values.forEach(exception => {
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      exception.stacktrace.frames.forEach(frame => {
+        if (frame.debug_id) {
+          if (frame.abs_path) {
+            filenameDebugIdMap[frame.abs_path] = frame.debug_id;
+          } else if (frame.filename) {
+            filenameDebugIdMap[frame.filename] = frame.debug_id;
+          }
+          delete frame.debug_id;
+        }
+      });
+    });
+  } catch (e) {
+    // To save bundle size we're just try catching here instead of checking for the existence of all the different objects.
+  }
+
+  if (Object.keys(filenameDebugIdMap).length === 0) {
+    return;
+  }
+
+  // Fill debug_meta information
+  event.debug_meta = event.debug_meta || {};
+  event.debug_meta.images = event.debug_meta.images || [];
+  const images = event.debug_meta.images;
+  Object.keys(filenameDebugIdMap).forEach(filename => {
+    images.push({
+      type: 'sourcemap',
+      code_file: filename,
+      debug_id: filenameDebugIdMap[filename],
+    });
+  });
+}
+
+/**
+ * This function adds all used integrations to the SDK info in the event.
+ * @param event The event that will be filled with all integrations.
+ */
+function applyIntegrationsMetadata(event, integrationNames) {
+  if (integrationNames.length > 0) {
+    event.sdk = event.sdk || {};
+    event.sdk.integrations = [...(event.sdk.integrations || []), ...integrationNames];
+  }
+}
+
+/**
+ * Applies `normalize` function on necessary `Event` attributes to make them safe for serialization.
+ * Normalized keys:
+ * - `breadcrumbs.data`
+ * - `user`
+ * - `contexts`
+ * - `extra`
+ * @param event Event
+ * @returns Normalized event
+ */
+function normalizeEvent(event, depth, maxBreadth) {
+  if (!event) {
+    return null;
+  }
+
+  const normalized = {
+    ...event,
+    ...(event.breadcrumbs && {
+      breadcrumbs: event.breadcrumbs.map(b => ({
+        ...b,
+        ...(b.data && {
+          data: normalize(b.data, depth, maxBreadth),
+        }),
+      })),
+    }),
+    ...(event.user && {
+      user: normalize(event.user, depth, maxBreadth),
+    }),
+    ...(event.contexts && {
+      contexts: normalize(event.contexts, depth, maxBreadth),
+    }),
+    ...(event.extra && {
+      extra: normalize(event.extra, depth, maxBreadth),
+    }),
+  };
+
+  // event.contexts.trace stores information about a Transaction. Similarly,
+  // event.spans[] stores information about child Spans. Given that a
+  // Transaction is conceptually a Span, normalization should apply to both
+  // Transactions and Spans consistently.
+  // For now the decision is to skip normalization of Transactions and Spans,
+  // so this block overwrites the normalized event to add back the original
+  // Transaction information prior to normalization.
+  if (event.contexts && event.contexts.trace && normalized.contexts) {
+    normalized.contexts.trace = event.contexts.trace;
+
+    // event.contexts.trace.data may contain circular/dangerous data so we need to normalize it
+    if (event.contexts.trace.data) {
+      normalized.contexts.trace.data = normalize(event.contexts.trace.data, depth, maxBreadth);
+    }
+  }
+
+  // event.spans[].data may contain circular/dangerous data so we need to normalize it
+  if (event.spans) {
+    normalized.spans = event.spans.map(span => {
+      // We cannot use the spread operator here because `toJSON` on `span` is non-enumerable
+      if (span.data) {
+        span.data = normalize(span.data, depth, maxBreadth);
+      }
+      return span;
+    });
+  }
+
+  return normalized;
+}
+
+/**
+ * Parse either an `EventHint` directly, or convert a `CaptureContext` to an `EventHint`.
+ * This is used to allow to update method signatures that used to accept a `CaptureContext` but should now accept an `EventHint`.
+ */
+function parseEventHintOrCaptureContext(
+  hint,
+) {
+  if (!hint) {
+    return undefined;
+  }
+
+  // If you pass a Scope or `() => Scope` as CaptureContext, we just return this as captureContext
+  if (hintIsScopeOrFunction(hint)) {
+    return { captureContext: hint };
+  }
+
+  if (hintIsScopeContext(hint)) {
+    return {
+      captureContext: hint,
+    };
+  }
+
+  return hint;
+}
+
+function hintIsScopeOrFunction(
+  hint,
+) {
+  return hint instanceof Scope || typeof hint === 'function';
+}
+
+const captureContextKeys = [
+  'user',
+  'level',
+  'extra',
+  'contexts',
+  'tags',
+  'fingerprint',
+  'requestSession',
+  'propagationContext',
+] ;
+
+function hintIsScopeContext(hint) {
+  return Object.keys(hint).some(key => captureContextKeys.includes(key ));
+}
+
+// Note: All functions in this file are typed with a return value of `ReturnType<Hub[HUB_FUNCTION]>`,
+// where HUB_FUNCTION is some method on the Hub class.
+//
+// This is done to make sure the top level SDK methods stay in sync with the hub methods.
+// Although every method here has an explicit return type, some of them (that map to void returns) do not
+// contain `return` keywords. This is done to save on bundle size, as `return` is not minifiable.
+
+/**
+ * Captures an exception event and sends it to Sentry.
+ * This accepts an event hint as optional second parameter.
+ * Alternatively, you can also pass a CaptureContext directly as second parameter.
+ */
+function captureException(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  exception,
+  hint,
+) {
+  return getCurrentHub().captureException(exception, parseEventHintOrCaptureContext(hint));
+}
+
+/**
+ * Captures a message event and sends it to Sentry.
+ *
+ * @param message The message to send to Sentry.
+ * @param Severity Define the level of the message.
+ * @returns The generated eventId.
+ */
+function captureMessage(
+  message,
+  // eslint-disable-next-line deprecation/deprecation
+  captureContext,
+) {
+  // This is necessary to provide explicit scopes upgrade, without changing the original
+  // arity of the `captureMessage(message, level)` method.
+  const level = typeof captureContext === 'string' ? captureContext : undefined;
+  const context = typeof captureContext !== 'string' ? { captureContext } : undefined;
+  return getCurrentHub().captureMessage(message, level, context);
+}
+
+/**
+ * Captures a manually created event and sends it to Sentry.
+ *
+ * @param event The event to send to Sentry.
+ * @returns The generated eventId.
+ */
+function captureEvent(event, hint) {
+  return getCurrentHub().captureEvent(event, hint);
+}
+
+/**
+ * Callback to set context information onto the scope.
+ * @param callback Callback function that receives Scope.
+ */
+function configureScope(callback) {
+  getCurrentHub().configureScope(callback);
+}
+
+/**
+ * Records a new breadcrumb which will be attached to future events.
+ *
+ * Breadcrumbs will be added to subsequent events to provide more context on
+ * user's actions prior to an error or crash.
+ *
+ * @param breadcrumb The breadcrumb to record.
+ */
+function addBreadcrumb(breadcrumb) {
+  getCurrentHub().addBreadcrumb(breadcrumb);
+}
+
+/**
+ * Sets context data with the given name.
+ * @param name of the context
+ * @param context Any kind of data. This data will be normalized.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function setContext(name, context) {
+  getCurrentHub().setContext(name, context);
+}
+
+/**
+ * Set an object that will be merged sent as extra data with the event.
+ * @param extras Extras object to merge into current context.
+ */
+function setExtras(extras) {
+  getCurrentHub().setExtras(extras);
+}
+
+/**
+ * Set key:value that will be sent as extra data with the event.
+ * @param key String of extra
+ * @param extra Any kind of data. This data will be normalized.
+ */
+function setExtra(key, extra) {
+  getCurrentHub().setExtra(key, extra);
+}
+
+/**
+ * Set an object that will be merged sent as tags data with the event.
+ * @param tags Tags context object to merge into current context.
+ */
+function setTags(tags) {
+  getCurrentHub().setTags(tags);
+}
+
+/**
+ * Set key:value that will be sent as tags data with the event.
+ *
+ * Can also be used to unset a tag, by passing `undefined`.
+ *
+ * @param key String key of tag
+ * @param value Value of tag
+ */
+function setTag(key, value) {
+  getCurrentHub().setTag(key, value);
+}
+
+/**
+ * Updates user context information for future events.
+ *
+ * @param user User context object to be set in the current context. Pass `null` to unset the user.
+ */
+function setUser(user) {
+  getCurrentHub().setUser(user);
+}
+
+/**
+ * Creates a new scope with and executes the given operation within.
+ * The scope is automatically removed once the operation
+ * finishes or throws.
+ *
+ * This is essentially a convenience function for:
+ *
+ *     pushScope();
+ *     callback();
+ *     popScope();
+ *
+ * @param callback that will be enclosed into push/popScope.
+ */
+function withScope(callback) {
+  getCurrentHub().withScope(callback);
+}
+
+/**
+ * Starts a new `Transaction` and returns it. This is the entry point to manual tracing instrumentation.
+ *
+ * A tree structure can be built by adding child spans to the transaction, and child spans to other spans. To start a
+ * new child span within the transaction or any span, call the respective `.startChild()` method.
+ *
+ * Every child span must be finished before the transaction is finished, otherwise the unfinished spans are discarded.
+ *
+ * The transaction must be finished with a call to its `.finish()` method, at which point the transaction with all its
+ * finished child spans will be sent to Sentry.
+ *
+ * NOTE: This function should only be used for *manual* instrumentation. Auto-instrumentation should call
+ * `startTransaction` directly on the hub.
+ *
+ * @param context Properties of the new `Transaction`.
+ * @param customSamplingContext Information given to the transaction sampling function (along with context-dependent
+ * default values). See {@link Options.tracesSampler}.
+ *
+ * @returns The transaction which was just started
+ */
+function startTransaction(
+  context,
+  customSamplingContext,
+) {
+  return getCurrentHub().startTransaction({ ...context }, customSamplingContext);
+}
+
+/**
+ * Create a cron monitor check in and send it to Sentry.
+ *
+ * @param checkIn An object that describes a check in.
+ * @param upsertMonitorConfig An optional object that describes a monitor config. Use this if you want
+ * to create a monitor automatically when sending a check in.
+ */
+function captureCheckIn(checkIn, upsertMonitorConfig) {
+  const hub = getCurrentHub();
+  const scope = hub.getScope();
+  const client = hub.getClient();
+  if (!client) {
+    (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.warn('Cannot capture check-in. No client defined.');
+  } else if (!client.captureCheckIn) {
+    (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.warn('Cannot capture check-in. Client does not support sending check-ins.');
+  } else {
+    return client.captureCheckIn(checkIn, upsertMonitorConfig, scope);
+  }
+
+  return uuid4();
+}
+
+/**
+ * Wraps a callback with a cron monitor check in. The check in will be sent to Sentry when the callback finishes.
+ *
+ * @param monitorSlug The distinct slug of the monitor.
+ * @param upsertMonitorConfig An optional object that describes a monitor config. Use this if you want
+ * to create a monitor automatically when sending a check in.
+ */
+function withMonitor(
+  monitorSlug,
+  callback,
+  upsertMonitorConfig,
+) {
+  const checkInId = captureCheckIn({ monitorSlug, status: 'in_progress' }, upsertMonitorConfig);
+  const now = timestampInSeconds();
+
+  function finishCheckIn(status) {
+    captureCheckIn({ monitorSlug, status, checkInId, duration: timestampInSeconds() - now });
+  }
+
+  let maybePromiseResult;
+  try {
+    maybePromiseResult = callback();
+  } catch (e) {
+    finishCheckIn('error');
+    throw e;
+  }
+
+  if (isThenable(maybePromiseResult)) {
+    Promise.resolve(maybePromiseResult).then(
+      () => {
+        finishCheckIn('ok');
+      },
+      () => {
+        finishCheckIn('error');
+      },
+    );
+  } else {
+    finishCheckIn('ok');
+  }
+
+  return maybePromiseResult;
+}
+
+/**
+ * Call `flush()` on the current client, if there is one. See {@link Client.flush}.
+ *
+ * @param timeout Maximum time in ms the client should wait to flush its event queue. Omitting this parameter will cause
+ * the client to wait until all events are sent before resolving the promise.
+ * @returns A promise which resolves to `true` if the queue successfully drains before the timeout, or `false` if it
+ * doesn't (or if there's no client defined).
+ */
+async function flush(timeout) {
+  const client = getClient();
+  if (client) {
+    return client.flush(timeout);
+  }
+  (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.warn('Cannot flush events. No client defined.');
+  return Promise.resolve(false);
+}
+
+/**
+ * Call `close()` on the current client, if there is one. See {@link Client.close}.
+ *
+ * @param timeout Maximum time in ms the client should wait to flush its event queue before shutting down. Omitting this
+ * parameter will cause the client to wait until all events are sent before disabling itself.
+ * @returns A promise which resolves to `true` if the queue successfully drains before the timeout, or `false` if it
+ * doesn't (or if there's no client defined).
+ */
+async function close(timeout) {
+  const client = getClient();
+  if (client) {
+    return client.close(timeout);
+  }
+  (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.warn('Cannot flush events and disable SDK. No client defined.');
+  return Promise.resolve(false);
+}
+
+/**
+ * This is the getter for lastEventId.
+ *
+ * @returns The last event id of a captured event.
+ */
+function lastEventId() {
+  return getCurrentHub().lastEventId();
+}
+
+/**
+ * Get the currently active client.
+ */
+function getClient() {
+  return getCurrentHub().getClient();
+}
+
 // Treeshakable guard to remove all code related to tracing
 
 /**
@@ -5773,7 +6510,7 @@ function hasTracingEnabled(
     return false;
   }
 
-  const client = getCurrentHub().getClient();
+  const client = getClient();
   const options = maybeOptions || (client && client.getOptions());
   return !!options && (options.enableTracing || 'tracesSampleRate' in options || 'tracesSampler' in options);
 }
@@ -6207,6 +6944,10 @@ function continueTrace(
     }),
   };
 
+  if (!callback) {
+    return transactionContext;
+  }
+
   return callback(transactionContext);
 }
 
@@ -6309,282 +7050,6 @@ function createEventEnvelope(
 
   const eventItem = [{ type: eventType }, event];
   return createEnvelope(envelopeHeaders, [eventItem]);
-}
-
-// Note: All functions in this file are typed with a return value of `ReturnType<Hub[HUB_FUNCTION]>`,
-// where HUB_FUNCTION is some method on the Hub class.
-//
-// This is done to make sure the top level SDK methods stay in sync with the hub methods.
-// Although every method here has an explicit return type, some of them (that map to void returns) do not
-// contain `return` keywords. This is done to save on bundle size, as `return` is not minifiable.
-
-/**
- * Captures an exception event and sends it to Sentry.
- *
- * @param exception An exception-like object.
- * @param captureContext Additional scope data to apply to exception event.
- * @returns The generated eventId.
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/explicit-module-boundary-types
-function captureException(exception, captureContext) {
-  return getCurrentHub().captureException(exception, { captureContext });
-}
-
-/**
- * Captures a message event and sends it to Sentry.
- *
- * @param message The message to send to Sentry.
- * @param Severity Define the level of the message.
- * @returns The generated eventId.
- */
-function captureMessage(
-  message,
-  // eslint-disable-next-line deprecation/deprecation
-  captureContext,
-) {
-  // This is necessary to provide explicit scopes upgrade, without changing the original
-  // arity of the `captureMessage(message, level)` method.
-  const level = typeof captureContext === 'string' ? captureContext : undefined;
-  const context = typeof captureContext !== 'string' ? { captureContext } : undefined;
-  return getCurrentHub().captureMessage(message, level, context);
-}
-
-/**
- * Captures a manually created event and sends it to Sentry.
- *
- * @param event The event to send to Sentry.
- * @returns The generated eventId.
- */
-function captureEvent(event, hint) {
-  return getCurrentHub().captureEvent(event, hint);
-}
-
-/**
- * Callback to set context information onto the scope.
- * @param callback Callback function that receives Scope.
- */
-function configureScope(callback) {
-  getCurrentHub().configureScope(callback);
-}
-
-/**
- * Records a new breadcrumb which will be attached to future events.
- *
- * Breadcrumbs will be added to subsequent events to provide more context on
- * user's actions prior to an error or crash.
- *
- * @param breadcrumb The breadcrumb to record.
- */
-function addBreadcrumb(breadcrumb) {
-  getCurrentHub().addBreadcrumb(breadcrumb);
-}
-
-/**
- * Sets context data with the given name.
- * @param name of the context
- * @param context Any kind of data. This data will be normalized.
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function setContext(name, context) {
-  getCurrentHub().setContext(name, context);
-}
-
-/**
- * Set an object that will be merged sent as extra data with the event.
- * @param extras Extras object to merge into current context.
- */
-function setExtras(extras) {
-  getCurrentHub().setExtras(extras);
-}
-
-/**
- * Set key:value that will be sent as extra data with the event.
- * @param key String of extra
- * @param extra Any kind of data. This data will be normalized.
- */
-function setExtra(key, extra) {
-  getCurrentHub().setExtra(key, extra);
-}
-
-/**
- * Set an object that will be merged sent as tags data with the event.
- * @param tags Tags context object to merge into current context.
- */
-function setTags(tags) {
-  getCurrentHub().setTags(tags);
-}
-
-/**
- * Set key:value that will be sent as tags data with the event.
- *
- * Can also be used to unset a tag, by passing `undefined`.
- *
- * @param key String key of tag
- * @param value Value of tag
- */
-function setTag(key, value) {
-  getCurrentHub().setTag(key, value);
-}
-
-/**
- * Updates user context information for future events.
- *
- * @param user User context object to be set in the current context. Pass `null` to unset the user.
- */
-function setUser(user) {
-  getCurrentHub().setUser(user);
-}
-
-/**
- * Creates a new scope with and executes the given operation within.
- * The scope is automatically removed once the operation
- * finishes or throws.
- *
- * This is essentially a convenience function for:
- *
- *     pushScope();
- *     callback();
- *     popScope();
- *
- * @param callback that will be enclosed into push/popScope.
- */
-function withScope(callback) {
-  getCurrentHub().withScope(callback);
-}
-
-/**
- * Starts a new `Transaction` and returns it. This is the entry point to manual tracing instrumentation.
- *
- * A tree structure can be built by adding child spans to the transaction, and child spans to other spans. To start a
- * new child span within the transaction or any span, call the respective `.startChild()` method.
- *
- * Every child span must be finished before the transaction is finished, otherwise the unfinished spans are discarded.
- *
- * The transaction must be finished with a call to its `.finish()` method, at which point the transaction with all its
- * finished child spans will be sent to Sentry.
- *
- * NOTE: This function should only be used for *manual* instrumentation. Auto-instrumentation should call
- * `startTransaction` directly on the hub.
- *
- * @param context Properties of the new `Transaction`.
- * @param customSamplingContext Information given to the transaction sampling function (along with context-dependent
- * default values). See {@link Options.tracesSampler}.
- *
- * @returns The transaction which was just started
- */
-function startTransaction(
-  context,
-  customSamplingContext,
-) {
-  return getCurrentHub().startTransaction({ ...context }, customSamplingContext);
-}
-
-/**
- * Create a cron monitor check in and send it to Sentry.
- *
- * @param checkIn An object that describes a check in.
- * @param upsertMonitorConfig An optional object that describes a monitor config. Use this if you want
- * to create a monitor automatically when sending a check in.
- */
-function captureCheckIn(checkIn, upsertMonitorConfig) {
-  const hub = getCurrentHub();
-  const scope = hub.getScope();
-  const client = hub.getClient();
-  if (!client) {
-    (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.warn('Cannot capture check-in. No client defined.');
-  } else if (!client.captureCheckIn) {
-    (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.warn('Cannot capture check-in. Client does not support sending check-ins.');
-  } else {
-    return client.captureCheckIn(checkIn, upsertMonitorConfig, scope);
-  }
-
-  return uuid4();
-}
-
-/**
- * Wraps a callback with a cron monitor check in. The check in will be sent to Sentry when the callback finishes.
- *
- * @param monitorSlug The distinct slug of the monitor.
- * @param upsertMonitorConfig An optional object that describes a monitor config. Use this if you want
- * to create a monitor automatically when sending a check in.
- */
-function withMonitor(
-  monitorSlug,
-  callback,
-  upsertMonitorConfig,
-) {
-  const checkInId = captureCheckIn({ monitorSlug, status: 'in_progress' }, upsertMonitorConfig);
-  const now = timestampInSeconds();
-
-  function finishCheckIn(status) {
-    captureCheckIn({ monitorSlug, status, checkInId, duration: timestampInSeconds() - now });
-  }
-
-  let maybePromiseResult;
-  try {
-    maybePromiseResult = callback();
-  } catch (e) {
-    finishCheckIn('error');
-    throw e;
-  }
-
-  if (isThenable(maybePromiseResult)) {
-    Promise.resolve(maybePromiseResult).then(
-      () => {
-        finishCheckIn('ok');
-      },
-      () => {
-        finishCheckIn('error');
-      },
-    );
-  } else {
-    finishCheckIn('ok');
-  }
-
-  return maybePromiseResult;
-}
-
-/**
- * Call `flush()` on the current client, if there is one. See {@link Client.flush}.
- *
- * @param timeout Maximum time in ms the client should wait to flush its event queue. Omitting this parameter will cause
- * the client to wait until all events are sent before resolving the promise.
- * @returns A promise which resolves to `true` if the queue successfully drains before the timeout, or `false` if it
- * doesn't (or if there's no client defined).
- */
-async function flush(timeout) {
-  const client = getCurrentHub().getClient();
-  if (client) {
-    return client.flush(timeout);
-  }
-  (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.warn('Cannot flush events. No client defined.');
-  return Promise.resolve(false);
-}
-
-/**
- * Call `close()` on the current client, if there is one. See {@link Client.close}.
- *
- * @param timeout Maximum time in ms the client should wait to flush its event queue before shutting down. Omitting this
- * parameter will cause the client to wait until all events are sent before disabling itself.
- * @returns A promise which resolves to `true` if the queue successfully drains before the timeout, or `false` if it
- * doesn't (or if there's no client defined).
- */
-async function close(timeout) {
-  const client = getCurrentHub().getClient();
-  if (client) {
-    return client.close(timeout);
-  }
-  (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.warn('Cannot flush events and disable SDK. No client defined.');
-  return Promise.resolve(false);
-}
-
-/**
- * This is the getter for lastEventId.
- *
- * @returns The last event id of a captured event.
- */
-function lastEventId() {
-  return getCurrentHub().lastEventId();
 }
 
 /**
@@ -6819,9 +7284,15 @@ function setupIntegrations(client, integrations) {
 function setupIntegration(client, integration, integrationIndex) {
   integrationIndex[integration.name] = integration;
 
+  // `setupOnce` is only called the first time
   if (installedIntegrations.indexOf(integration.name) === -1) {
     integration.setupOnce(addGlobalEventProcessor, getCurrentHub);
     installedIntegrations.push(integration.name);
+  }
+
+  // `setup` is run for each client
+  if (integration.setup && typeof integration.setup === 'function') {
+    integration.setup(client);
   }
 
   if (client.on && typeof integration.preprocessEvent === 'function') {
@@ -6851,311 +7322,6 @@ function findIndex(arr, callback) {
   }
 
   return -1;
-}
-
-/**
- * Adds common information to events.
- *
- * The information includes release and environment from `options`,
- * breadcrumbs and context (extra, tags and user) from the scope.
- *
- * Information that is already present in the event is never overwritten. For
- * nested objects, such as the context, keys are merged.
- *
- * Note: This also triggers callbacks for `addGlobalEventProcessor`, but not `beforeSend`.
- *
- * @param event The original event.
- * @param hint May contain additional information about the original exception.
- * @param scope A scope containing event metadata.
- * @returns A new event with more information.
- * @hidden
- */
-function prepareEvent(
-  options,
-  event,
-  hint,
-  scope,
-  client,
-) {
-  const { normalizeDepth = 3, normalizeMaxBreadth = 1000 } = options;
-  const prepared = {
-    ...event,
-    event_id: event.event_id || hint.event_id || uuid4(),
-    timestamp: event.timestamp || dateTimestampInSeconds(),
-  };
-  const integrations = hint.integrations || options.integrations.map(i => i.name);
-
-  applyClientOptions(prepared, options);
-  applyIntegrationsMetadata(prepared, integrations);
-
-  // Only put debug IDs onto frames for error events.
-  if (event.type === undefined) {
-    applyDebugIds(prepared, options.stackParser);
-  }
-
-  // If we have scope given to us, use it as the base for further modifications.
-  // This allows us to prevent unnecessary copying of data if `captureContext` is not provided.
-  let finalScope = scope;
-  if (hint.captureContext) {
-    finalScope = Scope.clone(finalScope).update(hint.captureContext);
-  }
-
-  // We prepare the result here with a resolved Event.
-  let result = resolvedSyncPromise(prepared);
-
-  const clientEventProcessors = client && client.getEventProcessors ? client.getEventProcessors() : [];
-
-  // This should be the last thing called, since we want that
-  // {@link Hub.addEventProcessor} gets the finished prepared event.
-  //
-  // We need to check for the existence of `finalScope.getAttachments`
-  // because `getAttachments` can be undefined if users are using an older version
-  // of `@sentry/core` that does not have the `getAttachments` method.
-  // See: https://github.com/getsentry/sentry-javascript/issues/5229
-  if (finalScope) {
-    // Collect attachments from the hint and scope
-    if (finalScope.getAttachments) {
-      const attachments = [...(hint.attachments || []), ...finalScope.getAttachments()];
-
-      if (attachments.length) {
-        hint.attachments = attachments;
-      }
-    }
-
-    // In case we have a hub we reassign it.
-    result = finalScope.applyToEvent(prepared, hint, clientEventProcessors);
-  } else {
-    // Apply client & global event processors even if there is no scope
-    // TODO (v8): Update the order to be Global > Client
-    result = notifyEventProcessors([...clientEventProcessors, ...getGlobalEventProcessors()], prepared, hint);
-  }
-
-  return result.then(evt => {
-    if (evt) {
-      // We apply the debug_meta field only after all event processors have ran, so that if any event processors modified
-      // file names (e.g.the RewriteFrames integration) the filename -> debug ID relationship isn't destroyed.
-      // This should not cause any PII issues, since we're only moving data that is already on the event and not adding
-      // any new data
-      applyDebugMeta(evt);
-    }
-
-    if (typeof normalizeDepth === 'number' && normalizeDepth > 0) {
-      return normalizeEvent(evt, normalizeDepth, normalizeMaxBreadth);
-    }
-    return evt;
-  });
-}
-
-/**
- *  Enhances event using the client configuration.
- *  It takes care of all "static" values like environment, release and `dist`,
- *  as well as truncating overly long values.
- * @param event event instance to be enhanced
- */
-function applyClientOptions(event, options) {
-  const { environment, release, dist, maxValueLength = 250 } = options;
-
-  if (!('environment' in event)) {
-    event.environment = 'environment' in options ? environment : DEFAULT_ENVIRONMENT;
-  }
-
-  if (event.release === undefined && release !== undefined) {
-    event.release = release;
-  }
-
-  if (event.dist === undefined && dist !== undefined) {
-    event.dist = dist;
-  }
-
-  if (event.message) {
-    event.message = truncate(event.message, maxValueLength);
-  }
-
-  const exception = event.exception && event.exception.values && event.exception.values[0];
-  if (exception && exception.value) {
-    exception.value = truncate(exception.value, maxValueLength);
-  }
-
-  const request = event.request;
-  if (request && request.url) {
-    request.url = truncate(request.url, maxValueLength);
-  }
-}
-
-const debugIdStackParserCache = new WeakMap();
-
-/**
- * Puts debug IDs into the stack frames of an error event.
- */
-function applyDebugIds(event, stackParser) {
-  const debugIdMap = GLOBAL_OBJ._sentryDebugIds;
-
-  if (!debugIdMap) {
-    return;
-  }
-
-  let debugIdStackFramesCache;
-  const cachedDebugIdStackFrameCache = debugIdStackParserCache.get(stackParser);
-  if (cachedDebugIdStackFrameCache) {
-    debugIdStackFramesCache = cachedDebugIdStackFrameCache;
-  } else {
-    debugIdStackFramesCache = new Map();
-    debugIdStackParserCache.set(stackParser, debugIdStackFramesCache);
-  }
-
-  // Build a map of filename -> debug_id
-  const filenameDebugIdMap = Object.keys(debugIdMap).reduce((acc, debugIdStackTrace) => {
-    let parsedStack;
-    const cachedParsedStack = debugIdStackFramesCache.get(debugIdStackTrace);
-    if (cachedParsedStack) {
-      parsedStack = cachedParsedStack;
-    } else {
-      parsedStack = stackParser(debugIdStackTrace);
-      debugIdStackFramesCache.set(debugIdStackTrace, parsedStack);
-    }
-
-    for (let i = parsedStack.length - 1; i >= 0; i--) {
-      const stackFrame = parsedStack[i];
-      if (stackFrame.filename) {
-        acc[stackFrame.filename] = debugIdMap[debugIdStackTrace];
-        break;
-      }
-    }
-    return acc;
-  }, {});
-
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-    event.exception.values.forEach(exception => {
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      exception.stacktrace.frames.forEach(frame => {
-        if (frame.filename) {
-          frame.debug_id = filenameDebugIdMap[frame.filename];
-        }
-      });
-    });
-  } catch (e) {
-    // To save bundle size we're just try catching here instead of checking for the existence of all the different objects.
-  }
-}
-
-/**
- * Moves debug IDs from the stack frames of an error event into the debug_meta field.
- */
-function applyDebugMeta(event) {
-  // Extract debug IDs and filenames from the stack frames on the event.
-  const filenameDebugIdMap = {};
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-    event.exception.values.forEach(exception => {
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      exception.stacktrace.frames.forEach(frame => {
-        if (frame.debug_id) {
-          if (frame.abs_path) {
-            filenameDebugIdMap[frame.abs_path] = frame.debug_id;
-          } else if (frame.filename) {
-            filenameDebugIdMap[frame.filename] = frame.debug_id;
-          }
-          delete frame.debug_id;
-        }
-      });
-    });
-  } catch (e) {
-    // To save bundle size we're just try catching here instead of checking for the existence of all the different objects.
-  }
-
-  if (Object.keys(filenameDebugIdMap).length === 0) {
-    return;
-  }
-
-  // Fill debug_meta information
-  event.debug_meta = event.debug_meta || {};
-  event.debug_meta.images = event.debug_meta.images || [];
-  const images = event.debug_meta.images;
-  Object.keys(filenameDebugIdMap).forEach(filename => {
-    images.push({
-      type: 'sourcemap',
-      code_file: filename,
-      debug_id: filenameDebugIdMap[filename],
-    });
-  });
-}
-
-/**
- * This function adds all used integrations to the SDK info in the event.
- * @param event The event that will be filled with all integrations.
- */
-function applyIntegrationsMetadata(event, integrationNames) {
-  if (integrationNames.length > 0) {
-    event.sdk = event.sdk || {};
-    event.sdk.integrations = [...(event.sdk.integrations || []), ...integrationNames];
-  }
-}
-
-/**
- * Applies `normalize` function on necessary `Event` attributes to make them safe for serialization.
- * Normalized keys:
- * - `breadcrumbs.data`
- * - `user`
- * - `contexts`
- * - `extra`
- * @param event Event
- * @returns Normalized event
- */
-function normalizeEvent(event, depth, maxBreadth) {
-  if (!event) {
-    return null;
-  }
-
-  const normalized = {
-    ...event,
-    ...(event.breadcrumbs && {
-      breadcrumbs: event.breadcrumbs.map(b => ({
-        ...b,
-        ...(b.data && {
-          data: normalize(b.data, depth, maxBreadth),
-        }),
-      })),
-    }),
-    ...(event.user && {
-      user: normalize(event.user, depth, maxBreadth),
-    }),
-    ...(event.contexts && {
-      contexts: normalize(event.contexts, depth, maxBreadth),
-    }),
-    ...(event.extra && {
-      extra: normalize(event.extra, depth, maxBreadth),
-    }),
-  };
-
-  // event.contexts.trace stores information about a Transaction. Similarly,
-  // event.spans[] stores information about child Spans. Given that a
-  // Transaction is conceptually a Span, normalization should apply to both
-  // Transactions and Spans consistently.
-  // For now the decision is to skip normalization of Transactions and Spans,
-  // so this block overwrites the normalized event to add back the original
-  // Transaction information prior to normalization.
-  if (event.contexts && event.contexts.trace && normalized.contexts) {
-    normalized.contexts.trace = event.contexts.trace;
-
-    // event.contexts.trace.data may contain circular/dangerous data so we need to normalize it
-    if (event.contexts.trace.data) {
-      normalized.contexts.trace.data = normalize(event.contexts.trace.data, depth, maxBreadth);
-    }
-  }
-
-  // event.spans[].data may contain circular/dangerous data so we need to normalize it
-  if (event.spans) {
-    normalized.spans = event.spans.map(span => {
-      // We cannot use the spread operator here because `toJSON` on `span` is non-enumerable
-      if (span.data) {
-        span.data = normalize(span.data, depth, maxBreadth);
-      }
-      return span;
-    });
-  }
-
-  return normalized;
 }
 
 const ALREADY_SEEN_ERROR = "Not capturing exception because it's already been captured.";
@@ -8255,7 +8421,7 @@ function getEventForEnvelopeItem(item, type) {
   return Array.isArray(item) ? (item )[1] : undefined;
 }
 
-const SDK_VERSION = '7.81.1';
+const SDK_VERSION = '7.82.0';
 
 let originalFunctionToString;
 
@@ -8616,308 +8782,6 @@ class DenoClient extends ServerRuntimeClient {
 
 const WINDOW = GLOBAL_OBJ ;
 
-/* eslint-disable @typescript-eslint/no-unsafe-member-access */
-
-/** maxStringLength gets capped to prevent 100 breadcrumbs exceeding 1MB event payload size */
-const MAX_ALLOWED_STRING_LENGTH = 1024;
-
-/**
- * Default Breadcrumbs instrumentations
- * TODO: Deprecated - with v6, this will be renamed to `Instrument`
- */
-class Breadcrumbs  {
-  /**
-   * @inheritDoc
-   */
-   static __initStatic() {this.id = 'Breadcrumbs';}
-
-  /**
-   * @inheritDoc
-   */
-
-  /**
-   * Options of the breadcrumbs integration.
-   */
-  // This field is public, because we use it in the browser client to check if the `sentry` option is enabled.
-
-  /**
-   * @inheritDoc
-   */
-   constructor(options) {
-    this.name = Breadcrumbs.id;
-    this.options = {
-      console: true,
-      dom: true,
-      fetch: true,
-      history: true,
-      sentry: true,
-      xhr: true,
-      ...options,
-    };
-  }
-
-  /**
-   * Instrument browser built-ins w/ breadcrumb capturing
-   *  - Console API
-   *  - DOM API (click/typing)
-   *  - XMLHttpRequest API
-   *  - Fetch API
-   *  - History API
-   */
-   setupOnce() {
-    if (this.options.console) {
-      addInstrumentationHandler('console', _consoleBreadcrumb);
-    }
-    if (this.options.dom) {
-      addInstrumentationHandler('dom', _domBreadcrumb(this.options.dom));
-    }
-    if (this.options.xhr) {
-      addInstrumentationHandler('xhr', _xhrBreadcrumb);
-    }
-    if (this.options.fetch) {
-      addInstrumentationHandler('fetch', _fetchBreadcrumb);
-    }
-    if (this.options.history) {
-      addInstrumentationHandler('history', _historyBreadcrumb);
-    }
-    if (this.options.sentry) {
-      const client = getCurrentHub().getClient();
-      client && client.on && client.on('beforeSendEvent', addSentryBreadcrumb);
-    }
-  }
-} Breadcrumbs.__initStatic();
-
-/**
- * Adds a breadcrumb for Sentry events or transactions if this option is enabled.
- */
-function addSentryBreadcrumb(event) {
-  getCurrentHub().addBreadcrumb(
-    {
-      category: `sentry.${event.type === 'transaction' ? 'transaction' : 'event'}`,
-      event_id: event.event_id,
-      level: event.level,
-      message: getEventDescription(event),
-    },
-    {
-      event,
-    },
-  );
-}
-
-/**
- * A HOC that creaes a function that creates breadcrumbs from DOM API calls.
- * This is a HOC so that we get access to dom options in the closure.
- */
-function _domBreadcrumb(dom) {
-  function _innerDomBreadcrumb(handlerData) {
-    let target;
-    let keyAttrs = typeof dom === 'object' ? dom.serializeAttribute : undefined;
-
-    let maxStringLength =
-      typeof dom === 'object' && typeof dom.maxStringLength === 'number' ? dom.maxStringLength : undefined;
-    if (maxStringLength && maxStringLength > MAX_ALLOWED_STRING_LENGTH) {
-      (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) &&
-        logger.warn(
-          `\`dom.maxStringLength\` cannot exceed ${MAX_ALLOWED_STRING_LENGTH}, but a value of ${maxStringLength} was configured. Sentry will use ${MAX_ALLOWED_STRING_LENGTH} instead.`,
-        );
-      maxStringLength = MAX_ALLOWED_STRING_LENGTH;
-    }
-
-    if (typeof keyAttrs === 'string') {
-      keyAttrs = [keyAttrs];
-    }
-
-    // Accessing event.target can throw (see getsentry/raven-js#838, #768)
-    try {
-      const event = handlerData.event ;
-      target = _isEvent(event)
-        ? htmlTreeAsString(event.target, { keyAttrs, maxStringLength })
-        : htmlTreeAsString(event, { keyAttrs, maxStringLength });
-    } catch (e) {
-      target = '<unknown>';
-    }
-
-    if (target.length === 0) {
-      return;
-    }
-
-    getCurrentHub().addBreadcrumb(
-      {
-        category: `ui.${handlerData.name}`,
-        message: target,
-      },
-      {
-        event: handlerData.event,
-        name: handlerData.name,
-        global: handlerData.global,
-      },
-    );
-  }
-
-  return _innerDomBreadcrumb;
-}
-
-/**
- * Creates breadcrumbs from console API calls
- */
-function _consoleBreadcrumb(handlerData) {
-  const breadcrumb = {
-    category: 'console',
-    data: {
-      arguments: handlerData.args,
-      logger: 'console',
-    },
-    level: severityLevelFromString(handlerData.level),
-    message: safeJoin(handlerData.args, ' '),
-  };
-
-  if (handlerData.level === 'assert') {
-    if (handlerData.args[0] === false) {
-      breadcrumb.message = `Assertion failed: ${safeJoin(handlerData.args.slice(1), ' ') || 'console.assert'}`;
-      breadcrumb.data.arguments = handlerData.args.slice(1);
-    } else {
-      // Don't capture a breadcrumb for passed assertions
-      return;
-    }
-  }
-
-  getCurrentHub().addBreadcrumb(breadcrumb, {
-    input: handlerData.args,
-    level: handlerData.level,
-  });
-}
-
-/**
- * Creates breadcrumbs from XHR API calls
- */
-function _xhrBreadcrumb(handlerData) {
-  const { startTimestamp, endTimestamp } = handlerData;
-
-  const sentryXhrData = handlerData.xhr[SENTRY_XHR_DATA_KEY];
-
-  // We only capture complete, non-sentry requests
-  if (!startTimestamp || !endTimestamp || !sentryXhrData) {
-    return;
-  }
-
-  const { method, url, status_code, body } = sentryXhrData;
-
-  const data = {
-    method,
-    url,
-    status_code,
-  };
-
-  const hint = {
-    xhr: handlerData.xhr,
-    input: body,
-    startTimestamp,
-    endTimestamp,
-  };
-
-  getCurrentHub().addBreadcrumb(
-    {
-      category: 'xhr',
-      data,
-      type: 'http',
-    },
-    hint,
-  );
-}
-
-/**
- * Creates breadcrumbs from fetch API calls
- */
-function _fetchBreadcrumb(handlerData) {
-  const { startTimestamp, endTimestamp } = handlerData;
-
-  // We only capture complete fetch requests
-  if (!endTimestamp) {
-    return;
-  }
-
-  if (handlerData.fetchData.url.match(/sentry_key/) && handlerData.fetchData.method === 'POST') {
-    // We will not create breadcrumbs for fetch requests that contain `sentry_key` (internal sentry requests)
-    return;
-  }
-
-  if (handlerData.error) {
-    const data = handlerData.fetchData;
-    const hint = {
-      data: handlerData.error,
-      input: handlerData.args,
-      startTimestamp,
-      endTimestamp,
-    };
-
-    getCurrentHub().addBreadcrumb(
-      {
-        category: 'fetch',
-        data,
-        level: 'error',
-        type: 'http',
-      },
-      hint,
-    );
-  } else {
-    const data = {
-      ...handlerData.fetchData,
-      status_code: handlerData.response && handlerData.response.status,
-    };
-    const hint = {
-      input: handlerData.args,
-      response: handlerData.response,
-      startTimestamp,
-      endTimestamp,
-    };
-    getCurrentHub().addBreadcrumb(
-      {
-        category: 'fetch',
-        data,
-        type: 'http',
-      },
-      hint,
-    );
-  }
-}
-
-/**
- * Creates breadcrumbs from history API calls
- */
-function _historyBreadcrumb(handlerData) {
-  let from = handlerData.from;
-  let to = handlerData.to;
-  const parsedLoc = parseUrl(WINDOW.location.href);
-  let parsedFrom = parseUrl(from);
-  const parsedTo = parseUrl(to);
-
-  // Initial pushState doesn't provide `from` information
-  if (!parsedFrom.path) {
-    parsedFrom = parsedLoc;
-  }
-
-  // Use only the path component of the URL if the URL matches the current
-  // document (almost all the time when using pushState)
-  if (parsedLoc.protocol === parsedTo.protocol && parsedLoc.host === parsedTo.host) {
-    to = parsedTo.relative;
-  }
-  if (parsedLoc.protocol === parsedFrom.protocol && parsedLoc.host === parsedFrom.host) {
-    from = parsedFrom.relative;
-  }
-
-  getCurrentHub().addBreadcrumb({
-    category: 'navigation',
-    data: {
-      from,
-      to,
-    },
-  });
-}
-
-function _isEvent(event) {
-  return !!event && !!(event ).target;
-}
-
 /** Deduplication filter */
 class Dedupe  {
   /**
@@ -9122,6 +8986,311 @@ function _getFramesFromEvent(event) {
   return undefined;
 }
 
+/* eslint-disable max-lines */
+
+/** JSDoc */
+
+/** maxStringLength gets capped to prevent 100 breadcrumbs exceeding 1MB event payload size */
+const MAX_ALLOWED_STRING_LENGTH = 1024;
+
+/**
+ * Default Breadcrumbs instrumentations
+ * TODO: Deprecated - with v6, this will be renamed to `Instrument`
+ */
+class Breadcrumbs  {
+  /**
+   * @inheritDoc
+   */
+   static __initStatic() {this.id = 'Breadcrumbs';}
+
+  /**
+   * @inheritDoc
+   */
+
+  /**
+   * Options of the breadcrumbs integration.
+   */
+  // This field is public, because we use it in the browser client to check if the `sentry` option is enabled.
+
+  /**
+   * @inheritDoc
+   */
+   constructor(options) {
+    this.name = Breadcrumbs.id;
+    this.options = {
+      console: true,
+      dom: true,
+      fetch: true,
+      history: true,
+      sentry: true,
+      xhr: true,
+      ...options,
+    };
+  }
+
+  /**
+   * Instrument browser built-ins w/ breadcrumb capturing
+   *  - Console API
+   *  - DOM API (click/typing)
+   *  - XMLHttpRequest API
+   *  - Fetch API
+   *  - History API
+   */
+   setupOnce() {
+    if (this.options.console) {
+      addConsoleInstrumentationHandler(_consoleBreadcrumb);
+    }
+    if (this.options.dom) {
+      addClickKeypressInstrumentationHandler(_domBreadcrumb(this.options.dom));
+    }
+    if (this.options.xhr) {
+      addXhrInstrumentationHandler(_xhrBreadcrumb);
+    }
+    if (this.options.fetch) {
+      addFetchInstrumentationHandler(_fetchBreadcrumb);
+    }
+    if (this.options.history) {
+      addHistoryInstrumentationHandler(_historyBreadcrumb);
+    }
+    if (this.options.sentry) {
+      const client = getClient();
+      client && client.on && client.on('beforeSendEvent', addSentryBreadcrumb);
+    }
+  }
+} Breadcrumbs.__initStatic();
+
+/**
+ * Adds a breadcrumb for Sentry events or transactions if this option is enabled.
+ */
+function addSentryBreadcrumb(event) {
+  getCurrentHub().addBreadcrumb(
+    {
+      category: `sentry.${event.type === 'transaction' ? 'transaction' : 'event'}`,
+      event_id: event.event_id,
+      level: event.level,
+      message: getEventDescription(event),
+    },
+    {
+      event,
+    },
+  );
+}
+
+/**
+ * A HOC that creaes a function that creates breadcrumbs from DOM API calls.
+ * This is a HOC so that we get access to dom options in the closure.
+ */
+function _domBreadcrumb(dom) {
+  function _innerDomBreadcrumb(handlerData) {
+    let target;
+    let keyAttrs = typeof dom === 'object' ? dom.serializeAttribute : undefined;
+
+    let maxStringLength =
+      typeof dom === 'object' && typeof dom.maxStringLength === 'number' ? dom.maxStringLength : undefined;
+    if (maxStringLength && maxStringLength > MAX_ALLOWED_STRING_LENGTH) {
+      (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) &&
+        logger.warn(
+          `\`dom.maxStringLength\` cannot exceed ${MAX_ALLOWED_STRING_LENGTH}, but a value of ${maxStringLength} was configured. Sentry will use ${MAX_ALLOWED_STRING_LENGTH} instead.`,
+        );
+      maxStringLength = MAX_ALLOWED_STRING_LENGTH;
+    }
+
+    if (typeof keyAttrs === 'string') {
+      keyAttrs = [keyAttrs];
+    }
+
+    // Accessing event.target can throw (see getsentry/raven-js#838, #768)
+    try {
+      const event = handlerData.event ;
+      target = _isEvent(event)
+        ? htmlTreeAsString(event.target, { keyAttrs, maxStringLength })
+        : htmlTreeAsString(event, { keyAttrs, maxStringLength });
+    } catch (e) {
+      target = '<unknown>';
+    }
+
+    if (target.length === 0) {
+      return;
+    }
+
+    getCurrentHub().addBreadcrumb(
+      {
+        category: `ui.${handlerData.name}`,
+        message: target,
+      },
+      {
+        event: handlerData.event,
+        name: handlerData.name,
+        global: handlerData.global,
+      },
+    );
+  }
+
+  return _innerDomBreadcrumb;
+}
+
+/**
+ * Creates breadcrumbs from console API calls
+ */
+function _consoleBreadcrumb(handlerData) {
+  const breadcrumb = {
+    category: 'console',
+    data: {
+      arguments: handlerData.args,
+      logger: 'console',
+    },
+    level: severityLevelFromString(handlerData.level),
+    message: safeJoin(handlerData.args, ' '),
+  };
+
+  if (handlerData.level === 'assert') {
+    if (handlerData.args[0] === false) {
+      breadcrumb.message = `Assertion failed: ${safeJoin(handlerData.args.slice(1), ' ') || 'console.assert'}`;
+      breadcrumb.data.arguments = handlerData.args.slice(1);
+    } else {
+      // Don't capture a breadcrumb for passed assertions
+      return;
+    }
+  }
+
+  getCurrentHub().addBreadcrumb(breadcrumb, {
+    input: handlerData.args,
+    level: handlerData.level,
+  });
+}
+
+/**
+ * Creates breadcrumbs from XHR API calls
+ */
+function _xhrBreadcrumb(handlerData) {
+  const { startTimestamp, endTimestamp } = handlerData;
+
+  const sentryXhrData = handlerData.xhr[SENTRY_XHR_DATA_KEY];
+
+  // We only capture complete, non-sentry requests
+  if (!startTimestamp || !endTimestamp || !sentryXhrData) {
+    return;
+  }
+
+  const { method, url, status_code, body } = sentryXhrData;
+
+  const data = {
+    method,
+    url,
+    status_code,
+  };
+
+  const hint = {
+    xhr: handlerData.xhr,
+    input: body,
+    startTimestamp,
+    endTimestamp,
+  };
+
+  getCurrentHub().addBreadcrumb(
+    {
+      category: 'xhr',
+      data,
+      type: 'http',
+    },
+    hint,
+  );
+}
+
+/**
+ * Creates breadcrumbs from fetch API calls
+ */
+function _fetchBreadcrumb(handlerData) {
+  const { startTimestamp, endTimestamp } = handlerData;
+
+  // We only capture complete fetch requests
+  if (!endTimestamp) {
+    return;
+  }
+
+  if (handlerData.fetchData.url.match(/sentry_key/) && handlerData.fetchData.method === 'POST') {
+    // We will not create breadcrumbs for fetch requests that contain `sentry_key` (internal sentry requests)
+    return;
+  }
+
+  if (handlerData.error) {
+    const data = handlerData.fetchData;
+    const hint = {
+      data: handlerData.error,
+      input: handlerData.args,
+      startTimestamp,
+      endTimestamp,
+    };
+
+    getCurrentHub().addBreadcrumb(
+      {
+        category: 'fetch',
+        data,
+        level: 'error',
+        type: 'http',
+      },
+      hint,
+    );
+  } else {
+    const response = handlerData.response ;
+    const data = {
+      ...handlerData.fetchData,
+      status_code: response && response.status,
+    };
+    const hint = {
+      input: handlerData.args,
+      response,
+      startTimestamp,
+      endTimestamp,
+    };
+    getCurrentHub().addBreadcrumb(
+      {
+        category: 'fetch',
+        data,
+        type: 'http',
+      },
+      hint,
+    );
+  }
+}
+
+/**
+ * Creates breadcrumbs from history API calls
+ */
+function _historyBreadcrumb(handlerData) {
+  let from = handlerData.from;
+  let to = handlerData.to;
+  const parsedLoc = parseUrl(WINDOW.location.href);
+  let parsedFrom = from ? parseUrl(from) : undefined;
+  const parsedTo = parseUrl(to);
+
+  // Initial pushState doesn't provide `from` information
+  if (!parsedFrom || !parsedFrom.path) {
+    parsedFrom = parsedLoc;
+  }
+
+  // Use only the path component of the URL if the URL matches the current
+  // document (almost all the time when using pushState)
+  if (parsedLoc.protocol === parsedTo.protocol && parsedLoc.host === parsedTo.host) {
+    to = parsedTo.relative;
+  }
+  if (parsedLoc.protocol === parsedFrom.protocol && parsedLoc.host === parsedFrom.host) {
+    from = parsedFrom.relative;
+  }
+
+  getCurrentHub().addBreadcrumb({
+    category: 'navigation',
+    data: {
+      from,
+      to,
+    },
+  });
+}
+
+function _isEvent(event) {
+  return !!event && !!(event ).target;
+}
+
 function getOSName() {
   switch (Deno.build.os) {
     case 'darwin':
@@ -9251,7 +9420,13 @@ function installGlobalErrorHandler() {
 
     event.level = 'fatal';
 
-    addMechanismAndCapture(hub, error, event, 'error');
+    hub.captureEvent(event, {
+      originalException: error,
+      mechanism: {
+        handled: false,
+        type: 'error',
+      },
+    });
 
     // Stop the app from exiting for now
     data.preventDefault();
@@ -9288,7 +9463,13 @@ function installGlobalUnhandledRejectionHandler() {
 
     event.level = 'fatal';
 
-    addMechanismAndCapture(hub, error , event, 'unhandledrejection');
+    hub.captureEvent(event, {
+      originalException: error,
+      mechanism: {
+        handled: false,
+        type: 'unhandledrejection',
+      },
+    });
 
     // Stop the app from exiting for now
     e.preventDefault();
@@ -9319,16 +9500,6 @@ function eventFromRejectionWithPrimitive(reason) {
       ],
     },
   };
-}
-
-function addMechanismAndCapture(hub, error, event, type) {
-  addExceptionMechanism(event, {
-    handled: false,
-    type,
-  });
-  hub.captureEvent(event, {
-    originalException: error,
-  });
 }
 
 function getHubAndOptions() {
@@ -9689,5 +9860,5 @@ const INTEGRATIONS = {
   ...DenoIntegrations,
 };
 
-export { DenoClient, Hub, INTEGRATIONS as Integrations, SDK_VERSION, Scope, addBreadcrumb, addGlobalEventProcessor, captureCheckIn, captureEvent, captureException, captureMessage, close, configureScope, continueTrace, createTransport, defaultIntegrations, extractTraceparentData, flush, getActiveSpan, getActiveTransaction, getCurrentHub, getHubFromCarrier, init, lastEventId, makeMain, runWithAsyncContext, setContext, setExtra, setExtras, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSpan, startSpanManual, startTransaction, trace, withMonitor, withScope };
+export { DenoClient, Hub, INTEGRATIONS as Integrations, SDK_VERSION, Scope, addBreadcrumb, addGlobalEventProcessor, captureCheckIn, captureEvent, captureException, captureMessage, close, configureScope, continueTrace, createTransport, defaultIntegrations, extractTraceparentData, flush, getActiveSpan, getActiveTransaction, getClient, getCurrentHub, getHubFromCarrier, init, lastEventId, makeMain, runWithAsyncContext, setContext, setExtra, setExtras, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSpan, startSpanManual, startTransaction, trace, withMonitor, withScope };
 //# sourceMappingURL=index.mjs.map

@@ -647,6 +647,7 @@ interface TransactionEvent extends Event {
 interface EventHint {
     event_id?: string;
     captureContext?: CaptureContext;
+    mechanism?: Partial<Mechanism>;
     syntheticException?: Error | null;
     originalException?: unknown;
     attachments?: Attachment[];
@@ -1582,6 +1583,15 @@ interface Integration {
      */
     setupOnce(addGlobalEventProcessor: (callback: EventProcessor) => void, getCurrentHub: () => Hub$1): void;
     /**
+     * Set up an integration for the given client.
+     * Receives the client as argument.
+     *
+     * Whenever possible, prefer this over `setupOnce`, as that is only run for the first client,
+     * whereas `setup` runs for each client. Only truly global things (e.g. registering global handlers)
+     * should be done in `setupOnce`.
+     */
+    setup?(client: Client): void;
+    /**
      * An optional hook that allows to preprocess an event _before_ it is passed to all other event processors.
      */
     preprocessEvent?(event: Event, hint: EventHint | undefined, client: Client): void;
@@ -2155,27 +2165,18 @@ interface PromiseBuffer<T> {
     drain(timeout?: number): PromiseLike<boolean>;
 }
 
-/**
- * The functions here, which enrich an event with request data, are mostly for use in Node, but are safe for use in a
- * browser context. They live here in `@sentry/utils` rather than in `@sentry/node` so that they can be used in
- * frameworks (like nextjs), which, because of SSR, run the same code in both Node and browser contexts.
- *
- * TODO (v8 / #5257): Remove the note below
- * Note that for now, the tests for this code have to live in `@sentry/node`, since they test both these functions and
- * the backwards-compatibility-preserving wrappers which still live in `handlers.ts` there.
- */
-
-type TransactionNamingScheme = 'path' | 'methodPath' | 'handler';
+declare const DEFAULT_REQUEST_INCLUDES: string[];
+declare const DEFAULT_USER_INCLUDES: string[];
 /**
  * Options deciding what parts of the request to use when enhancing an event
  */
-interface AddRequestDataToEventOptions {
+type AddRequestDataToEventOptions = {
     /** Flags controlling whether each type of data should be added to the event */
     include?: {
         ip?: boolean;
-        request?: boolean | string[];
+        request?: boolean | Array<(typeof DEFAULT_REQUEST_INCLUDES)[number]>;
         transaction?: boolean | TransactionNamingScheme;
-        user?: boolean | string[];
+        user?: boolean | Array<(typeof DEFAULT_USER_INCLUDES)[number]>;
     };
     /** Injected platform-specific dependencies */
     deps?: {
@@ -2188,7 +2189,8 @@ interface AddRequestDataToEventOptions {
             };
         };
     };
-}
+};
+type TransactionNamingScheme = 'path' | 'methodPath' | 'handler';
 
 /**
  * Takes a baggage header and turns it into Dynamic Sampling Context, by extracting all the "sentry-" prefixed values
@@ -3336,14 +3338,10 @@ declare function startInactiveSpan(context: TransactionContext): Span | undefine
  * Returns the currently active span.
  */
 declare function getActiveSpan(): Span | undefined;
-/**
- * Continue a trace from `sentry-trace` and `baggage` values.
- * These values can be obtained from incoming request headers,
- * or in the browser from `<meta name="sentry-trace">` and `<meta name="baggage">` HTML tags.
- *
- * It also takes an optional `request` option, which if provided will also be added to the scope & transaction metadata.
- * The callback receives a transactionContext that may be used for `startTransaction` or `startSpan`.
- */
+declare function continueTrace({ sentryTrace, baggage, }: {
+    sentryTrace: Parameters<typeof tracingContextFromHeaders>[0];
+    baggage: Parameters<typeof tracingContextFromHeaders>[1];
+}): Partial<TransactionContext>;
 declare function continueTrace<V>({ sentryTrace, baggage, }: {
     sentryTrace: Parameters<typeof tracingContextFromHeaders>[0];
     baggage: Parameters<typeof tracingContextFromHeaders>[1];
@@ -3355,13 +3353,22 @@ declare function continueTrace<V>({ sentryTrace, baggage, }: {
 declare function setMeasurement(name: string, value: number, unit: MeasurementUnit): void;
 
 /**
- * Captures an exception event and sends it to Sentry.
- *
- * @param exception An exception-like object.
- * @param captureContext Additional scope data to apply to exception event.
- * @returns The generated eventId.
+ * This type makes sure that we get either a CaptureContext, OR an EventHint.
+ * It does not allow mixing them, which could lead to unexpected outcomes, e.g. this is disallowed:
+ * { user: { id: '123' }, mechanism: { handled: false } }
  */
-declare function captureException(exception: any, captureContext?: CaptureContext): ReturnType<Hub['captureException']>;
+type ExclusiveEventHintOrCaptureContext = (CaptureContext & Partial<{
+    [key in keyof EventHint]: never;
+}>) | (EventHint & Partial<{
+    [key in keyof ScopeContext]: never;
+}>);
+
+/**
+ * Captures an exception event and sends it to Sentry.
+ * This accepts an event hint as optional second parameter.
+ * Alternatively, you can also pass a CaptureContext directly as second parameter.
+ */
+declare function captureException(exception: any, hint?: ExclusiveEventHintOrCaptureContext): ReturnType<Hub['captureException']>;
 /**
  * Captures a message event and sends it to Sentry.
  *
@@ -3507,6 +3514,10 @@ declare function close(timeout?: number): Promise<boolean>;
  * @returns The last event id of a captured event.
  */
 declare function lastEventId(): string | undefined;
+/**
+ * Get the currently active client.
+ */
+declare function getClient<C extends Client>(): C | undefined;
 
 /**
  * Add a EventProcessor to be kept globally.
@@ -3522,7 +3533,7 @@ declare function addGlobalEventProcessor(callback: EventProcessor): void;
  */
 declare function createTransport(options: InternalBaseTransportOptions, makeRequest: TransportRequestExecutor, buffer?: PromiseBuffer<void | TransportMakeRequestResponse>): Transport;
 
-declare const SDK_VERSION = "7.81.1";
+declare const SDK_VERSION = "7.82.0";
 
 /** Patch toString calls to return proper name for wrapped functions */
 declare class FunctionToString implements Integration {
@@ -3834,4 +3845,4 @@ declare const INTEGRATIONS: {
     LinkedErrors: typeof LinkedErrors;
 };
 
-export { type AddRequestDataToEventOptions, type Breadcrumb, type BreadcrumbHint, DenoClient, type DenoOptions, type Event, type EventHint, type Exception, Hub, INTEGRATIONS as Integrations, type PolymorphicRequest, type Request, SDK_VERSION, Scope, type SdkInfo, type Session, Severity, type SeverityLevel, type Span$1 as Span, type SpanStatusType, type StackFrame, type Stacktrace, type Thread, type Transaction, type User, addBreadcrumb, addGlobalEventProcessor, captureCheckIn, captureEvent, captureException, captureMessage, close, configureScope, continueTrace, createTransport, defaultIntegrations, extractTraceparentData, flush, getActiveSpan, getActiveTransaction, getCurrentHub, getHubFromCarrier, init, lastEventId, makeMain, runWithAsyncContext, setContext, setExtra, setExtras, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSpan, startSpanManual, startTransaction, trace, withMonitor, withScope };
+export { type AddRequestDataToEventOptions, type Breadcrumb, type BreadcrumbHint, DenoClient, type DenoOptions, type Event, type EventHint, type Exception, Hub, INTEGRATIONS as Integrations, type PolymorphicRequest, type Request, SDK_VERSION, Scope, type SdkInfo, type Session, Severity, type SeverityLevel, type Span$1 as Span, type SpanStatusType, type StackFrame, type Stacktrace, type Thread, type Transaction, type User, addBreadcrumb, addGlobalEventProcessor, captureCheckIn, captureEvent, captureException, captureMessage, close, configureScope, continueTrace, createTransport, defaultIntegrations, extractTraceparentData, flush, getActiveSpan, getActiveTransaction, getClient, getCurrentHub, getHubFromCarrier, init, lastEventId, makeMain, runWithAsyncContext, setContext, setExtra, setExtras, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSpan, startSpanManual, startTransaction, trace, withMonitor, withScope };
