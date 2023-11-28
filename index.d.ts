@@ -2156,9 +2156,6 @@ interface Client<O extends ClientOptions = ClientOptions> {
     }): void;
 }
 
-
-//# sourceMappingURL=globals.d.ts.map
-
 interface PromiseBuffer<T> {
     $: Array<PromiseLike<T>>;
     add(taskProducer: () => PromiseLike<T>): PromiseLike<T>;
@@ -3533,7 +3530,7 @@ declare function addGlobalEventProcessor(callback: EventProcessor): void;
  */
 declare function createTransport(options: InternalBaseTransportOptions, makeRequest: TransportRequestExecutor, buffer?: PromiseBuffer<void | TransportMakeRequestResponse>): Transport;
 
-declare const SDK_VERSION = "7.82.0";
+declare const SDK_VERSION = "7.83.0";
 
 /** Patch toString calls to return proper name for wrapped functions */
 declare class FunctionToString implements Integration {

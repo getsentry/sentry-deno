@@ -612,6 +612,13 @@ function _htmlElementAsString(el, keyAttrs) {
   return out.join('');
 }
 
+/**
+ * This serves as a build time flag that will be true by default, but false in non-debug builds or if users replace `__SENTRY_DEBUG__` in their generated code.
+ *
+ * ATTENTION: This constant must never cross package boundaries (i.e. be exported) to guarantee that it can be used for tree shaking.
+ */
+const DEBUG_BUILD$2 = (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__);
+
 /** Prefix for logging strings */
 const PREFIX = 'Sentry Logger ';
 
@@ -677,7 +684,7 @@ function makeLogger() {
     isEnabled: () => enabled,
   };
 
-  if ((typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__)) {
+  if (DEBUG_BUILD$2) {
     CONSOLE_LEVELS.forEach(name => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       logger[name] = (...args) => {
@@ -734,8 +741,10 @@ function dsnFromString(str) {
 
   if (!match) {
     // This should be logged to the console
-    // eslint-disable-next-line no-console
-    console.error(`Invalid Sentry Dsn: ${str}`);
+    consoleSandbox(() => {
+      // eslint-disable-next-line no-console
+      console.error(`Invalid Sentry Dsn: ${str}`);
+    });
     return undefined;
   }
 
@@ -772,7 +781,7 @@ function dsnFromComponents(components) {
 }
 
 function validateDsn(dsn) {
-  if (!(typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__)) {
+  if (!DEBUG_BUILD$2) {
     return true;
   }
 
@@ -880,7 +889,7 @@ function addNonEnumerableProperty(obj, name, value) {
       configurable: true,
     });
   } catch (o_O) {
-    (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.log(`Failed to add non-enumerable property "${name}" to object`, obj);
+    DEBUG_BUILD$2 && logger.log(`Failed to add non-enumerable property "${name}" to object`, obj);
   }
 }
 
@@ -1347,7 +1356,7 @@ function triggerHandlers(type, data) {
     try {
       handler(data);
     } catch (e) {
-      (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) &&
+      DEBUG_BUILD$2 &&
         logger.error(
           `Error while triggering instrumentation handler.\nType: ${type}\nName: ${getFunctionName(handler)}\nError:`,
           e,
@@ -1860,7 +1869,7 @@ function supportsNativeFetch() {
       }
       doc.head.removeChild(sandbox);
     } catch (err) {
-      (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) &&
+      DEBUG_BUILD$2 &&
         logger.warn('Could not create sandbox iframe for pure fetch check, bailing to window.fetch: ', err);
     }
   }
@@ -3815,6 +3824,13 @@ class LRUMap {
   }
 }
 
+/**
+ * This serves as a build time flag that will be true by default, but false in non-debug builds or if users replace `__SENTRY_DEBUG__` in their generated code.
+ *
+ * ATTENTION: This constant must never cross package boundaries (i.e. be exported) to guarantee that it can be used for tree shaking.
+ */
+const DEBUG_BUILD$1 = (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__);
+
 const DEFAULT_ENVIRONMENT = 'production';
 
 /**
@@ -3848,10 +3864,7 @@ function notifyEventProcessors(
     } else {
       const result = processor({ ...event }, hint) ;
 
-      (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) &&
-        processor.id &&
-        result === null &&
-        logger.log(`Event processor "${processor.id}" dropped event`);
+      DEBUG_BUILD$1 && processor.id && result === null && logger.log(`Event processor "${processor.id}" dropped event`);
 
       if (isThenable(result)) {
         void result
@@ -4865,7 +4878,7 @@ class Hub  {
     try {
       return client.getIntegration(integration);
     } catch (_oO) {
-      (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.warn(`Cannot retrieve integration ${integration.id} from the current Hub`);
+      DEBUG_BUILD$1 && logger.warn(`Cannot retrieve integration ${integration.id} from the current Hub`);
       return null;
     }
   }
@@ -4876,16 +4889,14 @@ class Hub  {
    startTransaction(context, customSamplingContext) {
     const result = this._callExtensionMethod('startTransaction', context, customSamplingContext);
 
-    if ((typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && !result) {
+    if (DEBUG_BUILD$1 && !result) {
       const client = this.getClient();
       if (!client) {
-        // eslint-disable-next-line no-console
-        console.warn(
+        logger.warn(
           "Tracing extension 'startTransaction' is missing. You should 'init' the SDK before calling 'startTransaction'",
         );
       } else {
-        // eslint-disable-next-line no-console
-        console.warn(`Tracing extension 'startTransaction' has not been added. Call 'addTracingExtensions' before calling 'init':
+        logger.warn(`Tracing extension 'startTransaction' has not been added. Call 'addTracingExtensions' before calling 'init':
 Sentry.addTracingExtensions();
 Sentry.init({...});
 `);
@@ -5008,7 +5019,7 @@ Sentry.init({...});
     if (sentry && sentry.extensions && typeof sentry.extensions[method] === 'function') {
       return sentry.extensions[method].apply(this, args);
     }
-    (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.warn(`Extension method ${method} couldn't be found, doing nothing.`);
+    DEBUG_BUILD$1 && logger.warn(`Extension method ${method} couldn't be found, doing nothing.`);
   }
 }
 
@@ -5164,7 +5175,7 @@ function errorCallback() {
   const activeTransaction = getActiveTransaction();
   if (activeTransaction) {
     const status = 'internal_error';
-    (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.log(`[Tracing] Transaction: ${status} -> Global error occured`);
+    DEBUG_BUILD$1 && logger.log(`[Tracing] Transaction: ${status} -> Global error occured`);
     activeTransaction.setStatus(status);
   }
 }
@@ -5335,7 +5346,7 @@ class Span  {
 
     childSpan.transaction = this.transaction;
 
-    if ((typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && childSpan.transaction) {
+    if (DEBUG_BUILD$1 && childSpan.transaction) {
       const opStr = (spanContext && spanContext.op) || '< unknown op >';
       const nameStr = childSpan.transaction.name || '< unknown name >';
       const idStr = childSpan.transaction.spanId;
@@ -5405,7 +5416,7 @@ class Span  {
    */
    finish(endTimestamp) {
     if (
-      (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) &&
+      DEBUG_BUILD$1 &&
       // Don't call this for transactions
       this.transaction &&
       this.transaction.spanId !== this.spanId
@@ -5775,7 +5786,7 @@ class Transaction extends Span  {
     }
 
     if (!this.name) {
-      (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.warn('Transaction has no name, falling back to `<unlabeled transaction>`.');
+      DEBUG_BUILD$1 && logger.warn('Transaction has no name, falling back to `<unlabeled transaction>`.');
       this.name = '<unlabeled transaction>';
     }
 
@@ -5789,7 +5800,7 @@ class Transaction extends Span  {
 
     if (this.sampled !== true) {
       // At this point if `sampled !== true` we want to discard the transaction.
-      (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.log('[Tracing] Discarding transaction because its trace was not chosen to be sampled.');
+      DEBUG_BUILD$1 && logger.log('[Tracing] Discarding transaction because its trace was not chosen to be sampled.');
 
       if (client) {
         client.recordDroppedEvent('sample_rate', 'transaction');
@@ -5837,7 +5848,7 @@ class Transaction extends Span  {
     const hasMeasurements = Object.keys(this._measurements).length > 0;
 
     if (hasMeasurements) {
-      (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) &&
+      DEBUG_BUILD$1 &&
         logger.log(
           '[Measurements] Adding measurements to transaction',
           JSON.stringify(this._measurements, undefined, 2),
@@ -5845,7 +5856,7 @@ class Transaction extends Span  {
       transaction.measurements = this._measurements;
     }
 
-    (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.log(`[Tracing] Finishing ${this.op} transaction: ${this.name}.`);
+    DEBUG_BUILD$1 && logger.log(`[Tracing] Finishing ${this.op} transaction: ${this.name}.`);
 
     return transaction;
   }
@@ -6393,9 +6404,9 @@ function captureCheckIn(checkIn, upsertMonitorConfig) {
   const scope = hub.getScope();
   const client = hub.getClient();
   if (!client) {
-    (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.warn('Cannot capture check-in. No client defined.');
+    DEBUG_BUILD$1 && logger.warn('Cannot capture check-in. No client defined.');
   } else if (!client.captureCheckIn) {
-    (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.warn('Cannot capture check-in. Client does not support sending check-ins.');
+    DEBUG_BUILD$1 && logger.warn('Cannot capture check-in. Client does not support sending check-ins.');
   } else {
     return client.captureCheckIn(checkIn, upsertMonitorConfig, scope);
   }
@@ -6459,7 +6470,7 @@ async function flush(timeout) {
   if (client) {
     return client.flush(timeout);
   }
-  (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.warn('Cannot flush events. No client defined.');
+  DEBUG_BUILD$1 && logger.warn('Cannot flush events. No client defined.');
   return Promise.resolve(false);
 }
 
@@ -6476,7 +6487,7 @@ async function close(timeout) {
   if (client) {
     return client.close(timeout);
   }
-  (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.warn('Cannot flush events and disable SDK. No client defined.');
+  DEBUG_BUILD$1 && logger.warn('Cannot flush events and disable SDK. No client defined.');
   return Promise.resolve(false);
 }
 
@@ -6569,14 +6580,14 @@ function sampleTransaction(
   // Since this is coming from the user (or from a function provided by the user), who knows what we might get. (The
   // only valid values are booleans or numbers between 0 and 1.)
   if (!isValidSampleRate(sampleRate)) {
-    (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.warn('[Tracing] Discarding transaction because of invalid sample rate.');
+    DEBUG_BUILD$1 && logger.warn('[Tracing] Discarding transaction because of invalid sample rate.');
     transaction.sampled = false;
     return transaction;
   }
 
   // if the function returned 0 (or false), or if `tracesSampleRate` is 0, it's a sign the transaction should be dropped
   if (!sampleRate) {
-    (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) &&
+    DEBUG_BUILD$1 &&
       logger.log(
         `[Tracing] Discarding transaction because ${
           typeof options.tracesSampler === 'function'
@@ -6594,7 +6605,7 @@ function sampleTransaction(
 
   // if we're not going to keep it, we're done
   if (!transaction.sampled) {
-    (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) &&
+    DEBUG_BUILD$1 &&
       logger.log(
         `[Tracing] Discarding transaction because it's not included in the random sample (sampling rate = ${Number(
           sampleRate,
@@ -6603,7 +6614,7 @@ function sampleTransaction(
     return transaction;
   }
 
-  (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.log(`[Tracing] starting ${transaction.op} transaction - ${transaction.name}`);
+  DEBUG_BUILD$1 && logger.log(`[Tracing] starting ${transaction.op} transaction - ${transaction.name}`);
   return transaction;
 }
 
@@ -6614,7 +6625,7 @@ function isValidSampleRate(rate) {
   // we need to check NaN explicitly because it's of type 'number' and therefore wouldn't get caught by this typecheck
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   if (isNaN$1(rate) || !(typeof rate === 'number' || typeof rate === 'boolean')) {
-    (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) &&
+    DEBUG_BUILD$1 &&
       logger.warn(
         `[Tracing] Given sample rate is invalid. Sample rate must be a boolean or a number between 0 and 1. Got ${JSON.stringify(
           rate,
@@ -6625,7 +6636,7 @@ function isValidSampleRate(rate) {
 
   // in case sampleRate is a boolean, it will get automatically cast to 1 if it's true and 0 if it's false
   if (rate < 0 || rate > 1) {
-    (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) &&
+    DEBUG_BUILD$1 &&
       logger.warn(`[Tracing] Given sample rate is invalid. Sample rate must be between 0 and 1. Got ${rate}.`);
     return false;
   }
@@ -6671,7 +6682,7 @@ function _startTransaction(
   const transactionInstrumenter = transactionContext.instrumenter || 'sentry';
 
   if (configInstrumenter !== transactionInstrumenter) {
-    (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) &&
+    DEBUG_BUILD$1 &&
       logger.error(
         `A transaction was started with instrumenter=\`${transactionInstrumenter}\`, but the SDK is configured with the \`${configInstrumenter}\` instrumenter.
 The transaction will not be sampled. Please use the ${configInstrumenter} instrumentation to start transactions.`,
@@ -6933,7 +6944,7 @@ function continueTrace(
 
   currentScope.setPropagationContext(propagationContext);
 
-  if ((typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && traceparentData) {
+  if (DEBUG_BUILD$1 && traceparentData) {
     logger.log(`[Tracing] Continuing trace ${traceparentData.traceId}.`);
   }
 
@@ -7310,7 +7321,7 @@ function setupIntegration(client, integration, integrationIndex) {
     client.addEventProcessor(processor);
   }
 
-  (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.log(`Integration installed: ${integration.name}`);
+  DEBUG_BUILD$1 && logger.log(`Integration installed: ${integration.name}`);
 }
 
 // Polyfill for Array.findIndex(), which is not supported in ES5
@@ -7389,7 +7400,7 @@ class BaseClient {
     if (options.dsn) {
       this._dsn = makeDsn(options.dsn);
     } else {
-      (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.warn('No DSN provided, client will not send events.');
+      DEBUG_BUILD$1 && logger.warn('No DSN provided, client will not send events.');
     }
 
     if (this._dsn) {
@@ -7409,7 +7420,7 @@ class BaseClient {
    captureException(exception, hint, scope) {
     // ensure we haven't captured this very object before
     if (checkOrSetAlreadyCaught(exception)) {
-      (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.log(ALREADY_SEEN_ERROR);
+      DEBUG_BUILD$1 && logger.log(ALREADY_SEEN_ERROR);
       return;
     }
 
@@ -7459,7 +7470,7 @@ class BaseClient {
    captureEvent(event, hint, scope) {
     // ensure we haven't captured this very object before
     if (hint && hint.originalException && checkOrSetAlreadyCaught(hint.originalException)) {
-      (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.log(ALREADY_SEEN_ERROR);
+      DEBUG_BUILD$1 && logger.log(ALREADY_SEEN_ERROR);
       return;
     }
 
@@ -7479,7 +7490,7 @@ class BaseClient {
    */
    captureSession(session) {
     if (!(typeof session.release === 'string')) {
-      (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.warn('Discarded session because of missing or non-string release');
+      DEBUG_BUILD$1 && logger.warn('Discarded session because of missing or non-string release');
     } else {
       this.sendSession(session);
       // After sending, we set init false to indicate it's not the first occurrence
@@ -7577,7 +7588,7 @@ class BaseClient {
     try {
       return (this._integrations[integration.id] ) || null;
     } catch (_oO) {
-      (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.warn(`Cannot retrieve integration ${integration.id} from the current Client`);
+      DEBUG_BUILD$1 && logger.warn(`Cannot retrieve integration ${integration.id} from the current Client`);
       return null;
     }
   }
@@ -7635,7 +7646,7 @@ class BaseClient {
       // would be `Partial<Record<SentryRequestType, Partial<Record<Outcome, number>>>>`
       // With typescript 4.1 we could even use template literal types
       const key = `${reason}:${category}`;
-      (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.log(`Adding outcome: "${key}"`);
+      DEBUG_BUILD$1 && logger.log(`Adding outcome: "${key}"`);
 
       // The following works because undefined + 1 === NaN and NaN is falsy
       this._outcomes[key] = this._outcomes[key] + 1 || 1;
@@ -7803,7 +7814,7 @@ class BaseClient {
         return finalEvent.event_id;
       },
       reason => {
-        if ((typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__)) {
+        if (DEBUG_BUILD$1) {
           // If something's gone wrong, log the error as a warning. If it's just us having used a `SentryError` for
           // control flow, log just the message (no stack) as a log-level log.
           const sentryError = reason ;
@@ -7938,10 +7949,10 @@ class BaseClient {
 
     if (this._isEnabled() && this._transport) {
       return this._transport.send(envelope).then(null, reason => {
-        (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.error('Error while sending event:', reason);
+        DEBUG_BUILD$1 && logger.error('Error while sending event:', reason);
       });
     } else {
-      (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.error('Transport disabled');
+      DEBUG_BUILD$1 && logger.error('Transport disabled');
     }
   }
 
@@ -8165,7 +8176,7 @@ class ServerRuntimeClient
    initSessionFlusher() {
     const { release, environment } = this._options;
     if (!release) {
-      (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.warn('Cannot initialise an instance of SessionFlusher if no release is provided!');
+      DEBUG_BUILD$1 && logger.warn('Cannot initialise an instance of SessionFlusher if no release is provided!');
     } else {
       this._sessionFlusher = new SessionFlusher(this, {
         release,
@@ -8184,7 +8195,7 @@ class ServerRuntimeClient
    captureCheckIn(checkIn, monitorConfig, scope) {
     const id = checkIn.status !== 'in_progress' && checkIn.checkInId ? checkIn.checkInId : uuid4();
     if (!this._isEnabled()) {
-      (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.warn('SDK not enabled, will not capture checkin.');
+      DEBUG_BUILD$1 && logger.warn('SDK not enabled, will not capture checkin.');
       return id;
     }
 
@@ -8227,7 +8238,7 @@ class ServerRuntimeClient
       this.getDsn(),
     );
 
-    (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.info('Sending checkin:', checkIn.monitorSlug, checkIn.status);
+    DEBUG_BUILD$1 && logger.info('Sending checkin:', checkIn.monitorSlug, checkIn.status);
     void this._sendEnvelope(envelope);
     return id;
   }
@@ -8238,7 +8249,7 @@ class ServerRuntimeClient
    */
    _captureRequestSession() {
     if (!this._sessionFlusher) {
-      (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.warn('Discarded request mode session because autoSessionTracking option was disabled');
+      DEBUG_BUILD$1 && logger.warn('Discarded request mode session because autoSessionTracking option was disabled');
     } else {
       this._sessionFlusher.incrementSessionStatusCount();
     }
@@ -8308,12 +8319,14 @@ function initAndBind(
   options,
 ) {
   if (options.debug === true) {
-    if ((typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__)) {
+    if (DEBUG_BUILD$1) {
       logger.enable();
     } else {
       // use `console.warn` rather than `logger.warn` since by non-debug bundles have all `logger.x` statements stripped
-      // eslint-disable-next-line no-console
-      console.warn('[Sentry] Cannot initialize SDK with `debug` option using a non-debug bundle.');
+      consoleSandbox(() => {
+        // eslint-disable-next-line no-console
+        console.warn('[Sentry] Cannot initialize SDK with `debug` option using a non-debug bundle.');
+      });
     }
   }
   const hub = getCurrentHub();
@@ -8377,7 +8390,7 @@ function createTransport(
         response => {
           // We don't want to throw on NOK responses, but we want to at least log them
           if (response.statusCode !== undefined && (response.statusCode < 200 || response.statusCode >= 300)) {
-            (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.warn(`Sentry responded with status code ${response.statusCode} to sent event.`);
+            DEBUG_BUILD$1 && logger.warn(`Sentry responded with status code ${response.statusCode} to sent event.`);
           }
 
           rateLimits = updateRateLimits(rateLimits, response);
@@ -8393,7 +8406,7 @@ function createTransport(
       result => result,
       error => {
         if (error instanceof SentryError) {
-          (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.error('Skipped sending event because buffer is full.');
+          DEBUG_BUILD$1 && logger.error('Skipped sending event because buffer is full.');
           recordEnvelopeLoss('queue_overflow');
           return resolvedSyncPromise();
         } else {
@@ -8421,7 +8434,7 @@ function getEventForEnvelopeItem(item, type) {
   return Array.isArray(item) ? (item )[1] : undefined;
 }
 
-const SDK_VERSION = '7.82.0';
+const SDK_VERSION = '7.83.0';
 
 let originalFunctionToString;
 
@@ -8533,26 +8546,26 @@ function _mergeOptions(
 /** JSDoc */
 function _shouldDropEvent$1(event, options) {
   if (options.ignoreInternal && _isSentryError(event)) {
-    (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) &&
+    DEBUG_BUILD$1 &&
       logger.warn(`Event dropped due to being internal Sentry Error.\nEvent: ${getEventDescription(event)}`);
     return true;
   }
   if (_isIgnoredError(event, options.ignoreErrors)) {
-    (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) &&
+    DEBUG_BUILD$1 &&
       logger.warn(
         `Event dropped due to being matched by \`ignoreErrors\` option.\nEvent: ${getEventDescription(event)}`,
       );
     return true;
   }
   if (_isIgnoredTransaction(event, options.ignoreTransactions)) {
-    (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) &&
+    DEBUG_BUILD$1 &&
       logger.warn(
         `Event dropped due to being matched by \`ignoreTransactions\` option.\nEvent: ${getEventDescription(event)}`,
       );
     return true;
   }
   if (_isDeniedUrl(event, options.denyUrls)) {
-    (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) &&
+    DEBUG_BUILD$1 &&
       logger.warn(
         `Event dropped due to being matched by \`denyUrls\` option.\nEvent: ${getEventDescription(
           event,
@@ -8561,7 +8574,7 @@ function _shouldDropEvent$1(event, options) {
     return true;
   }
   if (!_isAllowedUrl(event, options.allowUrls)) {
-    (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) &&
+    DEBUG_BUILD$1 &&
       logger.warn(
         `Event dropped due to not being matched by \`allowUrls\` option.\nEvent: ${getEventDescription(
           event,
@@ -8633,7 +8646,7 @@ function _getPossibleEventMessages(event) {
     }
   }
 
-  if ((typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && possibleMessages.length === 0) {
+  if (DEBUG_BUILD$1 && possibleMessages.length === 0) {
     logger.error(`Could not extract message for event ${getEventDescription(event)}`);
   }
 
@@ -8674,7 +8687,7 @@ function _getEventFilterUrl(event) {
     }
     return frames ? _getLastValidUrl(frames) : null;
   } catch (oO) {
-    (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.error(`Cannot extract url for event ${getEventDescription(event)}`);
+    DEBUG_BUILD$1 && logger.error(`Cannot extract url for event ${getEventDescription(event)}`);
     return null;
   }
 }
@@ -8782,6 +8795,13 @@ class DenoClient extends ServerRuntimeClient {
 
 const WINDOW = GLOBAL_OBJ ;
 
+/**
+ * This serves as a build time flag that will be true by default, but false in non-debug builds or if users replace `__SENTRY_DEBUG__` in their generated code.
+ *
+ * ATTENTION: This constant must never cross package boundaries (i.e. be exported) to guarantee that it can be used for tree shaking.
+ */
+const DEBUG_BUILD = (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__);
+
 /** Deduplication filter */
 class Dedupe  {
   /**
@@ -8819,7 +8839,7 @@ class Dedupe  {
     // Juuust in case something goes wrong
     try {
       if (_shouldDropEvent(currentEvent, this._previousEvent)) {
-        (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) && logger.warn('Event dropped due to being a duplicate of previously captured event.');
+        DEBUG_BUILD && logger.warn('Event dropped due to being a duplicate of previously captured event.');
         return null;
       }
     } catch (_oO) {} // eslint-disable-line no-empty
@@ -9088,7 +9108,7 @@ function _domBreadcrumb(dom) {
     let maxStringLength =
       typeof dom === 'object' && typeof dom.maxStringLength === 'number' ? dom.maxStringLength : undefined;
     if (maxStringLength && maxStringLength > MAX_ALLOWED_STRING_LENGTH) {
-      (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__) &&
+      DEBUG_BUILD &&
         logger.warn(
           `\`dom.maxStringLength\` cannot exceed ${MAX_ALLOWED_STRING_LENGTH}, but a value of ${maxStringLength} was configured. Sentry will use ${MAX_ALLOWED_STRING_LENGTH} instead.`,
         );
@@ -9732,9 +9752,11 @@ function makeFetchTransport(options) {
   const url = new URL(options.url);
 
   if (Deno.permissions.querySync({ name: 'net', host: url.host }).state !== 'granted') {
-    // eslint-disable-next-line no-console
-    console.warn(`Sentry SDK requires 'net' permission to send events.
-Run with '--allow-net=${url.host}' to grant the requires permissions.`);
+    consoleSandbox(() => {
+      // eslint-disable-next-line no-console
+      console.warn(`Sentry SDK requires 'net' permission to send events.
+  Run with '--allow-net=${url.host}' to grant the requires permissions.`);
+    });
   }
 
   function makeRequest(request) {
