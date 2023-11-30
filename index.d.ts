@@ -759,6 +759,9 @@ type ReplayRecordingItemHeaders = {
 type CheckInItemHeaders = {
     type: 'check_in';
 };
+type StatsdItemHeaders = {
+    type: 'statsd';
+};
 type EventItem = BaseEnvelopeItem<EventItemHeaders, Event>;
 type AttachmentItem = BaseEnvelopeItem<AttachmentItemHeaders, string | Uint8Array>;
 type UserFeedbackItem = BaseEnvelopeItem<UserFeedbackItemHeaders, UserFeedback>;
@@ -767,6 +770,7 @@ type ClientReportItem = BaseEnvelopeItem<ClientReportItemHeaders, ClientReport>;
 type CheckInItem = BaseEnvelopeItem<CheckInItemHeaders, SerializedCheckIn>;
 type ReplayEventItem = BaseEnvelopeItem<ReplayEventItemHeaders, ReplayEvent>;
 type ReplayRecordingItem = BaseEnvelopeItem<ReplayRecordingItemHeaders, ReplayRecordingData>;
+type StatsdItem = BaseEnvelopeItem<StatsdItemHeaders, string>;
 type FeedbackItem = BaseEnvelopeItem<FeedbackItemHeaders, FeedbackEvent>;
 type EventEnvelopeHeaders = {
     event_id: string;
@@ -781,12 +785,14 @@ type CheckInEnvelopeHeaders = {
 };
 type ClientReportEnvelopeHeaders = BaseEnvelopeHeaders;
 type ReplayEnvelopeHeaders = BaseEnvelopeHeaders;
+type StatsdEnvelopeHeaders = BaseEnvelopeHeaders;
 type EventEnvelope = BaseEnvelope<EventEnvelopeHeaders, EventItem | AttachmentItem | UserFeedbackItem | FeedbackItem>;
 type SessionEnvelope = BaseEnvelope<SessionEnvelopeHeaders, SessionItem>;
 type ClientReportEnvelope = BaseEnvelope<ClientReportEnvelopeHeaders, ClientReportItem>;
 type ReplayEnvelope = [ReplayEnvelopeHeaders, [ReplayEventItem, ReplayRecordingItem]];
 type CheckInEnvelope = BaseEnvelope<CheckInEnvelopeHeaders, CheckInItem>;
-type Envelope = EventEnvelope | SessionEnvelope | ClientReportEnvelope | ReplayEnvelope | CheckInEnvelope;
+type StatsdEnvelope = BaseEnvelope<StatsdEnvelopeHeaders, StatsdItem>;
+type Envelope = EventEnvelope | SessionEnvelope | ClientReportEnvelope | ReplayEnvelope | CheckInEnvelope | StatsdEnvelope;
 
 /** A `Request` type compatible with Node, Express, browser, etc., because everything is optional */
 type PolymorphicRequest = BaseRequest & BrowserRequest & NodeRequest & ExpressRequest & KoaRequest & NextjsRequest;
@@ -3530,7 +3536,7 @@ declare function addGlobalEventProcessor(callback: EventProcessor): void;
  */
 declare function createTransport(options: InternalBaseTransportOptions, makeRequest: TransportRequestExecutor, buffer?: PromiseBuffer<void | TransportMakeRequestResponse>): Transport;
 
-declare const SDK_VERSION = "7.83.0";
+declare const SDK_VERSION = "7.84.0";
 
 /** Patch toString calls to return proper name for wrapped functions */
 declare class FunctionToString implements Integration {

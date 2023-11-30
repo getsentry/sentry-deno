@@ -939,7 +939,9 @@ function urlEncode(object) {
  * @returns An Event or Error turned into an object - or the value argurment itself, when value is neither an Event nor
  *  an Error.
  */
-function convertToPlainObject(value)
+function convertToPlainObject(
+  value,
+)
 
  {
   if (isError(value)) {
@@ -8434,7 +8436,7 @@ function getEventForEnvelopeItem(item, type) {
   return Array.isArray(item) ? (item )[1] : undefined;
 }
 
-const SDK_VERSION = '7.83.0';
+const SDK_VERSION = '7.84.0';
 
 let originalFunctionToString;
 
