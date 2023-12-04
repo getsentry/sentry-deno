@@ -1347,6 +1347,10 @@ interface SerializedCheckIn {
         trace?: TraceContext;
     };
 }
+interface HeartbeatCheckIn {
+    monitorSlug: SerializedCheckIn['monitor_slug'];
+    status: 'ok' | 'error';
+}
 interface InProgressCheckIn {
     monitorSlug: SerializedCheckIn['monitor_slug'];
     status: 'in_progress';
@@ -1357,7 +1361,7 @@ interface FinishedCheckIn {
     checkInId: SerializedCheckIn['check_in_id'];
     duration?: SerializedCheckIn['duration'];
 }
-type CheckIn = InProgressCheckIn | FinishedCheckIn;
+type CheckIn = HeartbeatCheckIn | InProgressCheckIn | FinishedCheckIn;
 type SerializedMonitorConfig = NonNullable<SerializedCheckIn['monitor_config']>;
 interface MonitorConfig {
     schedule: MonitorSchedule;
@@ -2965,6 +2969,11 @@ declare abstract class BaseClient<O extends ClientOptions> implements Client<O> 
      */
     abstract eventFromMessage(_message: string, _level?: Severity | SeverityLevel, _hint?: EventHint): PromiseLike<Event>;
 }
+/**
+ * Add an event processor to the current client.
+ * This event processor will run for all events processed by this client.
+ */
+declare function addEventProcessor(callback: EventProcessor): void;
 
 type ReleaseHealthAttributes = {
     environment?: string;
@@ -3524,7 +3533,7 @@ declare function getClient<C extends Client>(): C | undefined;
 
 /**
  * Add a EventProcessor to be kept globally.
- * @param callback EventProcessor to add
+ * @deprecated Use `addEventProcessor` instead. Global event processors will be removed in v8.
  */
 declare function addGlobalEventProcessor(callback: EventProcessor): void;
 
@@ -3536,7 +3545,7 @@ declare function addGlobalEventProcessor(callback: EventProcessor): void;
  */
 declare function createTransport(options: InternalBaseTransportOptions, makeRequest: TransportRequestExecutor, buffer?: PromiseBuffer<void | TransportMakeRequestResponse>): Transport;
 
-declare const SDK_VERSION = "7.84.0";
+declare const SDK_VERSION = "7.85.0";
 
 /** Patch toString calls to return proper name for wrapped functions */
 declare class FunctionToString implements Integration {
@@ -3580,7 +3589,7 @@ declare class InboundFilters implements Integration {
     /**
      * @inheritDoc
      */
-    setupOnce(_addGlobaleventProcessor: unknown, _getCurrentHub: unknown): void;
+    setupOnce(_addGlobalEventProcessor: unknown, _getCurrentHub: unknown): void;
     /** @inheritDoc */
     processEvent(event: Event, _eventHint: EventHint, client: Client): Event | null;
 }
@@ -3692,7 +3701,7 @@ declare class Dedupe implements Integration {
     private _previousEvent?;
     constructor();
     /** @inheritDoc */
-    setupOnce(_addGlobaleventProcessor: unknown, _getCurrentHub: unknown): void;
+    setupOnce(_addGlobalEventProcessor: unknown, _getCurrentHub: unknown): void;
     /**
      * @inheritDoc
      */
@@ -3848,4 +3857,4 @@ declare const INTEGRATIONS: {
     LinkedErrors: typeof LinkedErrors;
 };
 
-export { type AddRequestDataToEventOptions, type Breadcrumb, type BreadcrumbHint, DenoClient, type DenoOptions, type Event, type EventHint, type Exception, Hub, INTEGRATIONS as Integrations, type PolymorphicRequest, type Request, SDK_VERSION, Scope, type SdkInfo, type Session, Severity, type SeverityLevel, type Span$1 as Span, type SpanStatusType, type StackFrame, type Stacktrace, type Thread, type Transaction, type User, addBreadcrumb, addGlobalEventProcessor, captureCheckIn, captureEvent, captureException, captureMessage, close, configureScope, continueTrace, createTransport, defaultIntegrations, extractTraceparentData, flush, getActiveSpan, getActiveTransaction, getClient, getCurrentHub, getHubFromCarrier, init, lastEventId, makeMain, runWithAsyncContext, setContext, setExtra, setExtras, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSpan, startSpanManual, startTransaction, trace, withMonitor, withScope };
+export { type AddRequestDataToEventOptions, type Breadcrumb, type BreadcrumbHint, DenoClient, type DenoOptions, type Event, type EventHint, type Exception, Hub, INTEGRATIONS as Integrations, type PolymorphicRequest, type Request, SDK_VERSION, Scope, type SdkInfo, type Session, Severity, type SeverityLevel, type Span$1 as Span, type SpanStatusType, type StackFrame, type Stacktrace, type Thread, type Transaction, type User, addBreadcrumb, addEventProcessor, addGlobalEventProcessor, captureCheckIn, captureEvent, captureException, captureMessage, close, configureScope, continueTrace, createTransport, defaultIntegrations, extractTraceparentData, flush, getActiveSpan, getActiveTransaction, getClient, getCurrentHub, getHubFromCarrier, init, lastEventId, makeMain, runWithAsyncContext, setContext, setExtra, setExtras, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSpan, startSpanManual, startTransaction, trace, withMonitor, withScope };

@@ -3837,6 +3837,7 @@ const DEFAULT_ENVIRONMENT = 'production';
 
 /**
  * Returns the global event processors.
+ * @deprecated Global event processors will be removed in v8.
  */
 function getGlobalEventProcessors() {
   return getGlobalSingleton('globalEventProcessors', () => []);
@@ -3844,9 +3845,10 @@ function getGlobalEventProcessors() {
 
 /**
  * Add a EventProcessor to be kept globally.
- * @param callback EventProcessor to add
+ * @deprecated Use `addEventProcessor` instead. Global event processors will be removed in v8.
  */
 function addGlobalEventProcessor(callback) {
+  // eslint-disable-next-line deprecation/deprecation
   getGlobalEventProcessors().push(callback);
 }
 
@@ -4516,7 +4518,12 @@ class Scope  {
 
     // TODO (v8): Update this order to be: Global > Client > Scope
     return notifyEventProcessors(
-      [...(additionalEventProcessors || []), ...getGlobalEventProcessors(), ...this._eventProcessors],
+      [
+        ...(additionalEventProcessors || []),
+        // eslint-disable-next-line deprecation/deprecation
+        ...getGlobalEventProcessors(),
+        ...this._eventProcessors,
+      ],
       event,
       hint,
     );
@@ -5948,7 +5955,15 @@ function prepareEvent(
   } else {
     // Apply client & global event processors even if there is no scope
     // TODO (v8): Update the order to be Global > Client
-    result = notifyEventProcessors([...clientEventProcessors, ...getGlobalEventProcessors()], prepared, hint);
+    result = notifyEventProcessors(
+      [
+        ...clientEventProcessors,
+        // eslint-disable-next-line deprecation/deprecation
+        ...getGlobalEventProcessors(),
+      ],
+      prepared,
+      hint,
+    );
   }
 
   return result.then(evt => {
@@ -6924,7 +6939,6 @@ function getActiveSpan() {
  * These values can be obtained from incoming request headers,
  * or in the browser from `<meta name="sentry-trace">` and `<meta name="baggage">` HTML tags.
  *
- * It also takes an optional `request` option, which if provided will also be added to the scope & transaction metadata.
  * The callback receives a transactionContext that may be used for `startTransaction` or `startSpan`.
  */
 function continueTrace(
@@ -7299,6 +7313,7 @@ function setupIntegration(client, integration, integrationIndex) {
 
   // `setupOnce` is only called the first time
   if (installedIntegrations.indexOf(integration.name) === -1) {
+    // eslint-disable-next-line deprecation/deprecation
     integration.setupOnce(addGlobalEventProcessor, getCurrentHub);
     installedIntegrations.push(integration.name);
   }
@@ -8037,6 +8052,20 @@ function isTransactionEvent(event) {
 }
 
 /**
+ * Add an event processor to the current client.
+ * This event processor will run for all events processed by this client.
+ */
+function addEventProcessor(callback) {
+  const client = getCurrentHub().getClient();
+
+  if (!client || !client.addEventProcessor) {
+    return;
+  }
+
+  client.addEventProcessor(callback);
+}
+
+/**
  * Create envelope from check in item.
  */
 function createCheckInEnvelope(
@@ -8195,7 +8224,7 @@ class ServerRuntimeClient
    * to create a monitor automatically when sending a check in.
    */
    captureCheckIn(checkIn, monitorConfig, scope) {
-    const id = checkIn.status !== 'in_progress' && checkIn.checkInId ? checkIn.checkInId : uuid4();
+    const id = 'checkInId' in checkIn && checkIn.checkInId ? checkIn.checkInId : uuid4();
     if (!this._isEnabled()) {
       DEBUG_BUILD$1 && logger.warn('SDK not enabled, will not capture checkin.');
       return id;
@@ -8212,7 +8241,7 @@ class ServerRuntimeClient
       environment,
     };
 
-    if (checkIn.status !== 'in_progress') {
+    if ('duration' in checkIn) {
       serializedCheckIn.duration = checkIn.duration;
     }
 
@@ -8436,7 +8465,7 @@ function getEventForEnvelopeItem(item, type) {
   return Array.isArray(item) ? (item )[1] : undefined;
 }
 
-const SDK_VERSION = '7.84.0';
+const SDK_VERSION = '7.85.0';
 
 let originalFunctionToString;
 
@@ -8511,7 +8540,7 @@ class InboundFilters  {
   /**
    * @inheritDoc
    */
-   setupOnce(_addGlobaleventProcessor, _getCurrentHub) {
+   setupOnce(_addGlobalEventProcessor, _getCurrentHub) {
     // noop
   }
 
@@ -8824,7 +8853,7 @@ class Dedupe  {
   }
 
   /** @inheritDoc */
-   setupOnce(_addGlobaleventProcessor, _getCurrentHub) {
+   setupOnce(_addGlobalEventProcessor, _getCurrentHub) {
     // noop
   }
 
@@ -9884,5 +9913,5 @@ const INTEGRATIONS = {
   ...DenoIntegrations,
 };
 
-export { DenoClient, Hub, INTEGRATIONS as Integrations, SDK_VERSION, Scope, addBreadcrumb, addGlobalEventProcessor, captureCheckIn, captureEvent, captureException, captureMessage, close, configureScope, continueTrace, createTransport, defaultIntegrations, extractTraceparentData, flush, getActiveSpan, getActiveTransaction, getClient, getCurrentHub, getHubFromCarrier, init, lastEventId, makeMain, runWithAsyncContext, setContext, setExtra, setExtras, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSpan, startSpanManual, startTransaction, trace, withMonitor, withScope };
+export { DenoClient, Hub, INTEGRATIONS as Integrations, SDK_VERSION, Scope, addBreadcrumb, addEventProcessor, addGlobalEventProcessor, captureCheckIn, captureEvent, captureException, captureMessage, close, configureScope, continueTrace, createTransport, defaultIntegrations, extractTraceparentData, flush, getActiveSpan, getActiveTransaction, getClient, getCurrentHub, getHubFromCarrier, init, lastEventId, makeMain, runWithAsyncContext, setContext, setExtra, setExtras, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSpan, startSpanManual, startTransaction, trace, withMonitor, withScope };
 //# sourceMappingURL=index.mjs.map
