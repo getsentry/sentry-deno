@@ -2197,7 +2197,7 @@ function instrumentXHR() {
       const url = parseUrl$1(args[1]);
 
       if (!method || !url) {
-        return;
+        return originalOpen.apply(this, args);
       }
 
       this[SENTRY_XHR_DATA_KEY] = {
@@ -2275,7 +2275,7 @@ function instrumentXHR() {
       const sentryXhrData = this[SENTRY_XHR_DATA_KEY];
 
       if (!sentryXhrData) {
-        return;
+        return originalSend.apply(this, args);
       }
 
       if (args[0] !== undefined) {
@@ -4603,6 +4603,8 @@ function generatePropagationContext() {
   };
 }
 
+const SDK_VERSION = '7.86.0';
+
 /**
  * API compatibility version of this hub.
  *
@@ -4611,7 +4613,7 @@ function generatePropagationContext() {
  *
  * @hidden
  */
-const API_VERSION = 4;
+const API_VERSION = parseFloat(SDK_VERSION);
 
 /**
  * Default maximum number of breadcrumbs added to an event. Can be overwritten
@@ -8464,8 +8466,6 @@ function getEventForEnvelopeItem(item, type) {
 
   return Array.isArray(item) ? (item )[1] : undefined;
 }
-
-const SDK_VERSION = '7.85.0';
 
 let originalFunctionToString;
 
