@@ -673,6 +673,89 @@ interface FeedbackEvent extends Event {
     };
 }
 
+type ThreadId = string;
+type FrameId = number;
+type StackId = number;
+interface ThreadCpuSample {
+    stack_id: StackId;
+    thread_id: ThreadId;
+    queue_address?: string;
+    elapsed_since_start_ns: string;
+}
+type ThreadCpuStack = FrameId[];
+type ThreadCpuFrame = {
+    function?: string;
+    file?: string;
+    lineno?: number;
+    colno?: number;
+    abs_path?: string;
+    platform?: string;
+    instruction_addr?: string;
+    module?: string;
+    in_app?: boolean;
+};
+interface ThreadCpuProfile {
+    samples: ThreadCpuSample[];
+    stacks: ThreadCpuStack[];
+    frames: ThreadCpuFrame[];
+    thread_metadata: Record<ThreadId, {
+        name?: string;
+        priority?: number;
+    }>;
+    queue_metadata?: Record<string, {
+        label: string;
+    }>;
+}
+interface Profile {
+    event_id: string;
+    version: string;
+    os: {
+        name: string;
+        version: string;
+        build_number?: string;
+    };
+    runtime: {
+        name: string;
+        version: string;
+    };
+    device: {
+        architecture: string;
+        is_emulator: boolean;
+        locale: string;
+        manufacturer: string;
+        model: string;
+    };
+    timestamp: string;
+    release: string;
+    environment: string;
+    platform: string;
+    profile: ThreadCpuProfile;
+    debug_meta?: {
+        images: DebugImage[];
+    };
+    transaction?: {
+        name: string;
+        id: string;
+        trace_id: string;
+        active_thread_id: string;
+    };
+    transactions?: {
+        name: string;
+        id: string;
+        trace_id: string;
+        active_thread_id: string;
+        relative_start_ns: string;
+        relative_end_ns: string;
+    }[];
+    measurements?: Record<string, {
+        unit: MeasurementUnit;
+        values: {
+            elapsed_since_start_ns: number;
+            value: number;
+        }[];
+    }>;
+}
+
 /**
  * NOTE: These types are still considered Beta and subject to change.
  * @hidden
@@ -762,6 +845,9 @@ type CheckInItemHeaders = {
 type StatsdItemHeaders = {
     type: 'statsd';
 };
+type ProfileItemHeaders = {
+    type: 'profile';
+};
 type EventItem = BaseEnvelopeItem<EventItemHeaders, Event>;
 type AttachmentItem = BaseEnvelopeItem<AttachmentItemHeaders, string | Uint8Array>;
 type UserFeedbackItem = BaseEnvelopeItem<UserFeedbackItemHeaders, UserFeedback>;
@@ -772,6 +858,7 @@ type ReplayEventItem = BaseEnvelopeItem<ReplayEventItemHeaders, ReplayEvent>;
 type ReplayRecordingItem = BaseEnvelopeItem<ReplayRecordingItemHeaders, ReplayRecordingData>;
 type StatsdItem = BaseEnvelopeItem<StatsdItemHeaders, string>;
 type FeedbackItem = BaseEnvelopeItem<FeedbackItemHeaders, FeedbackEvent>;
+type ProfileItem = BaseEnvelopeItem<ProfileItemHeaders, Profile>;
 type EventEnvelopeHeaders = {
     event_id: string;
     sent_at: string;
@@ -786,7 +873,7 @@ type CheckInEnvelopeHeaders = {
 type ClientReportEnvelopeHeaders = BaseEnvelopeHeaders;
 type ReplayEnvelopeHeaders = BaseEnvelopeHeaders;
 type StatsdEnvelopeHeaders = BaseEnvelopeHeaders;
-type EventEnvelope = BaseEnvelope<EventEnvelopeHeaders, EventItem | AttachmentItem | UserFeedbackItem | FeedbackItem>;
+type EventEnvelope = BaseEnvelope<EventEnvelopeHeaders, EventItem | AttachmentItem | UserFeedbackItem | FeedbackItem | ProfileItem>;
 type SessionEnvelope = BaseEnvelope<SessionEnvelopeHeaders, SessionItem>;
 type ClientReportEnvelope = BaseEnvelope<ClientReportEnvelopeHeaders, ClientReportItem>;
 type ReplayEnvelope = [ReplayEnvelopeHeaders, [ReplayEventItem, ReplayRecordingItem]];
@@ -2333,9 +2420,13 @@ declare class Scope implements Scope$1 {
     constructor();
     /**
      * Inherit values from the parent scope.
-     * @param scope to clone.
+     * @deprecated Use `scope.clone()` and `new Scope()` instead.
      */
     static clone(scope?: Scope): Scope;
+    /**
+     * Clone this scope instance.
+     */
+    clone(): Scope;
     /**
      * Add internal on change listener. Used for sub SDKs that need to store the scope.
      * @hidden
@@ -3530,6 +3621,10 @@ declare function lastEventId(): string | undefined;
  * Get the currently active client.
  */
 declare function getClient<C extends Client>(): C | undefined;
+/**
+ * Get the currently active scope.
+ */
+declare function getCurrentScope(): Scope;
 
 /**
  * Add a EventProcessor to be kept globally.
@@ -3545,7 +3640,7 @@ declare function addGlobalEventProcessor(callback: EventProcessor): void;
  */
 declare function createTransport(options: InternalBaseTransportOptions, makeRequest: TransportRequestExecutor, buffer?: PromiseBuffer<void | TransportMakeRequestResponse>): Transport;
 
-declare const SDK_VERSION = "7.86.0";
+declare const SDK_VERSION = "7.87.0";
 
 /** Patch toString calls to return proper name for wrapped functions */
 declare class FunctionToString implements Integration {
@@ -3715,7 +3810,9 @@ declare class DenoContext implements Integration {
     /** @inheritDoc */
     name: string;
     /** @inheritDoc */
-    setupOnce(addGlobalEventProcessor: (callback: EventProcessor) => void): void;
+    setupOnce(_addGlobalEventProcessor: (callback: EventProcessor) => void): void;
+    /** @inheritDoc */
+    processEvent(event: Event): Promise<Event>;
 }
 
 type GlobalHandlersIntegrationsOptionKeys = 'error' | 'unhandledrejection';
@@ -3753,7 +3850,9 @@ declare class NormalizePaths implements Integration {
     /** @inheritDoc */
     name: string;
     /** @inheritDoc */
-    setupOnce(addGlobalEventProcessor: (callback: EventProcessor) => void): void;
+    setupOnce(_addGlobalEventProcessor: (callback: EventProcessor) => void): void;
+    /** @inheritDoc */
+    processEvent(event: Event): Event | null;
 }
 
 interface ContextLinesOptions {
@@ -3782,7 +3881,9 @@ declare class ContextLines implements Integration {
     /**
      * @inheritDoc
      */
-    setupOnce(addGlobalEventProcessor: (callback: EventProcessor) => void): void;
+    setupOnce(_addGlobalEventProcessor: (callback: EventProcessor) => void): void;
+    /** @inheritDoc */
+    processEvent(event: Event): Promise<Event>;
     /** Processes an event and adds context lines */
     addSourceContext(event: Event): Promise<Event>;
     /** Adds context lines to frames */
@@ -3857,4 +3958,4 @@ declare const INTEGRATIONS: {
     LinkedErrors: typeof LinkedErrors;
 };
 
-export { type AddRequestDataToEventOptions, type Breadcrumb, type BreadcrumbHint, DenoClient, type DenoOptions, type Event, type EventHint, type Exception, Hub, INTEGRATIONS as Integrations, type PolymorphicRequest, type Request, SDK_VERSION, Scope, type SdkInfo, type Session, Severity, type SeverityLevel, type Span$1 as Span, type SpanStatusType, type StackFrame, type Stacktrace, type Thread, type Transaction, type User, addBreadcrumb, addEventProcessor, addGlobalEventProcessor, captureCheckIn, captureEvent, captureException, captureMessage, close, configureScope, continueTrace, createTransport, defaultIntegrations, extractTraceparentData, flush, getActiveSpan, getActiveTransaction, getClient, getCurrentHub, getHubFromCarrier, init, lastEventId, makeMain, runWithAsyncContext, setContext, setExtra, setExtras, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSpan, startSpanManual, startTransaction, trace, withMonitor, withScope };
+export { type AddRequestDataToEventOptions, type Breadcrumb, type BreadcrumbHint, DenoClient, type DenoOptions, type Event, type EventHint, type Exception, Hub, INTEGRATIONS as Integrations, type PolymorphicRequest, type Request, SDK_VERSION, Scope, type SdkInfo, type Session, Severity, type SeverityLevel, type Span$1 as Span, type SpanStatusType, type StackFrame, type Stacktrace, type Thread, type Transaction, type User, addBreadcrumb, addEventProcessor, addGlobalEventProcessor, captureCheckIn, captureEvent, captureException, captureMessage, close, configureScope, continueTrace, createTransport, defaultIntegrations, extractTraceparentData, flush, getActiveSpan, getActiveTransaction, getClient, getCurrentHub, getCurrentScope, getHubFromCarrier, init, lastEventId, makeMain, runWithAsyncContext, setContext, setExtra, setExtras, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSpan, startSpanManual, startTransaction, trace, withMonitor, withScope };
