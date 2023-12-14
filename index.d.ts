@@ -844,6 +844,7 @@ type CheckInItemHeaders = {
 };
 type StatsdItemHeaders = {
     type: 'statsd';
+    length: number;
 };
 type ProfileItemHeaders = {
     type: 'profile';
@@ -1700,6 +1701,48 @@ interface Integration {
     processEvent?(event: Event, hint: EventHint, client: Client): Event | null | PromiseLike<Event | null>;
 }
 
+interface MetricInstance {
+    /**
+     * Adds a value to a metric.
+     */
+    add(value: number | string): void;
+    /**
+     * Serializes the metric into a statsd format string.
+     */
+    toString(): string;
+}
+type MetricBucketItem = [
+    metric: MetricInstance,
+    timestamp: number,
+    metricType: 'c' | 'g' | 's' | 'd',
+    name: string,
+    unit: MeasurementUnit,
+    tags: {
+        [key: string]: string;
+    }
+];
+/**
+ * A metrics aggregator that aggregates metrics in memory and flushes them periodically.
+ */
+interface MetricsAggregator {
+    /**
+     * Add a metric to the aggregator.
+     */
+    add(metricType: 'c' | 'g' | 's' | 'd', name: string, value: number | string, unit?: MeasurementUnit, tags?: Record<string, Primitive>, timestamp?: number): void;
+    /**
+     * Flushes the current metrics to the transport via the transport.
+     */
+    flush(): void;
+    /**
+     * Shuts down metrics aggregator and clears all metrics.
+     */
+    close(): void;
+    /**
+     * Returns a string representation of the aggregator.
+     */
+    toString(): string;
+}
+
 interface SdkMetadata {
     sdk?: SdkInfo;
 }
@@ -2151,6 +2194,12 @@ interface Client<O extends ClientOptions = ClientOptions> {
      * @param event The dropped event.
      */
     recordDroppedEvent(reason: EventDropReason, dataCategory: DataCategory, event?: Event): void;
+    /**
+     * Captures serialized metrics and sends them to Sentry.
+     *
+     * @experimental This API is experimental and might experience breaking changes
+     */
+    captureAggregateMetrics?(metricBucketItems: Array<MetricBucketItem>): void;
     /**
      * Register a callback for transaction start.
      * Receives the transaction as argument.
@@ -2843,6 +2892,12 @@ type IntegrationIndex = {
  * }
  */
 declare abstract class BaseClient<O extends ClientOptions> implements Client<O> {
+    /**
+     * A reference to a metrics aggregator
+     *
+     * @experimental Note this is alpha API. It may experience breaking changes in the future.
+     */
+    metricsAggregator?: MetricsAggregator;
     /** Options passed to the SDK. */
     protected readonly _options: O;
     /** The client Dsn, if specified in options. Without this Dsn, the SDK will be disabled. */
@@ -2940,6 +2995,10 @@ declare abstract class BaseClient<O extends ClientOptions> implements Client<O> 
      * @inheritDoc
      */
     recordDroppedEvent(reason: EventDropReason, category: DataCategory, _event?: Event): void;
+    /**
+     * @inheritDoc
+     */
+    captureAggregateMetrics(metricBucketItems: Array<MetricBucketItem>): void;
     /** @inheritdoc */
     on(hook: 'startTransaction', callback: (transaction: Transaction) => void): void;
     /** @inheritdoc */
@@ -3640,7 +3699,7 @@ declare function addGlobalEventProcessor(callback: EventProcessor): void;
  */
 declare function createTransport(options: InternalBaseTransportOptions, makeRequest: TransportRequestExecutor, buffer?: PromiseBuffer<void | TransportMakeRequestResponse>): Transport;
 
-declare const SDK_VERSION = "7.87.0";
+declare const SDK_VERSION = "7.88.0";
 
 /** Patch toString calls to return proper name for wrapped functions */
 declare class FunctionToString implements Integration {
@@ -3890,6 +3949,18 @@ declare class ContextLines implements Integration {
     addSourceContextToFrames(frames: StackFrame[]): Promise<void>;
 }
 
+/** Instruments Deno.cron to automatically capture cron check-ins */
+declare class DenoCron implements Integration {
+    /** @inheritDoc */
+    static id: string;
+    /** @inheritDoc */
+    name: string;
+    /** @inheritDoc */
+    setupOnce(): void;
+    /** @inheritDoc */
+    setup(client: DenoClient): void;
+}
+
 declare const defaultIntegrations: (DenoContext | GlobalHandlers | NormalizePaths | ContextLines | InboundFilters | FunctionToString | LinkedErrors | Dedupe | Breadcrumbs)[];
 /**
  * The Sentry Deno SDK Client.
@@ -3953,6 +4024,7 @@ declare const INTEGRATIONS: {
     GlobalHandlers: typeof GlobalHandlers;
     NormalizePaths: typeof NormalizePaths;
     ContextLines: typeof ContextLines;
+    DenoCron: typeof DenoCron;
     FunctionToString: typeof FunctionToString;
     InboundFilters: typeof InboundFilters;
     LinkedErrors: typeof LinkedErrors;

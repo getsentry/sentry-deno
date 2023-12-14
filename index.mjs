@@ -4609,7 +4609,7 @@ function generatePropagationContext() {
   };
 }
 
-const SDK_VERSION = '7.87.0';
+const SDK_VERSION = '7.88.0';
 
 /**
  * API compatibility version of this hub.
@@ -7374,6 +7374,71 @@ function findIndex(arr, callback) {
   return -1;
 }
 
+/* eslint-enable no-bitwise */
+
+/**
+ * Serialize metrics buckets into a string based on statsd format.
+ *
+ * Example of format:
+ * metric.name@second:1:1.2|d|#a:value,b:anothervalue|T12345677
+ * Segments:
+ * name: metric.name
+ * unit: second
+ * value: [1, 1.2]
+ * type of metric: d (distribution)
+ * tags: { a: value, b: anothervalue }
+ * timestamp: 12345677
+ */
+function serializeMetricBuckets(metricBucketItems) {
+  let out = '';
+  for (const [metric, timestamp, metricType, name, unit, tags] of metricBucketItems) {
+    const maybeTags = Object.keys(tags).length
+      ? `|#${Object.entries(tags)
+          .map(([key, value]) => `${key}:${String(value)}`)
+          .join(',')}`
+      : '';
+    out += `${name}@${unit}:${metric}|${metricType}${maybeTags}|T${timestamp}\n`;
+  }
+  return out;
+}
+
+/**
+ * Create envelope from a metric aggregate.
+ */
+function createMetricEnvelope(
+  metricBucketItems,
+  dsn,
+  metadata,
+  tunnel,
+) {
+  const headers = {
+    sent_at: new Date().toISOString(),
+  };
+
+  if (metadata && metadata.sdk) {
+    headers.sdk = {
+      name: metadata.sdk.name,
+      version: metadata.sdk.version,
+    };
+  }
+
+  if (!!tunnel && dsn) {
+    headers.dsn = dsnToString(dsn);
+  }
+
+  const item = createMetricEnvelopeItem(metricBucketItems);
+  return createEnvelope(headers, [item]);
+}
+
+function createMetricEnvelopeItem(metricBucketItems) {
+  const payload = serializeMetricBuckets(metricBucketItems);
+  const metricHeaders = {
+    type: 'statsd',
+    length: payload.length,
+  };
+  return [metricHeaders, payload];
+}
+
 const ALREADY_SEEN_ERROR = "Not capturing exception because it's already been captured.";
 
 /**
@@ -7408,6 +7473,12 @@ const ALREADY_SEEN_ERROR = "Not capturing exception because it's already been ca
  * }
  */
 class BaseClient {
+  /**
+   * A reference to a metrics aggregator
+   *
+   * @experimental Note this is alpha API. It may experience breaking changes in the future.
+   */
+
   /** Options passed to the SDK. */
 
   /** The client Dsn, if specified in options. Without this Dsn, the SDK will be disabled. */
@@ -7573,6 +7644,9 @@ class BaseClient {
    flush(timeout) {
     const transport = this._transport;
     if (transport) {
+      if (this.metricsAggregator) {
+        this.metricsAggregator.flush();
+      }
       return this._isClientDoneProcessing(timeout).then(clientFinished => {
         return transport.flush(timeout).then(transportFlushed => clientFinished && transportFlushed);
       });
@@ -7587,6 +7661,9 @@ class BaseClient {
    close(timeout) {
     return this.flush(timeout).then(result => {
       this.getOptions().enabled = false;
+      if (this.metricsAggregator) {
+        this.metricsAggregator.close();
+      }
       return result;
     });
   }
@@ -7690,6 +7767,19 @@ class BaseClient {
       // The following works because undefined + 1 === NaN and NaN is falsy
       this._outcomes[key] = this._outcomes[key] + 1 || 1;
     }
+  }
+
+  /**
+   * @inheritDoc
+   */
+   captureAggregateMetrics(metricBucketItems) {
+    const metricsEnvelope = createMetricEnvelope(
+      metricBucketItems,
+      this._dsn,
+      this._options._metadata,
+      this._options.tunnel,
+    );
+    void this._sendEnvelope(metricsEnvelope);
   }
 
   // Keep on() & emit() signatures in sync with types' client.ts interface
@@ -9801,12 +9891,63 @@ class ContextLines  {
   }
 } ContextLines.__initStatic();
 
+/** Instruments Deno.cron to automatically capture cron check-ins */
+class DenoCron  {constructor() { DenoCron.prototype.__init.call(this); }
+  /** @inheritDoc */
+   static __initStatic() {this.id = 'DenoCron';}
+
+  /** @inheritDoc */
+   __init() {this.name = DenoCron.id;}
+
+  /** @inheritDoc */
+   setupOnce() {
+    //
+  }
+
+  /** @inheritDoc */
+   setup(client) {
+    // eslint-disable-next-line deprecation/deprecation
+    if (!Deno.cron) {
+      // The cron API is not available in this Deno version use --unstable flag!
+      return;
+    }
+
+    // eslint-disable-next-line deprecation/deprecation
+    Deno.cron = new Proxy(Deno.cron, {
+      apply(target, thisArg, argArray) {
+        const [monitorSlug, schedule, opt1, opt2] = argArray;
+        let options;
+        let fn;
+
+        if (typeof opt1 === 'function' && typeof opt2 !== 'function') {
+          fn = opt1;
+          options = opt2;
+        } else if (typeof opt1 !== 'function' && typeof opt2 === 'function') {
+          fn = opt2;
+          options = opt1;
+        }
+
+        async function cronCalled() {
+          await withMonitor(monitorSlug, async () => fn(), {
+            schedule: { type: 'crontab', value: schedule },
+            // (minutes) so 12 hours - just a very high arbitrary number since we don't know the actual duration of the users cron job
+            maxRuntime: 60 * 12,
+          });
+        }
+
+        return target.call(thisArg, monitorSlug, schedule, options || {}, cronCalled);
+      },
+    });
+  }
+} DenoCron.__initStatic();
+
 var DenoIntegrations = {
   __proto__: null,
   DenoContext: DenoContext,
   GlobalHandlers: GlobalHandlers,
   NormalizePaths: NormalizePaths,
-  ContextLines: ContextLines
+  ContextLines: ContextLines,
+  DenoCron: DenoCron
 };
 
 /**
