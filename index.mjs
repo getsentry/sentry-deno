@@ -1418,7 +1418,15 @@ function uuid4() {
       return crypto.randomUUID().replace(/-/g, '');
     }
     if (crypto && crypto.getRandomValues) {
-      getRandomByte = () => crypto.getRandomValues(new Uint8Array(1))[0];
+      getRandomByte = () => {
+        // crypto.getRandomValues might return undefined instead of the typed array
+        // in old Chromium versions (e.g. 23.0.1235.0 (151422))
+        // However, `typedArray` is still filled in-place.
+        // @see https://developer.mozilla.org/en-US/docs/Web/API/Crypto/getRandomValues#typedarray
+        const typedArray = new Uint8Array(1);
+        crypto.getRandomValues(typedArray);
+        return typedArray[0];
+      };
     }
   } catch (_) {
     // some runtimes can crash invoking crypto
@@ -3679,14 +3687,18 @@ function getMessageForObject(exception) {
 
 /**
  * Builds and Event from a Exception
+ *
+ * TODO(v8): Remove getHub fallback
  * @hidden
  */
 function eventFromUnknownInput(
-  getCurrentHub,
+  getHubOrClient,
   stackParser,
   exception,
   hint,
 ) {
+  const client = typeof getHubOrClient === 'function' ? getHubOrClient().getClient() : getHubOrClient;
+
   let ex = exception;
   const providedMechanism =
     hint && hint.data && (hint.data ).mechanism;
@@ -3695,14 +3707,12 @@ function eventFromUnknownInput(
     type: 'generic',
   };
 
+  let extras;
+
   if (!isError(exception)) {
     if (isPlainObject(exception)) {
-      const hub = getCurrentHub();
-      const client = hub.getClient();
       const normalizeDepth = client && client.getOptions().normalizeDepth;
-      hub.configureScope(scope => {
-        scope.setExtra('__serialized__', normalizeToSize(exception, normalizeDepth));
-      });
+      extras = { ['__serialized__']: normalizeToSize(exception , normalizeDepth) };
 
       const message = getMessageForObject(exception);
       ex = (hint && hint.syntheticException) || new Error(message);
@@ -3721,6 +3731,10 @@ function eventFromUnknownInput(
       values: [exceptionFromError(stackParser, ex )],
     },
   };
+
+  if (extras) {
+    event.extra = extras;
+  }
 
   addExceptionTypeValue(event, undefined, undefined);
   addExceptionMechanism(event, mechanism);
@@ -4609,7 +4623,7 @@ function generatePropagationContext() {
   };
 }
 
-const SDK_VERSION = '7.88.0';
+const SDK_VERSION = '7.89.0';
 
 /**
  * API compatibility version of this hub.
@@ -4670,6 +4684,8 @@ class Hub  {
 
   /**
    * @inheritDoc
+   *
+   * @deprecated Use `withScope` instead.
    */
    pushScope() {
     // We want to clone the content of prev scope
@@ -4683,6 +4699,8 @@ class Hub  {
 
   /**
    * @inheritDoc
+   *
+   * @deprecated Use `withScope` instead.
    */
    popScope() {
     if (this.getStack().length <= 1) return false;
@@ -4693,10 +4711,12 @@ class Hub  {
    * @inheritDoc
    */
    withScope(callback) {
+    // eslint-disable-next-line deprecation/deprecation
     const scope = this.pushScope();
     try {
-      callback(scope);
+      return callback(scope);
     } finally {
+      // eslint-disable-next-line deprecation/deprecation
       this.popScope();
     }
   }
@@ -4866,6 +4886,8 @@ class Hub  {
 
   /**
    * @inheritDoc
+   *
+   * @deprecated Use `getScope()` directly.
    */
    configureScope(callback) {
     const { scope, client } = this.getStackTop();
@@ -6307,8 +6329,11 @@ function captureEvent(event, hint) {
 /**
  * Callback to set context information onto the scope.
  * @param callback Callback function that receives Scope.
+ *
+ * @deprecated Use getCurrentScope() directly.
  */
 function configureScope(callback) {
+  // eslint-disable-next-line deprecation/deprecation
   getCurrentHub().configureScope(callback);
 }
 
@@ -6320,8 +6345,8 @@ function configureScope(callback) {
  *
  * @param breadcrumb The breadcrumb to record.
  */
-function addBreadcrumb(breadcrumb) {
-  getCurrentHub().addBreadcrumb(breadcrumb);
+function addBreadcrumb(breadcrumb, hint) {
+  getCurrentHub().addBreadcrumb(breadcrumb, hint);
 }
 
 /**
@@ -6394,7 +6419,7 @@ function setUser(user) {
  * @param callback that will be enclosed into push/popScope.
  */
 function withScope(callback) {
-  getCurrentHub().withScope(callback);
+  return getCurrentHub().withScope(callback);
 }
 
 /**
@@ -6432,9 +6457,8 @@ function startTransaction(
  * to create a monitor automatically when sending a check in.
  */
 function captureCheckIn(checkIn, upsertMonitorConfig) {
-  const hub = getCurrentHub();
-  const scope = hub.getScope();
-  const client = hub.getClient();
+  const scope = getCurrentScope();
+  const client = getClient();
   if (!client) {
     DEBUG_BUILD$1 && logger.warn('Cannot capture check-in. No client defined.');
   } else if (!client.captureCheckIn) {
@@ -6781,11 +6805,13 @@ function trace(
   callback,
   // eslint-disable-next-line @typescript-eslint/no-empty-function
   onError = () => {},
+  // eslint-disable-next-line @typescript-eslint/no-empty-function
+  afterFinish = () => {},
 ) {
   const ctx = normalizeContext(context);
 
   const hub = getCurrentHub();
-  const scope = hub.getScope();
+  const scope = getCurrentScope();
   const parentSpan = scope.getSpan();
 
   const activeSpan = createChildSpanOrTransaction(hub, parentSpan, ctx);
@@ -6794,7 +6820,7 @@ function trace(
 
   function finishAndSetSpan() {
     activeSpan && activeSpan.finish();
-    hub.getScope().setSpan(parentSpan);
+    scope.setSpan(parentSpan);
   }
 
   let maybePromiseResult;
@@ -6802,8 +6828,9 @@ function trace(
     maybePromiseResult = callback(activeSpan);
   } catch (e) {
     activeSpan && activeSpan.setStatus('internal_error');
-    onError(e);
+    onError(e, activeSpan);
     finishAndSetSpan();
+    afterFinish();
     throw e;
   }
 
@@ -6811,15 +6838,18 @@ function trace(
     Promise.resolve(maybePromiseResult).then(
       () => {
         finishAndSetSpan();
+        afterFinish();
       },
       e => {
         activeSpan && activeSpan.setStatus('internal_error');
-        onError(e);
+        onError(e, activeSpan);
         finishAndSetSpan();
+        afterFinish();
       },
     );
   } else {
     finishAndSetSpan();
+    afterFinish();
   }
 
   return maybePromiseResult;
@@ -6840,7 +6870,7 @@ function startSpan(context, callback) {
   const ctx = normalizeContext(context);
 
   const hub = getCurrentHub();
-  const scope = hub.getScope();
+  const scope = getCurrentScope();
   const parentSpan = scope.getSpan();
 
   const activeSpan = createChildSpanOrTransaction(hub, parentSpan, ctx);
@@ -6848,7 +6878,7 @@ function startSpan(context, callback) {
 
   function finishAndSetSpan() {
     activeSpan && activeSpan.finish();
-    hub.getScope().setSpan(parentSpan);
+    scope.setSpan(parentSpan);
   }
 
   let maybePromiseResult;
@@ -6895,7 +6925,7 @@ function startSpanManual(
   const ctx = normalizeContext(context);
 
   const hub = getCurrentHub();
-  const scope = hub.getScope();
+  const scope = getCurrentScope();
   const parentSpan = scope.getSpan();
 
   const activeSpan = createChildSpanOrTransaction(hub, parentSpan, ctx);
@@ -6903,7 +6933,7 @@ function startSpanManual(
 
   function finishAndSetSpan() {
     activeSpan && activeSpan.finish();
-    hub.getScope().setSpan(parentSpan);
+    scope.setSpan(parentSpan);
   }
 
   let maybePromiseResult;
@@ -6953,7 +6983,7 @@ function startInactiveSpan(context) {
  * Returns the currently active span.
  */
 function getActiveSpan() {
-  return getCurrentHub().getScope().getSpan();
+  return getCurrentScope().getSpan();
 }
 
 /**
@@ -6972,8 +7002,7 @@ function continueTrace(
 ,
   callback,
 ) {
-  const hub = getCurrentHub();
-  const currentScope = hub.getScope();
+  const currentScope = getCurrentScope();
 
   const { traceparentData, dynamicSamplingContext, propagationContext } = tracingContextFromHeaders(
     sentryTrace,
@@ -7156,7 +7185,7 @@ class SessionFlusher  {
     if (!this._isEnabled) {
       return;
     }
-    const scope = getCurrentHub().getScope();
+    const scope = getCurrentScope();
     const requestSession = scope.getRequestSession();
 
     if (requestSession && requestSession.status) {
@@ -7372,6 +7401,29 @@ function findIndex(arr, callback) {
   }
 
   return -1;
+}
+
+/**
+ * Convert a new integration function to the legacy class syntax.
+ * In v8, we can remove this and instead export the integration functions directly.
+ *
+ * @deprecated This will be removed in v8!
+ */
+function convertIntegrationFnToClass(
+  name,
+  fn,
+) {
+  return Object.assign(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    function ConvertedIntegration(...rest) {
+      return {
+        // eslint-disable-next-line @typescript-eslint/no-empty-function
+        setupOnce: () => {},
+        ...fn(...rest),
+      };
+    },
+    { id: name },
+  ) ;
 }
 
 /* eslint-enable no-bitwise */
@@ -8168,7 +8220,7 @@ function isTransactionEvent(event) {
  * This event processor will run for all events processed by this client.
  */
 function addEventProcessor(callback) {
-  const client = getCurrentHub().getClient();
+  const client = getClient();
 
   if (!client || !client.addEventProcessor) {
     return;
@@ -8239,7 +8291,7 @@ class ServerRuntimeClient
    * @inheritDoc
    */
    eventFromException(exception, hint) {
-    return resolvedSyncPromise(eventFromUnknownInput(getCurrentHub, this._options.stackParser, exception, hint));
+    return resolvedSyncPromise(eventFromUnknownInput(getClient(), this._options.stackParser, exception, hint));
   }
 
   /**
@@ -8631,38 +8683,22 @@ const DEFAULT_IGNORE_TRANSACTIONS = [
 
 /** Options for the InboundFilters integration */
 
+const INTEGRATION_NAME = 'InboundFilters';
+const inboundFiltersIntegration = (options) => {
+  return {
+    name: INTEGRATION_NAME,
+    processEvent(event, _hint, client) {
+      const clientOptions = client.getOptions();
+      const mergedOptions = _mergeOptions(options, clientOptions);
+      return _shouldDropEvent$1(event, mergedOptions) ? null : event;
+    },
+  };
+};
+
 /** Inbound filters configurable by the user */
-class InboundFilters  {
-  /**
-   * @inheritDoc
-   */
-   static __initStatic() {this.id = 'InboundFilters';}
+// eslint-disable-next-line deprecation/deprecation
+const InboundFilters = convertIntegrationFnToClass(INTEGRATION_NAME, inboundFiltersIntegration);
 
-  /**
-   * @inheritDoc
-   */
-
-   constructor(options = {}) {
-    this.name = InboundFilters.id;
-    this._options = options;
-  }
-
-  /**
-   * @inheritDoc
-   */
-   setupOnce(_addGlobalEventProcessor, _getCurrentHub) {
-    // noop
-  }
-
-  /** @inheritDoc */
-   processEvent(event, _eventHint, client) {
-    const clientOptions = client.getOptions();
-    const options = _mergeOptions(this._options, clientOptions);
-    return _shouldDropEvent$1(event, options) ? null : event;
-  }
-} InboundFilters.__initStatic();
-
-/** JSDoc */
 function _mergeOptions(
   internalOptions = {},
   clientOptions = {},
@@ -8684,7 +8720,6 @@ function _mergeOptions(
   };
 }
 
-/** JSDoc */
 function _shouldDropEvent$1(event, options) {
   if (options.ignoreInternal && _isSentryError(event)) {
     DEBUG_BUILD$1 &&
@@ -9020,7 +9055,7 @@ class Breadcrumbs  {
  * Adds a breadcrumb for Sentry events or transactions if this option is enabled.
  */
 function addSentryBreadcrumb(event) {
-  getCurrentHub().addBreadcrumb(
+  addBreadcrumb(
     {
       category: `sentry.${event.type === 'transaction' ? 'transaction' : 'event'}`,
       event_id: event.event_id,
@@ -9070,7 +9105,7 @@ function _domBreadcrumb(dom) {
       return;
     }
 
-    getCurrentHub().addBreadcrumb(
+    addBreadcrumb(
       {
         category: `ui.${handlerData.name}`,
         message: target,
@@ -9110,7 +9145,7 @@ function _consoleBreadcrumb(handlerData) {
     }
   }
 
-  getCurrentHub().addBreadcrumb(breadcrumb, {
+  addBreadcrumb(breadcrumb, {
     input: handlerData.args,
     level: handlerData.level,
   });
@@ -9144,7 +9179,7 @@ function _xhrBreadcrumb(handlerData) {
     endTimestamp,
   };
 
-  getCurrentHub().addBreadcrumb(
+  addBreadcrumb(
     {
       category: 'xhr',
       data,
@@ -9179,7 +9214,7 @@ function _fetchBreadcrumb(handlerData) {
       endTimestamp,
     };
 
-    getCurrentHub().addBreadcrumb(
+    addBreadcrumb(
       {
         category: 'fetch',
         data,
@@ -9200,7 +9235,7 @@ function _fetchBreadcrumb(handlerData) {
       startTimestamp,
       endTimestamp,
     };
-    getCurrentHub().addBreadcrumb(
+    addBreadcrumb(
       {
         category: 'fetch',
         data,
@@ -9235,7 +9270,7 @@ function _historyBreadcrumb(handlerData) {
     from = parsedFrom.relative;
   }
 
-  getCurrentHub().addBreadcrumb({
+  addBreadcrumb({
     category: 'navigation',
     data: {
       from,
@@ -9537,17 +9572,8 @@ class GlobalHandlers  {
   /** JSDoc */
   
 
-  /**
-   * Stores references functions to installing handlers. Will set to undefined
-   * after they have been run so that they are not used twice.
-   */
-   __init2() {this._installFunc = {
-    error: installGlobalErrorHandler,
-    unhandledrejection: installGlobalUnhandledRejectionHandler,
-  };}
-
   /** JSDoc */
-   constructor(options) {GlobalHandlers.prototype.__init.call(this);GlobalHandlers.prototype.__init2.call(this);
+   constructor(options) {GlobalHandlers.prototype.__init.call(this);
     this._options = {
       error: true,
       unhandledrejection: true,
@@ -9558,35 +9584,35 @@ class GlobalHandlers  {
    * @inheritDoc
    */
    setupOnce() {
-    const options = this._options;
+    // noop
+  }
 
-    // We can disable guard-for-in as we construct the options object above + do checks against
-    // `this._installFunc` for the property.
-    // eslint-disable-next-line guard-for-in
-    for (const key in options) {
-      const installFunc = this._installFunc[key ];
-      if (installFunc && options[key ]) {
-        installFunc();
-        this._installFunc[key ] = undefined;
-      }
+  /** @inheritdoc */
+   setup(client) {
+    if (this._options.error) {
+      installGlobalErrorHandler(client);
+    }
+    if (this._options.unhandledrejection) {
+      installGlobalUnhandledRejectionHandler(client);
     }
   }
 } GlobalHandlers.__initStatic();
 
-function installGlobalErrorHandler() {
+function installGlobalErrorHandler(client) {
   globalThis.addEventListener('error', data => {
-    if (isExiting) {
+    if (getClient() !== client || isExiting) {
       return;
     }
 
-    const [hub, stackParser] = getHubAndOptions();
+    const stackParser = getStackParser();
+
     const { message, error } = data;
 
-    const event = eventFromUnknownInput(getCurrentHub, stackParser, error || message);
+    const event = eventFromUnknownInput(getClient(), stackParser, error || message);
 
     event.level = 'fatal';
 
-    hub.captureEvent(event, {
+    captureEvent(event, {
       originalException: error,
       mechanism: {
         handled: false,
@@ -9605,13 +9631,13 @@ function installGlobalErrorHandler() {
   });
 }
 
-function installGlobalUnhandledRejectionHandler() {
+function installGlobalUnhandledRejectionHandler(client) {
   globalThis.addEventListener('unhandledrejection', (e) => {
-    if (isExiting) {
+    if (getClient() !== client || isExiting) {
       return;
     }
 
-    const [hub, stackParser] = getHubAndOptions();
+    const stackParser = getStackParser();
     let error = e;
 
     // dig the object of the rejection out of known event types
@@ -9625,11 +9651,11 @@ function installGlobalUnhandledRejectionHandler() {
 
     const event = isPrimitive(error)
       ? eventFromRejectionWithPrimitive(error)
-      : eventFromUnknownInput(getCurrentHub, stackParser, error, undefined);
+      : eventFromUnknownInput(getClient(), stackParser, error, undefined);
 
     event.level = 'fatal';
 
-    hub.captureEvent(event, {
+    captureEvent(event, {
       originalException: error,
       mechanism: {
         handled: false,
@@ -9668,14 +9694,14 @@ function eventFromRejectionWithPrimitive(reason) {
   };
 }
 
-function getHubAndOptions() {
-  const hub = getCurrentHub();
-  const client = hub.getClient();
-  const options = (client && client.getOptions()) || {
-    stackParser: () => [],
-    attachStacktrace: false,
-  };
-  return [hub, options.stackParser];
+function getStackParser() {
+  const client = getClient();
+
+  if (!client) {
+    return () => [];
+  }
+
+  return client.getOptions().stackParser;
 }
 
 function _optionalChain(ops) { let lastAccessLHS = undefined; let value = ops[0]; let i = 1; while (i < ops.length) { const op = ops[i]; const fn = ops[i + 1]; i += 2; if ((op === 'optionalAccess' || op === 'optionalCall') && value == null) { return undefined; } if (op === 'access' || op === 'optionalAccess') { lastAccessLHS = value; value = fn(value); } else if (op === 'call' || op === 'optionalCall') { value = fn((...args) => value.call(lastAccessLHS, ...args)); lastAccessLHS = undefined; } } return value; }
@@ -9891,6 +9917,91 @@ class ContextLines  {
   }
 } ContextLines.__initStatic();
 
+/**
+ * These functions were copied from the Deno source code here:
+ * https://github.com/denoland/deno/blob/cd480b481ee1b4209910aa7a8f81ffa996e7b0f9/ext/cron/01_cron.ts
+ * Below is the original license:
+ *
+ * MIT License
+ *
+ * Copyright 2018-2023 the Deno authors
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of
+ * this software and associated documentation files (the "Software"), to deal in
+ * the Software without restriction, including without limitation the rights to
+ * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+ * the Software, and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+ * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+ * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+ * IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
+function formatToCronSchedule(
+  value
+
+
+
+
+
+
+,
+) {
+  if (value === undefined) {
+    return '*';
+  } else if (typeof value === 'number') {
+    return value.toString();
+  } else {
+    const { exact } = value ;
+    if (exact === undefined) {
+      const { start, end, every } = value 
+
+
+
+;
+      if (start !== undefined && end !== undefined && every !== undefined) {
+        return `${start}-${end}/${every}`;
+      } else if (start !== undefined && end !== undefined) {
+        return `${start}-${end}`;
+      } else if (start !== undefined && every !== undefined) {
+        return `${start}/${every}`;
+      } else if (start !== undefined) {
+        return `${start}/1`;
+      } else if (end === undefined && every !== undefined) {
+        return `*/${every}`;
+      } else {
+        throw new TypeError('Invalid cron schedule');
+      }
+    } else {
+      if (typeof exact === 'number') {
+        return exact.toString();
+      } else {
+        return exact.join(',');
+      }
+    }
+  }
+}
+
+/** */
+function parseScheduleToString(schedule) {
+  if (typeof schedule === 'string') {
+    return schedule;
+  } else {
+    const { minute, hour, dayOfMonth, month, dayOfWeek } = schedule;
+
+    return `${formatToCronSchedule(minute)} ${formatToCronSchedule(hour)} ${formatToCronSchedule(
+      dayOfMonth,
+    )} ${formatToCronSchedule(month)} ${formatToCronSchedule(dayOfWeek)}`;
+  }
+}
+
 /** Instruments Deno.cron to automatically capture cron check-ins */
 class DenoCron  {constructor() { DenoCron.prototype.__init.call(this); }
   /** @inheritDoc */
@@ -9905,7 +10016,7 @@ class DenoCron  {constructor() { DenoCron.prototype.__init.call(this); }
   }
 
   /** @inheritDoc */
-   setup(client) {
+   setup() {
     // eslint-disable-next-line deprecation/deprecation
     if (!Deno.cron) {
       // The cron API is not available in this Deno version use --unstable flag!
@@ -9929,9 +10040,11 @@ class DenoCron  {constructor() { DenoCron.prototype.__init.call(this); }
 
         async function cronCalled() {
           await withMonitor(monitorSlug, async () => fn(), {
-            schedule: { type: 'crontab', value: schedule },
+            schedule: { type: 'crontab', value: parseScheduleToString(schedule) },
             // (minutes) so 12 hours - just a very high arbitrary number since we don't know the actual duration of the users cron job
             maxRuntime: 60 * 12,
+            // Deno Deploy docs say that the cron job will be called within 1 minute of the scheduled time
+            checkinMargin: 1,
           });
         }
 

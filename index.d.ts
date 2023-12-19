@@ -1486,6 +1486,8 @@ interface Hub$1 {
      * when the operation finishes or throws.
      *
      * @returns Scope, the new cloned scope
+     *
+     * @deprecated Use `withScope` instead.
      */
     pushScope(): Scope$1;
     /**
@@ -1494,6 +1496,8 @@ interface Hub$1 {
      * This restores the state before the scope was pushed. All breadcrumbs and
      * context information added since the last call to {@link this.pushScope} are
      * discarded.
+     *
+     * @deprecated Use `withScope` instead.
      */
     popScope(): boolean;
     /**
@@ -1509,7 +1513,7 @@ interface Hub$1 {
      *
      * @param callback that will be enclosed into push/popScope.
      */
-    withScope(callback: (scope: Scope$1) => void): void;
+    withScope<T>(callback: (scope: Scope$1) => T): T;
     /** Returns the client of the top stack. */
     getClient(): Client | undefined;
     /** Returns the scope of the top stack */
@@ -1600,6 +1604,7 @@ interface Hub$1 {
      * Callback to set context information onto the scope.
      *
      * @param callback Callback function that receives Scope.
+     * @deprecated Use `getScope()` directly.
      */
     configureScope(callback: (scope: Scope$1) => void): void;
     /**
@@ -2697,16 +2702,20 @@ declare class Hub implements Hub$1 {
     bindClient(client?: Client): void;
     /**
      * @inheritDoc
+     *
+     * @deprecated Use `withScope` instead.
      */
     pushScope(): Scope;
     /**
      * @inheritDoc
+     *
+     * @deprecated Use `withScope` instead.
      */
     popScope(): boolean;
     /**
      * @inheritDoc
      */
-    withScope(callback: (scope: Scope) => void): void;
+    withScope<T>(callback: (scope: Scope) => T): T;
     /**
      * @inheritDoc
      */
@@ -2767,6 +2776,8 @@ declare class Hub implements Hub$1 {
     } | null): void;
     /**
      * @inheritDoc
+     *
+     * @deprecated Use `getScope()` directly.
      */
     configureScope(callback: (scope: Scope) => void): void;
     /**
@@ -2909,10 +2920,10 @@ declare abstract class BaseClient<O extends ClientOptions> implements Client<O> 
     protected _integrationsInitialized: boolean;
     /** Number of calls being processed */
     protected _numProcessing: number;
+    protected _eventProcessors: EventProcessor[];
     /** Holds flushable  */
     private _outcomes;
     private _hooks;
-    private _eventProcessors;
     /**
      * Initializes this client instance.
      *
@@ -3460,7 +3471,7 @@ declare const extractTraceparentData: typeof extractTraceparentData$1;
  * @internal
  * @private
  */
-declare function trace<T>(context: TransactionContext, callback: (span?: Span) => T, onError?: (error: unknown) => void): T;
+declare function trace<T>(context: TransactionContext, callback: (span?: Span) => T, onError?: (error: unknown, span?: Span) => void, afterFinish?: () => void): T;
 /**
  * Wraps a function with a transaction/span and finishes the span after the function is done.
  * The created span is the active span and will be used as parent by other spans created inside the function
@@ -3549,6 +3560,8 @@ declare function captureEvent(event: Event, hint?: EventHint): ReturnType<Hub['c
 /**
  * Callback to set context information onto the scope.
  * @param callback Callback function that receives Scope.
+ *
+ * @deprecated Use getCurrentScope() directly.
  */
 declare function configureScope(callback: (scope: Scope) => void): ReturnType<Hub['configureScope']>;
 /**
@@ -3559,7 +3572,7 @@ declare function configureScope(callback: (scope: Scope) => void): ReturnType<Hu
  *
  * @param breadcrumb The breadcrumb to record.
  */
-declare function addBreadcrumb(breadcrumb: Breadcrumb): ReturnType<Hub['addBreadcrumb']>;
+declare function addBreadcrumb(breadcrumb: Breadcrumb, hint?: BreadcrumbHint): ReturnType<Hub['addBreadcrumb']>;
 /**
  * Sets context data with the given name.
  * @param name of the context
@@ -3614,7 +3627,7 @@ declare function setUser(user: User | null): ReturnType<Hub['setUser']>;
  *
  * @param callback that will be enclosed into push/popScope.
  */
-declare function withScope(callback: (scope: Scope) => void): ReturnType<Hub['withScope']>;
+declare function withScope<T>(callback: (scope: Scope) => T): T;
 /**
  * Starts a new `Transaction` and returns it. This is the entry point to manual tracing instrumentation.
  *
@@ -3699,7 +3712,7 @@ declare function addGlobalEventProcessor(callback: EventProcessor): void;
  */
 declare function createTransport(options: InternalBaseTransportOptions, makeRequest: TransportRequestExecutor, buffer?: PromiseBuffer<void | TransportMakeRequestResponse>): Transport;
 
-declare const SDK_VERSION = "7.88.0";
+declare const SDK_VERSION = "7.89.0";
 
 /** Patch toString calls to return proper name for wrapped functions */
 declare class FunctionToString implements Integration {
@@ -3716,36 +3729,6 @@ declare class FunctionToString implements Integration {
      * @inheritDoc
      */
     setupOnce(): void;
-}
-
-/** Options for the InboundFilters integration */
-interface InboundFiltersOptions {
-    allowUrls: Array<string | RegExp>;
-    denyUrls: Array<string | RegExp>;
-    ignoreErrors: Array<string | RegExp>;
-    ignoreTransactions: Array<string | RegExp>;
-    ignoreInternal: boolean;
-    disableErrorDefaults: boolean;
-    disableTransactionDefaults: boolean;
-}
-/** Inbound filters configurable by the user */
-declare class InboundFilters implements Integration {
-    /**
-     * @inheritDoc
-     */
-    static id: string;
-    /**
-     * @inheritDoc
-     */
-    name: string;
-    private readonly _options;
-    constructor(options?: Partial<InboundFiltersOptions>);
-    /**
-     * @inheritDoc
-     */
-    setupOnce(_addGlobalEventProcessor: unknown, _getCurrentHub: unknown): void;
-    /** @inheritDoc */
-    processEvent(event: Event, _eventHint: EventHint, client: Client): Event | null;
 }
 
 /** Adds SDK info to an event. */
@@ -3889,17 +3872,14 @@ declare class GlobalHandlers implements Integration {
     name: string;
     /** JSDoc */
     private readonly _options;
-    /**
-     * Stores references functions to installing handlers. Will set to undefined
-     * after they have been run so that they are not used twice.
-     */
-    private _installFunc;
     /** JSDoc */
     constructor(options?: GlobalHandlersIntegrations);
     /**
      * @inheritDoc
      */
     setupOnce(): void;
+    /** @inheritdoc */
+    setup(client: Client): void;
 }
 
 /** Normalises paths to the app root directory. */
@@ -3958,10 +3938,10 @@ declare class DenoCron implements Integration {
     /** @inheritDoc */
     setupOnce(): void;
     /** @inheritDoc */
-    setup(client: DenoClient): void;
+    setup(): void;
 }
 
-declare const defaultIntegrations: (DenoContext | GlobalHandlers | NormalizePaths | ContextLines | InboundFilters | FunctionToString | LinkedErrors | Dedupe | Breadcrumbs)[];
+declare const defaultIntegrations: (Integration | DenoContext | GlobalHandlers | NormalizePaths | ContextLines | FunctionToString | LinkedErrors | Dedupe | Breadcrumbs)[];
 /**
  * The Sentry Deno SDK Client.
  *
@@ -4026,7 +4006,7 @@ declare const INTEGRATIONS: {
     ContextLines: typeof ContextLines;
     DenoCron: typeof DenoCron;
     FunctionToString: typeof FunctionToString;
-    InboundFilters: typeof InboundFilters;
+    InboundFilters: IntegrationClass<Integration>;
     LinkedErrors: typeof LinkedErrors;
 };
 
