@@ -418,12 +418,33 @@ interface ScopeContext {
     requestSession: RequestSession;
     propagationContext: PropagationContext;
 }
+interface ScopeData {
+    eventProcessors: EventProcessor[];
+    breadcrumbs: Breadcrumb[];
+    user: User;
+    tags: {
+        [key: string]: Primitive;
+    };
+    extra: Extras;
+    contexts: Contexts;
+    attachments: Attachment[];
+    propagationContext: PropagationContext;
+    sdkProcessingMetadata: {
+        [key: string]: unknown;
+    };
+    fingerprint: string[];
+    level?: SeverityLevel;
+    transactionName?: string;
+    span?: Span$1;
+}
 /**
  * Holds additional event information. {@link Scope.applyToEvent} will be called by the client before an event is sent.
  */
 interface Scope$1 {
     /** Add new event processor that will be called after {@link applyToEvent}. */
     addEventProcessor(callback: EventProcessor): this;
+    /** Get the data of this scope, which is applied to an event during processing. */
+    getScopeData(): ScopeData;
     /**
      * Updates user context information for future events.
      *
@@ -2592,12 +2613,15 @@ declare class Scope implements Scope$1 {
      * @inheritDoc
      */
     clearAttachments(): this;
+    /** @inheritDoc */
+    getScopeData(): ScopeData;
     /**
      * Applies data from the scope to the event and runs all event processors on it.
      *
      * @param event Event
      * @param hint Object containing additional information about the original exception, for use by the event processors.
      * @hidden
+     * @deprecated Use `applyScopeDataToEvent()` directly
      */
     applyToEvent(event: Event, hint?: EventHint, additionalEventProcessors?: EventProcessor[]): PromiseLike<Event | null>;
     /**
@@ -2615,18 +2639,9 @@ declare class Scope implements Scope$1 {
      */
     getPropagationContext(): PropagationContext;
     /**
-     * Get the breadcrumbs for this scope.
-     */
-    protected _getBreadcrumbs(): Breadcrumb[];
-    /**
      * This will be called on every set call.
      */
     protected _notifyScopeListeners(): void;
-    /**
-     * Applies fingerprint from the scope to the event if there's one,
-     * uses message if there's one instead or get rid of empty fingerprint
-     */
-    private _applyFingerprint;
 }
 
 interface RunWithAsyncContextOptions {
@@ -3712,57 +3727,7 @@ declare function addGlobalEventProcessor(callback: EventProcessor): void;
  */
 declare function createTransport(options: InternalBaseTransportOptions, makeRequest: TransportRequestExecutor, buffer?: PromiseBuffer<void | TransportMakeRequestResponse>): Transport;
 
-declare const SDK_VERSION = "7.89.0";
-
-/** Patch toString calls to return proper name for wrapped functions */
-declare class FunctionToString implements Integration {
-    /**
-     * @inheritDoc
-     */
-    static id: string;
-    /**
-     * @inheritDoc
-     */
-    name: string;
-    constructor();
-    /**
-     * @inheritDoc
-     */
-    setupOnce(): void;
-}
-
-/** Adds SDK info to an event. */
-declare class LinkedErrors implements Integration {
-    /**
-     * @inheritDoc
-     */
-    static id: string;
-    /**
-     * @inheritDoc
-     */
-    readonly name: string;
-    /**
-     * @inheritDoc
-     */
-    private readonly _key;
-    /**
-     * @inheritDoc
-     */
-    private readonly _limit;
-    /**
-     * @inheritDoc
-     */
-    constructor(options?: {
-        key?: string;
-        limit?: number;
-    });
-    /** @inheritdoc */
-    setupOnce(): void;
-    /**
-     * @inheritDoc
-     */
-    preprocessEvent(event: Event, hint: EventHint | undefined, client: Client): void;
-}
+declare const SDK_VERSION = "7.90.0";
 
 /**
  * The Sentry Deno SDK Client.
@@ -3776,73 +3741,6 @@ declare class DenoClient extends ServerRuntimeClient<DenoClientOptions> {
      * @param options Configuration options for this SDK.
      */
     constructor(options: DenoClientOptions);
-}
-
-/** JSDoc */
-interface BreadcrumbsOptions {
-    console: boolean;
-    dom: boolean | {
-        serializeAttribute?: string | string[];
-        maxStringLength?: number;
-    };
-    fetch: boolean;
-    history: boolean;
-    sentry: boolean;
-    xhr: boolean;
-}
-/**
- * Default Breadcrumbs instrumentations
- * TODO: Deprecated - with v6, this will be renamed to `Instrument`
- */
-declare class Breadcrumbs implements Integration {
-    /**
-     * @inheritDoc
-     */
-    static id: string;
-    /**
-     * @inheritDoc
-     */
-    name: string;
-    /**
-     * Options of the breadcrumbs integration.
-     */
-    readonly options: Readonly<BreadcrumbsOptions>;
-    /**
-     * @inheritDoc
-     */
-    constructor(options?: Partial<BreadcrumbsOptions>);
-    /**
-     * Instrument browser built-ins w/ breadcrumb capturing
-     *  - Console API
-     *  - DOM API (click/typing)
-     *  - XMLHttpRequest API
-     *  - Fetch API
-     *  - History API
-     */
-    setupOnce(): void;
-}
-
-/** Deduplication filter */
-declare class Dedupe implements Integration {
-    /**
-     * @inheritDoc
-     */
-    static id: string;
-    /**
-     * @inheritDoc
-     */
-    name: string;
-    /**
-     * @inheritDoc
-     */
-    private _previousEvent?;
-    constructor();
-    /** @inheritDoc */
-    setupOnce(_addGlobalEventProcessor: unknown, _getCurrentHub: unknown): void;
-    /**
-     * @inheritDoc
-     */
-    processEvent(currentEvent: Event): Event | null;
 }
 
 /** Adds Electron context to events. */
@@ -3941,7 +3839,9 @@ declare class DenoCron implements Integration {
     setup(): void;
 }
 
-declare const defaultIntegrations: (Integration | DenoContext | GlobalHandlers | NormalizePaths | ContextLines | FunctionToString | LinkedErrors | Dedupe | Breadcrumbs)[];
+declare const defaultIntegrations: (DenoContext | GlobalHandlers | NormalizePaths | ContextLines | (Integration & {
+    setupOnce: (addGlobalEventProcessor?: ((callback: EventProcessor) => void) | undefined, getCurrentHub?: (() => Hub$1) | undefined) => void;
+}))[];
 /**
  * The Sentry Deno SDK Client.
  *
@@ -4005,9 +3905,15 @@ declare const INTEGRATIONS: {
     NormalizePaths: typeof NormalizePaths;
     ContextLines: typeof ContextLines;
     DenoCron: typeof DenoCron;
-    FunctionToString: typeof FunctionToString;
-    InboundFilters: IntegrationClass<Integration>;
-    LinkedErrors: typeof LinkedErrors;
+    FunctionToString: IntegrationClass<Integration & {
+        setupOnce: (addGlobalEventProcessor?: ((callback: EventProcessor) => void) | undefined, getCurrentHub?: (() => Hub$1) | undefined) => void;
+    }>;
+    InboundFilters: IntegrationClass<Integration & {
+        setupOnce: (addGlobalEventProcessor?: ((callback: EventProcessor) => void) | undefined, getCurrentHub?: (() => Hub$1) | undefined) => void;
+    }>;
+    LinkedErrors: IntegrationClass<Integration & {
+        setupOnce: (addGlobalEventProcessor?: ((callback: EventProcessor) => void) | undefined, getCurrentHub?: (() => Hub$1) | undefined) => void;
+    }>;
 };
 
 export { type AddRequestDataToEventOptions, type Breadcrumb, type BreadcrumbHint, DenoClient, type DenoOptions, type Event, type EventHint, type Exception, Hub, INTEGRATIONS as Integrations, type PolymorphicRequest, type Request, SDK_VERSION, Scope, type SdkInfo, type Session, Severity, type SeverityLevel, type Span$1 as Span, type SpanStatusType, type StackFrame, type Stacktrace, type Thread, type Transaction, type User, addBreadcrumb, addEventProcessor, addGlobalEventProcessor, captureCheckIn, captureEvent, captureException, captureMessage, close, configureScope, continueTrace, createTransport, defaultIntegrations, extractTraceparentData, flush, getActiveSpan, getActiveTransaction, getClient, getCurrentHub, getCurrentScope, getHubFromCarrier, init, lastEventId, makeMain, runWithAsyncContext, setContext, setExtra, setExtras, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSpan, startSpanManual, startTransaction, trace, withMonitor, withScope };

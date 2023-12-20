@@ -4054,6 +4054,101 @@ function sessionToJSON(session) {
 }
 
 /**
+ * Applies data from the scope to the event and runs all event processors on it.
+ */
+function applyScopeDataToEvent(event, data) {
+  const { fingerprint, span, breadcrumbs, sdkProcessingMetadata, propagationContext } = data;
+
+  // Apply general data
+  applyDataToEvent(event, data);
+
+  // We want to set the trace context for normal events only if there isn't already
+  // a trace context on the event. There is a product feature in place where we link
+  // errors with transaction and it relies on that.
+  if (span) {
+    applySpanToEvent(event, span);
+  }
+
+  applyFingerprintToEvent(event, fingerprint);
+  applyBreadcrumbsToEvent(event, breadcrumbs);
+  applySdkMetadataToEvent(event, sdkProcessingMetadata, propagationContext);
+}
+
+function applyDataToEvent(event, data) {
+  const { extra, tags, user, contexts, level, transactionName } = data;
+
+  if (extra && Object.keys(extra).length) {
+    event.extra = { ...extra, ...event.extra };
+  }
+  if (tags && Object.keys(tags).length) {
+    event.tags = { ...tags, ...event.tags };
+  }
+  if (user && Object.keys(user).length) {
+    event.user = { ...user, ...event.user };
+  }
+  if (contexts && Object.keys(contexts).length) {
+    event.contexts = { ...contexts, ...event.contexts };
+  }
+  if (level) {
+    event.level = level;
+  }
+  if (transactionName) {
+    event.transaction = transactionName;
+  }
+}
+
+function applyBreadcrumbsToEvent(event, breadcrumbs) {
+  const mergedBreadcrumbs = [...(event.breadcrumbs || []), ...breadcrumbs];
+  event.breadcrumbs = mergedBreadcrumbs.length ? mergedBreadcrumbs : undefined;
+}
+
+function applySdkMetadataToEvent(
+  event,
+  sdkProcessingMetadata,
+  propagationContext,
+) {
+  event.sdkProcessingMetadata = {
+    ...event.sdkProcessingMetadata,
+    ...sdkProcessingMetadata,
+    propagationContext: propagationContext,
+  };
+}
+
+function applySpanToEvent(event, span) {
+  event.contexts = { trace: span.getTraceContext(), ...event.contexts };
+  const transaction = span.transaction;
+  if (transaction) {
+    event.sdkProcessingMetadata = {
+      dynamicSamplingContext: transaction.getDynamicSamplingContext(),
+      ...event.sdkProcessingMetadata,
+    };
+    const transactionName = transaction.name;
+    if (transactionName) {
+      event.tags = { transaction: transactionName, ...event.tags };
+    }
+  }
+}
+
+/**
+ * Applies fingerprint from the scope to the event if there's one,
+ * uses message if there's one instead or get rid of empty fingerprint
+ */
+function applyFingerprintToEvent(event, fingerprint) {
+  // Make sure it's an array first and we actually have something in place
+  event.fingerprint = event.fingerprint ? arrayify(event.fingerprint) : [];
+
+  // If we have something on the scope, then merge it with event
+  if (fingerprint) {
+    event.fingerprint = event.fingerprint.concat(fingerprint);
+  }
+
+  // If we have no data at all, remove empty array default
+  if (event.fingerprint && !event.fingerprint.length) {
+    delete event.fingerprint;
+  }
+}
+
+/**
  * Default value for maximum number of breadcrumbs added to an event.
  */
 const DEFAULT_MAX_BREADCRUMBS = 100;
@@ -4475,78 +4570,65 @@ class Scope  {
     return this;
   }
 
+  /** @inheritDoc */
+   getScopeData() {
+    const {
+      _breadcrumbs,
+      _attachments,
+      _contexts,
+      _tags,
+      _extra,
+      _user,
+      _level,
+      _fingerprint,
+      _eventProcessors,
+      _propagationContext,
+      _sdkProcessingMetadata,
+      _transactionName,
+      _span,
+    } = this;
+
+    return {
+      breadcrumbs: _breadcrumbs,
+      attachments: _attachments,
+      contexts: _contexts,
+      tags: _tags,
+      extra: _extra,
+      user: _user,
+      level: _level,
+      fingerprint: _fingerprint || [],
+      eventProcessors: _eventProcessors,
+      propagationContext: _propagationContext,
+      sdkProcessingMetadata: _sdkProcessingMetadata,
+      transactionName: _transactionName,
+      span: _span,
+    };
+  }
+
   /**
    * Applies data from the scope to the event and runs all event processors on it.
    *
    * @param event Event
    * @param hint Object containing additional information about the original exception, for use by the event processors.
    * @hidden
+   * @deprecated Use `applyScopeDataToEvent()` directly
    */
    applyToEvent(
     event,
     hint = {},
-    additionalEventProcessors,
+    additionalEventProcessors = [],
   ) {
-    if (this._extra && Object.keys(this._extra).length) {
-      event.extra = { ...this._extra, ...event.extra };
-    }
-    if (this._tags && Object.keys(this._tags).length) {
-      event.tags = { ...this._tags, ...event.tags };
-    }
-    if (this._user && Object.keys(this._user).length) {
-      event.user = { ...this._user, ...event.user };
-    }
-    if (this._contexts && Object.keys(this._contexts).length) {
-      event.contexts = { ...this._contexts, ...event.contexts };
-    }
-    if (this._level) {
-      event.level = this._level;
-    }
-    if (this._transactionName) {
-      event.transaction = this._transactionName;
-    }
-
-    // We want to set the trace context for normal events only if there isn't already
-    // a trace context on the event. There is a product feature in place where we link
-    // errors with transaction and it relies on that.
-    if (this._span) {
-      event.contexts = { trace: this._span.getTraceContext(), ...event.contexts };
-      const transaction = this._span.transaction;
-      if (transaction) {
-        event.sdkProcessingMetadata = {
-          dynamicSamplingContext: transaction.getDynamicSamplingContext(),
-          ...event.sdkProcessingMetadata,
-        };
-        const transactionName = transaction.name;
-        if (transactionName) {
-          event.tags = { transaction: transactionName, ...event.tags };
-        }
-      }
-    }
-
-    this._applyFingerprint(event);
-
-    const scopeBreadcrumbs = this._getBreadcrumbs();
-    const breadcrumbs = [...(event.breadcrumbs || []), ...scopeBreadcrumbs];
-    event.breadcrumbs = breadcrumbs.length > 0 ? breadcrumbs : undefined;
-
-    event.sdkProcessingMetadata = {
-      ...event.sdkProcessingMetadata,
-      ...this._sdkProcessingMetadata,
-      propagationContext: this._propagationContext,
-    };
+    applyScopeDataToEvent(event, this.getScopeData());
 
     // TODO (v8): Update this order to be: Global > Client > Scope
-    return notifyEventProcessors(
-      [
-        ...(additionalEventProcessors || []),
-        // eslint-disable-next-line deprecation/deprecation
-        ...getGlobalEventProcessors(),
-        ...this._eventProcessors,
-      ],
-      event,
-      hint,
-    );
+    const eventProcessors = [
+      ...additionalEventProcessors,
+      // eslint-disable-next-line deprecation/deprecation
+      ...getGlobalEventProcessors(),
+      ...this._eventProcessors,
+    ];
+
+    return notifyEventProcessors(eventProcessors, event, hint);
   }
 
   /**
@@ -4574,13 +4656,6 @@ class Scope  {
   }
 
   /**
-   * Get the breadcrumbs for this scope.
-   */
-   _getBreadcrumbs() {
-    return this._breadcrumbs;
-  }
-
-  /**
    * This will be called on every set call.
    */
    _notifyScopeListeners() {
@@ -4595,25 +4670,6 @@ class Scope  {
       this._notifyingListeners = false;
     }
   }
-
-  /**
-   * Applies fingerprint from the scope to the event if there's one,
-   * uses message if there's one instead or get rid of empty fingerprint
-   */
-   _applyFingerprint(event) {
-    // Make sure it's an array first and we actually have something in place
-    event.fingerprint = event.fingerprint ? arrayify(event.fingerprint) : [];
-
-    // If we have something on the scope, then merge it with event
-    if (this._fingerprint) {
-      event.fingerprint = event.fingerprint.concat(this._fingerprint);
-    }
-
-    // If we have no data at all, remove empty array default
-    if (event.fingerprint && !event.fingerprint.length) {
-      delete event.fingerprint;
-    }
-  }
 }
 
 function generatePropagationContext() {
@@ -4623,7 +4679,7 @@ function generatePropagationContext() {
   };
 }
 
-const SDK_VERSION = '7.89.0';
+const SDK_VERSION = '7.90.0';
 
 /**
  * API compatibility version of this hub.
@@ -5955,10 +6011,13 @@ function prepareEvent(
     addExceptionMechanism(prepared, hint.mechanism);
   }
 
-  // We prepare the result here with a resolved Event.
-  let result = resolvedSyncPromise(prepared);
-
   const clientEventProcessors = client && client.getEventProcessors ? client.getEventProcessors() : [];
+  // TODO (v8): Update this order to be: Global > Client > Scope
+  const eventProcessors = [
+    ...clientEventProcessors,
+    // eslint-disable-next-line deprecation/deprecation
+    ...getGlobalEventProcessors(),
+  ];
 
   // This should be the last thing called, since we want that
   // {@link Hub.addEventProcessor} gets the finished prepared event.
@@ -5977,21 +6036,14 @@ function prepareEvent(
       }
     }
 
-    // In case we have a hub we reassign it.
-    result = finalScope.applyToEvent(prepared, hint, clientEventProcessors);
-  } else {
-    // Apply client & global event processors even if there is no scope
-    // TODO (v8): Update the order to be Global > Client
-    result = notifyEventProcessors(
-      [
-        ...clientEventProcessors,
-        // eslint-disable-next-line deprecation/deprecation
-        ...getGlobalEventProcessors(),
-      ],
-      prepared,
-      hint,
-    );
+    const scopeData = finalScope.getScopeData();
+    applyScopeDataToEvent(prepared, scopeData);
+
+    // Run scope event processors _after_ all other processors
+    eventProcessors.push(...scopeData.eventProcessors);
   }
+
+  const result = notifyEventProcessors(eventProcessors, prepared, hint);
 
   return result.then(evt => {
     if (evt) {
@@ -7412,7 +7464,9 @@ function findIndex(arr, callback) {
 function convertIntegrationFnToClass(
   name,
   fn,
-) {
+)
+
+ {
   return Object.assign(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     function ConvertedIntegration(...rest) {
@@ -7423,7 +7477,9 @@ function convertIntegrationFnToClass(
       };
     },
     { id: name },
-  ) ;
+  )
+
+;
 }
 
 /* eslint-enable no-bitwise */
@@ -7797,7 +7853,10 @@ class BaseClient {
    */
    sendSession(session) {
     const env = createSessionEnvelope(session, this._dsn, this._options._metadata, this._options.tunnel);
-    void this._sendEnvelope(env);
+
+    // _sendEnvelope should not throw
+    // eslint-disable-next-line @typescript-eslint/no-floating-promises
+    this._sendEnvelope(env);
   }
 
   /**
@@ -7831,7 +7890,10 @@ class BaseClient {
       this._options._metadata,
       this._options.tunnel,
     );
-    void this._sendEnvelope(metricsEnvelope);
+
+    // _sendEnvelope should not throw
+    // eslint-disable-next-line @typescript-eslint/no-floating-promises
+    this._sendEnvelope(metricsEnvelope);
   }
 
   // Keep on() & emit() signatures in sync with types' client.ts interface
@@ -8434,7 +8496,11 @@ class ServerRuntimeClient
     );
 
     DEBUG_BUILD$1 && logger.info('Sending checkin:', checkIn.monitorSlug, checkIn.status);
-    void this._sendEnvelope(envelope);
+
+    // _sendEnvelope should not throw
+    // eslint-disable-next-line @typescript-eslint/no-floating-promises
+    this._sendEnvelope(envelope);
+
     return id;
   }
 
@@ -8631,41 +8697,33 @@ function getEventForEnvelopeItem(item, type) {
 
 let originalFunctionToString;
 
+const INTEGRATION_NAME$4 = 'FunctionToString';
+
+const functionToStringIntegration = () => {
+  return {
+    name: INTEGRATION_NAME$4,
+    setupOnce() {
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      originalFunctionToString = Function.prototype.toString;
+
+      // intrinsics (like Function.prototype) might be immutable in some environments
+      // e.g. Node with --frozen-intrinsics, XS (an embedded JavaScript engine) or SES (a JavaScript proposal)
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        Function.prototype.toString = function ( ...args) {
+          const context = getOriginalFunction(this) || this;
+          return originalFunctionToString.apply(context, args);
+        };
+      } catch (e) {
+        // ignore errors here, just don't patch this
+      }
+    },
+  };
+};
+
 /** Patch toString calls to return proper name for wrapped functions */
-class FunctionToString  {
-  /**
-   * @inheritDoc
-   */
-   static __initStatic() {this.id = 'FunctionToString';}
-
-  /**
-   * @inheritDoc
-   */
-
-   constructor() {
-    this.name = FunctionToString.id;
-  }
-
-  /**
-   * @inheritDoc
-   */
-   setupOnce() {
-    // eslint-disable-next-line @typescript-eslint/unbound-method
-    originalFunctionToString = Function.prototype.toString;
-
-    // intrinsics (like Function.prototype) might be immutable in some environments
-    // e.g. Node with --frozen-intrinsics, XS (an embedded JavaScript engine) or SES (a JavaScript proposal)
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      Function.prototype.toString = function ( ...args) {
-        const context = getOriginalFunction(this) || this;
-        return originalFunctionToString.apply(context, args);
-      };
-    } catch (e) {
-      // ignore errors here, just don't patch this
-    }
-  }
-} FunctionToString.__initStatic();
+// eslint-disable-next-line deprecation/deprecation
+const FunctionToString = convertIntegrationFnToClass(INTEGRATION_NAME$4, functionToStringIntegration);
 
 // "Script error." is hard coded into browsers for errors that it can't read.
 // this is the result of a script being pulled in from an external domain and CORS.
@@ -8683,10 +8741,10 @@ const DEFAULT_IGNORE_TRANSACTIONS = [
 
 /** Options for the InboundFilters integration */
 
-const INTEGRATION_NAME = 'InboundFilters';
+const INTEGRATION_NAME$3 = 'InboundFilters';
 const inboundFiltersIntegration = (options) => {
   return {
-    name: INTEGRATION_NAME,
+    name: INTEGRATION_NAME$3,
     processEvent(event, _hint, client) {
       const clientOptions = client.getOptions();
       const mergedOptions = _mergeOptions(options, clientOptions);
@@ -8697,7 +8755,7 @@ const inboundFiltersIntegration = (options) => {
 
 /** Inbound filters configurable by the user */
 // eslint-disable-next-line deprecation/deprecation
-const InboundFilters = convertIntegrationFnToClass(INTEGRATION_NAME, inboundFiltersIntegration);
+const InboundFilters = convertIntegrationFnToClass(INTEGRATION_NAME$3, inboundFiltersIntegration);
 
 function _mergeOptions(
   internalOptions = {},
@@ -8871,56 +8929,33 @@ function _getEventFilterUrl(event) {
 const DEFAULT_KEY = 'cause';
 const DEFAULT_LIMIT = 5;
 
+const INTEGRATION_NAME$2 = 'LinkedErrors';
+
+const linkedErrorsIntegration = (options = {}) => {
+  const limit = options.limit || DEFAULT_LIMIT;
+  const key = options.key || DEFAULT_KEY;
+
+  return {
+    name: INTEGRATION_NAME$2,
+    preprocessEvent(event, hint, client) {
+      const options = client.getOptions();
+
+      applyAggregateErrorsToEvent(
+        exceptionFromError,
+        options.stackParser,
+        options.maxValueLength,
+        key,
+        limit,
+        event,
+        hint,
+      );
+    },
+  };
+};
+
 /** Adds SDK info to an event. */
-class LinkedErrors  {
-  /**
-   * @inheritDoc
-   */
-   static __initStatic() {this.id = 'LinkedErrors';}
-
-  /**
-   * @inheritDoc
-   */
-
-  /**
-   * @inheritDoc
-   */
-
-  /**
-   * @inheritDoc
-   */
-
-  /**
-   * @inheritDoc
-   */
-   constructor(options = {}) {
-    this._key = options.key || DEFAULT_KEY;
-    this._limit = options.limit || DEFAULT_LIMIT;
-    this.name = LinkedErrors.id;
-  }
-
-  /** @inheritdoc */
-   setupOnce() {
-    // noop
-  }
-
-  /**
-   * @inheritDoc
-   */
-   preprocessEvent(event, hint, client) {
-    const options = client.getOptions();
-
-    applyAggregateErrorsToEvent(
-      exceptionFromError,
-      options.stackParser,
-      options.maxValueLength,
-      this._key,
-      this._limit,
-      event,
-      hint,
-    );
-  }
-} LinkedErrors.__initStatic();
+// eslint-disable-next-line deprecation/deprecation
+const LinkedErrors = convertIntegrationFnToClass(INTEGRATION_NAME$2, linkedErrorsIntegration);
 
 var CoreIntegrations = {
   __proto__: null,
@@ -8978,102 +9013,89 @@ const WINDOW = GLOBAL_OBJ ;
  */
 const DEBUG_BUILD = (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__);
 
-/* eslint-disable max-lines */
-
-/** JSDoc */
-
 /** maxStringLength gets capped to prevent 100 breadcrumbs exceeding 1MB event payload size */
 const MAX_ALLOWED_STRING_LENGTH = 1024;
 
+const INTEGRATION_NAME$1 = 'Breadcrumbs';
+
+const breadcrumbsIntegration = (options = {}) => {
+  const _options = {
+    console: true,
+    dom: true,
+    fetch: true,
+    history: true,
+    sentry: true,
+    xhr: true,
+    ...options,
+  };
+
+  return {
+    name: INTEGRATION_NAME$1,
+    setup(client) {
+      if (_options.console) {
+        addConsoleInstrumentationHandler(_getConsoleBreadcrumbHandler(client));
+      }
+      if (_options.dom) {
+        addClickKeypressInstrumentationHandler(_getDomBreadcrumbHandler(client, _options.dom));
+      }
+      if (_options.xhr) {
+        addXhrInstrumentationHandler(_getXhrBreadcrumbHandler(client));
+      }
+      if (_options.fetch) {
+        addFetchInstrumentationHandler(_getFetchBreadcrumbHandler(client));
+      }
+      if (_options.history) {
+        addHistoryInstrumentationHandler(_getHistoryBreadcrumbHandler(client));
+      }
+      if (_options.sentry && client.on) {
+        client.on('beforeSendEvent', _getSentryBreadcrumbHandler(client));
+      }
+    },
+  };
+};
+
 /**
  * Default Breadcrumbs instrumentations
- * TODO: Deprecated - with v6, this will be renamed to `Instrument`
  */
-class Breadcrumbs  {
-  /**
-   * @inheritDoc
-   */
-   static __initStatic() {this.id = 'Breadcrumbs';}
-
-  /**
-   * @inheritDoc
-   */
-
-  /**
-   * Options of the breadcrumbs integration.
-   */
-  // This field is public, because we use it in the browser client to check if the `sentry` option is enabled.
-
-  /**
-   * @inheritDoc
-   */
-   constructor(options) {
-    this.name = Breadcrumbs.id;
-    this.options = {
-      console: true,
-      dom: true,
-      fetch: true,
-      history: true,
-      sentry: true,
-      xhr: true,
-      ...options,
-    };
-  }
-
-  /**
-   * Instrument browser built-ins w/ breadcrumb capturing
-   *  - Console API
-   *  - DOM API (click/typing)
-   *  - XMLHttpRequest API
-   *  - Fetch API
-   *  - History API
-   */
-   setupOnce() {
-    if (this.options.console) {
-      addConsoleInstrumentationHandler(_consoleBreadcrumb);
-    }
-    if (this.options.dom) {
-      addClickKeypressInstrumentationHandler(_domBreadcrumb(this.options.dom));
-    }
-    if (this.options.xhr) {
-      addXhrInstrumentationHandler(_xhrBreadcrumb);
-    }
-    if (this.options.fetch) {
-      addFetchInstrumentationHandler(_fetchBreadcrumb);
-    }
-    if (this.options.history) {
-      addHistoryInstrumentationHandler(_historyBreadcrumb);
-    }
-    if (this.options.sentry) {
-      const client = getClient();
-      client && client.on && client.on('beforeSendEvent', addSentryBreadcrumb);
-    }
-  }
-} Breadcrumbs.__initStatic();
+// eslint-disable-next-line deprecation/deprecation
+const Breadcrumbs = convertIntegrationFnToClass(INTEGRATION_NAME$1, breadcrumbsIntegration);
 
 /**
  * Adds a breadcrumb for Sentry events or transactions if this option is enabled.
  */
-function addSentryBreadcrumb(event) {
-  addBreadcrumb(
-    {
-      category: `sentry.${event.type === 'transaction' ? 'transaction' : 'event'}`,
-      event_id: event.event_id,
-      level: event.level,
-      message: getEventDescription(event),
-    },
-    {
-      event,
-    },
-  );
+function _getSentryBreadcrumbHandler(client) {
+  return function addSentryBreadcrumb(event) {
+    if (getClient() !== client) {
+      return;
+    }
+
+    addBreadcrumb(
+      {
+        category: `sentry.${event.type === 'transaction' ? 'transaction' : 'event'}`,
+        event_id: event.event_id,
+        level: event.level,
+        message: getEventDescription(event),
+      },
+      {
+        event,
+      },
+    );
+  };
 }
 
 /**
  * A HOC that creaes a function that creates breadcrumbs from DOM API calls.
  * This is a HOC so that we get access to dom options in the closure.
  */
-function _domBreadcrumb(dom) {
-  function _innerDomBreadcrumb(handlerData) {
+function _getDomBreadcrumbHandler(
+  client,
+  dom,
+) {
+  return function _innerDomBreadcrumb(handlerData) {
+    if (getClient() !== client) {
+      return;
+    }
+
     let target;
     let keyAttrs = typeof dom === 'object' ? dom.serializeAttribute : undefined;
 
@@ -9116,220 +9138,226 @@ function _domBreadcrumb(dom) {
         global: handlerData.global,
       },
     );
-  }
-
-  return _innerDomBreadcrumb;
+  };
 }
 
 /**
  * Creates breadcrumbs from console API calls
  */
-function _consoleBreadcrumb(handlerData) {
-  const breadcrumb = {
-    category: 'console',
-    data: {
-      arguments: handlerData.args,
-      logger: 'console',
-    },
-    level: severityLevelFromString(handlerData.level),
-    message: safeJoin(handlerData.args, ' '),
-  };
-
-  if (handlerData.level === 'assert') {
-    if (handlerData.args[0] === false) {
-      breadcrumb.message = `Assertion failed: ${safeJoin(handlerData.args.slice(1), ' ') || 'console.assert'}`;
-      breadcrumb.data.arguments = handlerData.args.slice(1);
-    } else {
-      // Don't capture a breadcrumb for passed assertions
+function _getConsoleBreadcrumbHandler(client) {
+  return function _consoleBreadcrumb(handlerData) {
+    if (getClient() !== client) {
       return;
     }
-  }
 
-  addBreadcrumb(breadcrumb, {
-    input: handlerData.args,
-    level: handlerData.level,
-  });
+    const breadcrumb = {
+      category: 'console',
+      data: {
+        arguments: handlerData.args,
+        logger: 'console',
+      },
+      level: severityLevelFromString(handlerData.level),
+      message: safeJoin(handlerData.args, ' '),
+    };
+
+    if (handlerData.level === 'assert') {
+      if (handlerData.args[0] === false) {
+        breadcrumb.message = `Assertion failed: ${safeJoin(handlerData.args.slice(1), ' ') || 'console.assert'}`;
+        breadcrumb.data.arguments = handlerData.args.slice(1);
+      } else {
+        // Don't capture a breadcrumb for passed assertions
+        return;
+      }
+    }
+
+    addBreadcrumb(breadcrumb, {
+      input: handlerData.args,
+      level: handlerData.level,
+    });
+  };
 }
 
 /**
  * Creates breadcrumbs from XHR API calls
  */
-function _xhrBreadcrumb(handlerData) {
-  const { startTimestamp, endTimestamp } = handlerData;
+function _getXhrBreadcrumbHandler(client) {
+  return function _xhrBreadcrumb(handlerData) {
+    if (getClient() !== client) {
+      return;
+    }
 
-  const sentryXhrData = handlerData.xhr[SENTRY_XHR_DATA_KEY];
+    const { startTimestamp, endTimestamp } = handlerData;
 
-  // We only capture complete, non-sentry requests
-  if (!startTimestamp || !endTimestamp || !sentryXhrData) {
-    return;
-  }
+    const sentryXhrData = handlerData.xhr[SENTRY_XHR_DATA_KEY];
 
-  const { method, url, status_code, body } = sentryXhrData;
+    // We only capture complete, non-sentry requests
+    if (!startTimestamp || !endTimestamp || !sentryXhrData) {
+      return;
+    }
 
-  const data = {
-    method,
-    url,
-    status_code,
+    const { method, url, status_code, body } = sentryXhrData;
+
+    const data = {
+      method,
+      url,
+      status_code,
+    };
+
+    const hint = {
+      xhr: handlerData.xhr,
+      input: body,
+      startTimestamp,
+      endTimestamp,
+    };
+
+    addBreadcrumb(
+      {
+        category: 'xhr',
+        data,
+        type: 'http',
+      },
+      hint,
+    );
   };
-
-  const hint = {
-    xhr: handlerData.xhr,
-    input: body,
-    startTimestamp,
-    endTimestamp,
-  };
-
-  addBreadcrumb(
-    {
-      category: 'xhr',
-      data,
-      type: 'http',
-    },
-    hint,
-  );
 }
 
 /**
  * Creates breadcrumbs from fetch API calls
  */
-function _fetchBreadcrumb(handlerData) {
-  const { startTimestamp, endTimestamp } = handlerData;
+function _getFetchBreadcrumbHandler(client) {
+  return function _fetchBreadcrumb(handlerData) {
+    if (getClient() !== client) {
+      return;
+    }
 
-  // We only capture complete fetch requests
-  if (!endTimestamp) {
-    return;
-  }
+    const { startTimestamp, endTimestamp } = handlerData;
 
-  if (handlerData.fetchData.url.match(/sentry_key/) && handlerData.fetchData.method === 'POST') {
-    // We will not create breadcrumbs for fetch requests that contain `sentry_key` (internal sentry requests)
-    return;
-  }
+    // We only capture complete fetch requests
+    if (!endTimestamp) {
+      return;
+    }
 
-  if (handlerData.error) {
-    const data = handlerData.fetchData;
-    const hint = {
-      data: handlerData.error,
-      input: handlerData.args,
-      startTimestamp,
-      endTimestamp,
-    };
+    if (handlerData.fetchData.url.match(/sentry_key/) && handlerData.fetchData.method === 'POST') {
+      // We will not create breadcrumbs for fetch requests that contain `sentry_key` (internal sentry requests)
+      return;
+    }
 
-    addBreadcrumb(
-      {
-        category: 'fetch',
-        data,
-        level: 'error',
-        type: 'http',
-      },
-      hint,
-    );
-  } else {
-    const response = handlerData.response ;
-    const data = {
-      ...handlerData.fetchData,
-      status_code: response && response.status,
-    };
-    const hint = {
-      input: handlerData.args,
-      response,
-      startTimestamp,
-      endTimestamp,
-    };
-    addBreadcrumb(
-      {
-        category: 'fetch',
-        data,
-        type: 'http',
-      },
-      hint,
-    );
-  }
+    if (handlerData.error) {
+      const data = handlerData.fetchData;
+      const hint = {
+        data: handlerData.error,
+        input: handlerData.args,
+        startTimestamp,
+        endTimestamp,
+      };
+
+      addBreadcrumb(
+        {
+          category: 'fetch',
+          data,
+          level: 'error',
+          type: 'http',
+        },
+        hint,
+      );
+    } else {
+      const response = handlerData.response ;
+      const data = {
+        ...handlerData.fetchData,
+        status_code: response && response.status,
+      };
+      const hint = {
+        input: handlerData.args,
+        response,
+        startTimestamp,
+        endTimestamp,
+      };
+      addBreadcrumb(
+        {
+          category: 'fetch',
+          data,
+          type: 'http',
+        },
+        hint,
+      );
+    }
+  };
 }
 
 /**
  * Creates breadcrumbs from history API calls
  */
-function _historyBreadcrumb(handlerData) {
-  let from = handlerData.from;
-  let to = handlerData.to;
-  const parsedLoc = parseUrl(WINDOW.location.href);
-  let parsedFrom = from ? parseUrl(from) : undefined;
-  const parsedTo = parseUrl(to);
+function _getHistoryBreadcrumbHandler(client) {
+  return function _historyBreadcrumb(handlerData) {
+    if (getClient() !== client) {
+      return;
+    }
 
-  // Initial pushState doesn't provide `from` information
-  if (!parsedFrom || !parsedFrom.path) {
-    parsedFrom = parsedLoc;
-  }
+    let from = handlerData.from;
+    let to = handlerData.to;
+    const parsedLoc = parseUrl(WINDOW.location.href);
+    let parsedFrom = from ? parseUrl(from) : undefined;
+    const parsedTo = parseUrl(to);
 
-  // Use only the path component of the URL if the URL matches the current
-  // document (almost all the time when using pushState)
-  if (parsedLoc.protocol === parsedTo.protocol && parsedLoc.host === parsedTo.host) {
-    to = parsedTo.relative;
-  }
-  if (parsedLoc.protocol === parsedFrom.protocol && parsedLoc.host === parsedFrom.host) {
-    from = parsedFrom.relative;
-  }
+    // Initial pushState doesn't provide `from` information
+    if (!parsedFrom || !parsedFrom.path) {
+      parsedFrom = parsedLoc;
+    }
 
-  addBreadcrumb({
-    category: 'navigation',
-    data: {
-      from,
-      to,
-    },
-  });
+    // Use only the path component of the URL if the URL matches the current
+    // document (almost all the time when using pushState)
+    if (parsedLoc.protocol === parsedTo.protocol && parsedLoc.host === parsedTo.host) {
+      to = parsedTo.relative;
+    }
+    if (parsedLoc.protocol === parsedFrom.protocol && parsedLoc.host === parsedFrom.host) {
+      from = parsedFrom.relative;
+    }
+
+    addBreadcrumb({
+      category: 'navigation',
+      data: {
+        from,
+        to,
+      },
+    });
+  };
 }
 
 function _isEvent(event) {
   return !!event && !!(event ).target;
 }
 
-/** Deduplication filter */
-class Dedupe  {
-  /**
-   * @inheritDoc
-   */
-   static __initStatic() {this.id = 'Dedupe';}
+const INTEGRATION_NAME = 'Dedupe';
 
-  /**
-   * @inheritDoc
-   */
+const dedupeIntegration = () => {
+  let previousEvent;
 
-  /**
-   * @inheritDoc
-   */
-
-   constructor() {
-    this.name = Dedupe.id;
-  }
-
-  /** @inheritDoc */
-   setupOnce(_addGlobalEventProcessor, _getCurrentHub) {
-    // noop
-  }
-
-  /**
-   * @inheritDoc
-   */
-   processEvent(currentEvent) {
-    // We want to ignore any non-error type events, e.g. transactions or replays
-    // These should never be deduped, and also not be compared against as _previousEvent.
-    if (currentEvent.type) {
-      return currentEvent;
-    }
-
-    // Juuust in case something goes wrong
-    try {
-      if (_shouldDropEvent(currentEvent, this._previousEvent)) {
-        DEBUG_BUILD && logger.warn('Event dropped due to being a duplicate of previously captured event.');
-        return null;
+  return {
+    name: INTEGRATION_NAME,
+    processEvent(currentEvent) {
+      // We want to ignore any non-error type events, e.g. transactions or replays
+      // These should never be deduped, and also not be compared against as _previousEvent.
+      if (currentEvent.type) {
+        return currentEvent;
       }
-    } catch (_oO) {} // eslint-disable-line no-empty
 
-    return (this._previousEvent = currentEvent);
-  }
-} Dedupe.__initStatic();
+      // Juuust in case something goes wrong
+      try {
+        if (_shouldDropEvent(currentEvent, previousEvent)) {
+          DEBUG_BUILD && logger.warn('Event dropped due to being a duplicate of previously captured event.');
+          return null;
+        }
+      } catch (_oO) {} // eslint-disable-line no-empty
 
-/** JSDoc */
+      return (previousEvent = currentEvent);
+    },
+  };
+};
+
+/** Deduplication filter */
+// eslint-disable-next-line deprecation/deprecation
+const Dedupe = convertIntegrationFnToClass(INTEGRATION_NAME, dedupeIntegration);
+
 function _shouldDropEvent(currentEvent, previousEvent) {
   if (!previousEvent) {
     return false;
@@ -9346,7 +9374,6 @@ function _shouldDropEvent(currentEvent, previousEvent) {
   return false;
 }
 
-/** JSDoc */
 function _isSameMessageEvent(currentEvent, previousEvent) {
   const currentMessage = currentEvent.message;
   const previousMessage = previousEvent.message;
@@ -9376,7 +9403,6 @@ function _isSameMessageEvent(currentEvent, previousEvent) {
   return true;
 }
 
-/** JSDoc */
 function _isSameExceptionEvent(currentEvent, previousEvent) {
   const previousException = _getExceptionFromEvent(previousEvent);
   const currentException = _getExceptionFromEvent(currentEvent);
@@ -9400,7 +9426,6 @@ function _isSameExceptionEvent(currentEvent, previousEvent) {
   return true;
 }
 
-/** JSDoc */
 function _isSameStacktrace(currentEvent, previousEvent) {
   let currentFrames = _getFramesFromEvent(currentEvent);
   let previousFrames = _getFramesFromEvent(previousEvent);
@@ -9441,7 +9466,6 @@ function _isSameStacktrace(currentEvent, previousEvent) {
   return true;
 }
 
-/** JSDoc */
 function _isSameFingerprint(currentEvent, previousEvent) {
   let currentFingerprint = currentEvent.fingerprint;
   let previousFingerprint = previousEvent.fingerprint;
@@ -9467,12 +9491,10 @@ function _isSameFingerprint(currentEvent, previousEvent) {
   }
 }
 
-/** JSDoc */
 function _getExceptionFromEvent(event) {
   return event.exception && event.exception.values && event.exception.values[0];
 }
 
-/** JSDoc */
 function _getFramesFromEvent(event) {
   const exception = event.exception;
 
@@ -9624,10 +9646,16 @@ function installGlobalErrorHandler(client) {
     data.preventDefault();
     isExiting = true;
 
-    void flush().then(() => {
-      // rethrow to replicate Deno default behavior
-      throw error;
-    });
+    flush().then(
+      () => {
+        // rethrow to replicate Deno default behavior
+        throw error;
+      },
+      () => {
+        // rethrow to replicate Deno default behavior
+        throw error;
+      },
+    );
   });
 }
 
@@ -9667,10 +9695,16 @@ function installGlobalUnhandledRejectionHandler(client) {
     e.preventDefault();
     isExiting = true;
 
-    void flush().then(() => {
-      // rethrow to replicate Deno default behavior
-      throw error;
-    });
+    flush().then(
+      () => {
+        // rethrow to replicate Deno default behavior
+        throw error;
+      },
+      () => {
+        // rethrow to replicate Deno default behavior
+        throw error;
+      },
+    );
   });
 }
 
