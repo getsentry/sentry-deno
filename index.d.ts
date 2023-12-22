@@ -1242,6 +1242,10 @@ interface Span$1 extends SpanContext {
      */
     finish(endTimestamp?: number): void;
     /**
+     * End the current span.
+     */
+    end(endTimestamp?: number): void;
+    /**
      * Sets the tag attribute on the current span.
      *
      * Can also be used to unset a tag, by passing `undefined`.
@@ -1540,6 +1544,11 @@ interface Hub$1 {
     /** Returns the scope of the top stack */
     getScope(): Scope$1;
     /**
+     * Get the currently active isolation scope.
+     * The isolation scope is used to isolate data between different hubs.
+     */
+    getIsolationScope(): Scope$1;
+    /**
      * Captures an exception event and sends it to Sentry.
      *
      * @param exception An exception-like object.
@@ -1648,7 +1657,7 @@ interface Hub$1 {
      *
      * Every child span must be finished before the transaction is finished, otherwise the unfinished spans are discarded.
      *
-     * The transaction must be finished with a call to its `.finish()` method, at which point the transaction with all its
+     * The transaction must be finished with a call to its `.end()` method, at which point the transaction with all its
      * finished child spans will be sent to Sentry.
      *
      * @param context Properties of the new `Transaction`.
@@ -1695,6 +1704,36 @@ interface IntegrationClass<T> {
     id: string;
     new (...args: any[]): T;
 }
+interface IntegrationFnResult {
+    /**
+     * The name of the integration.
+     */
+    name: string;
+    /**
+     * This hook is only called once, even if multiple clients are created.
+     * It does not receives any arguments, and should only use for e.g. global monkey patching and similar things.
+     */
+    setupOnce?(): void;
+    /**
+     * Set up an integration for the given client.
+     * Receives the client as argument.
+     *
+     * Whenever possible, prefer this over `setupOnce`, as that is only run for the first client,
+     * whereas `setup` runs for each client. Only truly global things (e.g. registering global handlers)
+     * should be done in `setupOnce`.
+     */
+    setup?(client: Client): void;
+    /**
+     * An optional hook that allows to preprocess an event _before_ it is passed to all other event processors.
+     */
+    preprocessEvent?(event: Event, hint: EventHint | undefined, client: Client): void;
+    /**
+     * An optional hook that allows to process an event.
+     * Return `null` to drop the event, or mutate the event & return it.
+     * This receives the client that the integration was installed for as third argument.
+     */
+    processEvent?(event: Event, hint: EventHint, client: Client): Event | null | PromiseLike<Event | null>;
+}
 /** Integration interface */
 interface Integration {
     /**
@@ -1727,7 +1766,15 @@ interface Integration {
     processEvent?(event: Event, hint: EventHint, client: Client): Event | null | PromiseLike<Event | null>;
 }
 
-interface MetricInstance {
+/**
+ * An abstract definition of the minimum required API
+ * for a metric instance.
+ */
+declare abstract class MetricInstance {
+    /**
+     * Returns the weight of the metric.
+     */
+    get weight(): number;
     /**
      * Adds a value to a metric.
      */
@@ -1737,16 +1784,14 @@ interface MetricInstance {
      */
     toString(): string;
 }
-type MetricBucketItem = [
-    metric: MetricInstance,
-    timestamp: number,
-    metricType: 'c' | 'g' | 's' | 'd',
-    name: string,
-    unit: MeasurementUnit,
-    tags: {
-        [key: string]: string;
-    }
-];
+interface MetricBucketItem {
+    metric: MetricInstance;
+    timestamp: number;
+    metricType: 'c' | 'g' | 's' | 'd';
+    name: string;
+    unit: MeasurementUnit;
+    tags: Record<string, string>;
+}
 /**
  * A metrics aggregator that aggregates metrics in memory and flushes them periodically.
  */
@@ -2607,6 +2652,7 @@ declare class Scope implements Scope$1 {
     addAttachment(attachment: Attachment): this;
     /**
      * @inheritDoc
+     * @deprecated Use `getScopeData()` instead.
      */
     getAttachments(): Attachment[];
     /**
@@ -2643,6 +2689,11 @@ declare class Scope implements Scope$1 {
      */
     protected _notifyScopeListeners(): void;
 }
+/**
+ * Get the global scope.
+ * This scope is applied to _all_ events.
+ */
+declare function getGlobalScope(): Scope$1;
 
 interface RunWithAsyncContextOptions {
     /** Whether to reuse an existing async context if one exists. Defaults to false. */
@@ -2698,6 +2749,7 @@ declare class Hub implements Hub$1 {
     private readonly _stack;
     /** Contains the last event id of a captured event.  */
     private _lastEventId?;
+    private _isolationScope;
     /**
      * Creates a new instance of the hub, will push one {@link Layer} into the
      * internal stack on creation.
@@ -2706,7 +2758,7 @@ declare class Hub implements Hub$1 {
      * @param scope bound to the hub.
      * @param version number, higher number means higher priority.
      */
-    constructor(client?: Client, scope?: Scope, _version?: number);
+    constructor(client?: Client, scope?: Scope, isolationScope?: Scope, _version?: number);
     /**
      * @inheritDoc
      */
@@ -2737,6 +2789,8 @@ declare class Hub implements Hub$1 {
     getClient<C extends Client>(): C | undefined;
     /** Returns the scope of the top stack. */
     getScope(): Scope;
+    /** @inheritdoc */
+    getIsolationScope(): Scope;
     /** Returns the scope stack for domains or the process. */
     getStack(): Layer[];
     /** Returns the topmost scope layer in the order domain > local > process. */
@@ -2860,6 +2914,12 @@ declare function makeMain(hub: Hub): Hub;
  * Otherwise, the currently registered hub will be returned.
  */
 declare function getCurrentHub(): Hub;
+/**
+ * Get the currently active isolation scope.
+ * The isolation scope is active for the current exection context,
+ * meaning that it will remain stable for the same Hub.
+ */
+declare function getIsolationScope(): Scope;
 /**
  * Runs the supplied callback in its own async context. Async Context strategies are defined per SDK.
  *
@@ -3102,7 +3162,7 @@ declare abstract class BaseClient<O extends ClientOptions> implements Client<O> 
      * @param scope A scope containing event metadata.
      * @returns A new event with more information.
      */
-    protected _prepareEvent(event: Event, hint: EventHint, scope?: Scope): PromiseLike<Event | null>;
+    protected _prepareEvent(event: Event, hint: EventHint, scope?: Scope, isolationScope?: Scope): PromiseLike<Event | null>;
     /**
      * Processes the event and logs an error in case of rejection
      * @param event
@@ -3242,7 +3302,7 @@ declare class ServerRuntimeClient<O extends ClientOptions & ServerRuntimeClientO
     /**
      * @inheritDoc
      */
-    protected _prepareEvent(event: Event, hint: EventHint, scope?: Scope): PromiseLike<Event | null>;
+    protected _prepareEvent(event: Event, hint: EventHint, scope?: Scope, isolationScope?: Scope): PromiseLike<Event | null>;
     /** Extract trace information from scope */
     private _getTraceInfoFromScope;
 }
@@ -3375,8 +3435,12 @@ declare class Span implements Span$1 {
     isSuccess(): boolean;
     /**
      * @inheritDoc
+     *
+     * @deprecated Use `.end()` instead.
      */
     finish(endTimestamp?: number): void;
+    /** @inheritdoc */
+    end(endTimestamp?: number): void;
     /**
      * @inheritDoc
      */
@@ -3651,7 +3715,7 @@ declare function withScope<T>(callback: (scope: Scope) => T): T;
  *
  * Every child span must be finished before the transaction is finished, otherwise the unfinished spans are discarded.
  *
- * The transaction must be finished with a call to its `.finish()` method, at which point the transaction with all its
+ * The transaction must be finished with a call to its `.end()` method, at which point the transaction with all its
  * finished child spans will be sent to Sentry.
  *
  * NOTE: This function should only be used for *manual* instrumentation. Auto-instrumentation should call
@@ -3727,7 +3791,49 @@ declare function addGlobalEventProcessor(callback: EventProcessor): void;
  */
 declare function createTransport(options: InternalBaseTransportOptions, makeRequest: TransportRequestExecutor, buffer?: PromiseBuffer<void | TransportMakeRequestResponse>): Transport;
 
-declare const SDK_VERSION = "7.90.0";
+declare const SDK_VERSION = "7.91.0";
+
+interface MetricData {
+    unit?: MeasurementUnit;
+    tags?: Record<string, Primitive>;
+    timestamp?: number;
+}
+/**
+ * Adds a value to a counter metric
+ *
+ * @experimental This API is experimental and might have breaking changes in the future.
+ */
+declare function increment(name: string, value?: number, data?: MetricData): void;
+/**
+ * Adds a value to a distribution metric
+ *
+ * @experimental This API is experimental and might have breaking changes in the future.
+ */
+declare function distribution(name: string, value: number, data?: MetricData): void;
+/**
+ * Adds a value to a set metric. Value must be a string or integer.
+ *
+ * @experimental This API is experimental and might have breaking changes in the future.
+ */
+declare function set(name: string, value: number | string, data?: MetricData): void;
+/**
+ * Adds a value to a gauge metric
+ *
+ * @experimental This API is experimental and might have breaking changes in the future.
+ */
+declare function gauge(name: string, value: number, data?: MetricData): void;
+declare const metrics: {
+    increment: typeof increment;
+    distribution: typeof distribution;
+    set: typeof set;
+    gauge: typeof gauge;
+    MetricsAggregator: {
+        new (...args: any[]): Integration & IntegrationFnResult & {
+            setupOnce: (addGlobalEventProcessor?: ((callback: EventProcessor) => void) | undefined, getCurrentHub?: (() => Hub$1) | undefined) => void;
+        };
+        id: string;
+    };
+};
 
 /**
  * The Sentry Deno SDK Client.
@@ -3743,105 +3849,9 @@ declare class DenoClient extends ServerRuntimeClient<DenoClientOptions> {
     constructor(options: DenoClientOptions);
 }
 
-/** Adds Electron context to events. */
-declare class DenoContext implements Integration {
-    /** @inheritDoc */
-    static id: string;
-    /** @inheritDoc */
-    name: string;
-    /** @inheritDoc */
-    setupOnce(_addGlobalEventProcessor: (callback: EventProcessor) => void): void;
-    /** @inheritDoc */
-    processEvent(event: Event): Promise<Event>;
-}
-
-type GlobalHandlersIntegrationsOptionKeys = 'error' | 'unhandledrejection';
-/** JSDoc */
-type GlobalHandlersIntegrations = Record<GlobalHandlersIntegrationsOptionKeys, boolean>;
-/** Global handlers */
-declare class GlobalHandlers implements Integration {
-    /**
-     * @inheritDoc
-     */
-    static id: string;
-    /**
-     * @inheritDoc
-     */
-    name: string;
-    /** JSDoc */
-    private readonly _options;
-    /** JSDoc */
-    constructor(options?: GlobalHandlersIntegrations);
-    /**
-     * @inheritDoc
-     */
-    setupOnce(): void;
-    /** @inheritdoc */
-    setup(client: Client): void;
-}
-
-/** Normalises paths to the app root directory. */
-declare class NormalizePaths implements Integration {
-    /** @inheritDoc */
-    static id: string;
-    /** @inheritDoc */
-    name: string;
-    /** @inheritDoc */
-    setupOnce(_addGlobalEventProcessor: (callback: EventProcessor) => void): void;
-    /** @inheritDoc */
-    processEvent(event: Event): Event | null;
-}
-
-interface ContextLinesOptions {
-    /**
-     * Sets the number of context lines for each frame when loading a file.
-     * Defaults to 7.
-     *
-     * Set to 0 to disable loading and inclusion of source files.
-     */
-    frameContextLines?: number;
-}
-/** Add node modules / packages to the event */
-declare class ContextLines implements Integration {
-    private readonly _options;
-    /**
-     * @inheritDoc
-     */
-    static id: string;
-    /**
-     * @inheritDoc
-     */
-    name: string;
-    constructor(_options?: ContextLinesOptions);
-    /** Get's the number of context lines to add */
-    private get _contextLines();
-    /**
-     * @inheritDoc
-     */
-    setupOnce(_addGlobalEventProcessor: (callback: EventProcessor) => void): void;
-    /** @inheritDoc */
-    processEvent(event: Event): Promise<Event>;
-    /** Processes an event and adds context lines */
-    addSourceContext(event: Event): Promise<Event>;
-    /** Adds context lines to frames */
-    addSourceContextToFrames(frames: StackFrame[]): Promise<void>;
-}
-
-/** Instruments Deno.cron to automatically capture cron check-ins */
-declare class DenoCron implements Integration {
-    /** @inheritDoc */
-    static id: string;
-    /** @inheritDoc */
-    name: string;
-    /** @inheritDoc */
-    setupOnce(): void;
-    /** @inheritDoc */
-    setup(): void;
-}
-
-declare const defaultIntegrations: (DenoContext | GlobalHandlers | NormalizePaths | ContextLines | (Integration & {
+declare const defaultIntegrations: (Integration & IntegrationFnResult & {
     setupOnce: (addGlobalEventProcessor?: ((callback: EventProcessor) => void) | undefined, getCurrentHub?: (() => Hub$1) | undefined) => void;
-}))[];
+})[];
 /**
  * The Sentry Deno SDK Client.
  *
@@ -3900,20 +3910,58 @@ declare const defaultIntegrations: (DenoContext | GlobalHandlers | NormalizePath
 declare function init(options?: DenoOptions): void;
 
 declare const INTEGRATIONS: {
-    DenoContext: typeof DenoContext;
-    GlobalHandlers: typeof GlobalHandlers;
-    NormalizePaths: typeof NormalizePaths;
-    ContextLines: typeof ContextLines;
-    DenoCron: typeof DenoCron;
-    FunctionToString: IntegrationClass<Integration & {
-        setupOnce: (addGlobalEventProcessor?: ((callback: EventProcessor) => void) | undefined, getCurrentHub?: (() => Hub$1) | undefined) => void;
-    }>;
-    InboundFilters: IntegrationClass<Integration & {
-        setupOnce: (addGlobalEventProcessor?: ((callback: EventProcessor) => void) | undefined, getCurrentHub?: (() => Hub$1) | undefined) => void;
-    }>;
-    LinkedErrors: IntegrationClass<Integration & {
-        setupOnce: (addGlobalEventProcessor?: ((callback: EventProcessor) => void) | undefined, getCurrentHub?: (() => Hub$1) | undefined) => void;
-    }>;
+    DenoContext: {
+        new (...args: any[]): Integration & IntegrationFnResult & {
+            setupOnce: (addGlobalEventProcessor?: ((callback: EventProcessor) => void) | undefined, getCurrentHub?: (() => Hub$1) | undefined) => void;
+        };
+        id: string;
+    };
+    GlobalHandlers: {
+        new (...args: any[]): Integration & IntegrationFnResult & {
+            setupOnce: (addGlobalEventProcessor?: ((callback: EventProcessor) => void) | undefined, getCurrentHub?: (() => Hub$1) | undefined) => void;
+        };
+        id: string;
+    };
+    NormalizePaths: {
+        new (...args: any[]): Integration & IntegrationFnResult & {
+            setupOnce: (addGlobalEventProcessor?: ((callback: EventProcessor) => void) | undefined, getCurrentHub?: (() => Hub$1) | undefined) => void;
+        };
+        id: string;
+    };
+    ContextLines: {
+        new (...args: any[]): Integration & IntegrationFnResult & {
+            setupOnce: (addGlobalEventProcessor?: ((callback: EventProcessor) => void) | undefined, getCurrentHub?: (() => Hub$1) | undefined) => void;
+        };
+        id: string;
+    };
+    DenoCron: {
+        new (): Integration & {
+            name: string;
+            setupOnce(): void;
+            setup(client: Client<ClientOptions<BaseTransportOptions>>): void;
+        } & {
+            setupOnce: (addGlobalEventProcessor?: ((callback: EventProcessor) => void) | undefined, getCurrentHub?: (() => Hub$1) | undefined) => void;
+        };
+        id: string;
+    };
+    FunctionToString: {
+        new (...args: any[]): Integration & IntegrationFnResult & {
+            setupOnce: (addGlobalEventProcessor?: ((callback: EventProcessor) => void) | undefined, getCurrentHub?: (() => Hub$1) | undefined) => void;
+        };
+        id: string;
+    };
+    InboundFilters: {
+        new (...args: any[]): Integration & IntegrationFnResult & {
+            setupOnce: (addGlobalEventProcessor?: ((callback: EventProcessor) => void) | undefined, getCurrentHub?: (() => Hub$1) | undefined) => void;
+        };
+        id: string;
+    };
+    LinkedErrors: {
+        new (...args: any[]): Integration & IntegrationFnResult & {
+            setupOnce: (addGlobalEventProcessor?: ((callback: EventProcessor) => void) | undefined, getCurrentHub?: (() => Hub$1) | undefined) => void;
+        };
+        id: string;
+    };
 };
 
-export { type AddRequestDataToEventOptions, type Breadcrumb, type BreadcrumbHint, DenoClient, type DenoOptions, type Event, type EventHint, type Exception, Hub, INTEGRATIONS as Integrations, type PolymorphicRequest, type Request, SDK_VERSION, Scope, type SdkInfo, type Session, Severity, type SeverityLevel, type Span$1 as Span, type SpanStatusType, type StackFrame, type Stacktrace, type Thread, type Transaction, type User, addBreadcrumb, addEventProcessor, addGlobalEventProcessor, captureCheckIn, captureEvent, captureException, captureMessage, close, configureScope, continueTrace, createTransport, defaultIntegrations, extractTraceparentData, flush, getActiveSpan, getActiveTransaction, getClient, getCurrentHub, getCurrentScope, getHubFromCarrier, init, lastEventId, makeMain, runWithAsyncContext, setContext, setExtra, setExtras, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSpan, startSpanManual, startTransaction, trace, withMonitor, withScope };
+export { type AddRequestDataToEventOptions, type Breadcrumb, type BreadcrumbHint, DenoClient, type DenoOptions, type Event, type EventHint, type Exception, Hub, INTEGRATIONS as Integrations, type PolymorphicRequest, type Request, SDK_VERSION, Scope, type SdkInfo, type Session, Severity, type SeverityLevel, type Span$1 as Span, type SpanStatusType, type StackFrame, type Stacktrace, type Thread, type Transaction, type User, addBreadcrumb, addEventProcessor, addGlobalEventProcessor, captureCheckIn, captureEvent, captureException, captureMessage, close, configureScope, continueTrace, createTransport, defaultIntegrations, extractTraceparentData, flush, getActiveSpan, getActiveTransaction, getClient, getCurrentHub, getCurrentScope, getGlobalScope, getHubFromCarrier, getIsolationScope, init, lastEventId, makeMain, metrics, runWithAsyncContext, setContext, setExtra, setExtras, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSpan, startSpanManual, startTransaction, trace, withMonitor, withScope };

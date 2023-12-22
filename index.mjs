@@ -499,6 +499,9 @@ function getGlobalSingleton(name, creator, obj) {
   return singleton;
 }
 
+// eslint-disable-next-line deprecation/deprecation
+const WINDOW$7 = getGlobalObject();
+
 const DEFAULT_MAX_STRING_LENGTH = 80;
 
 /**
@@ -511,7 +514,6 @@ function htmlTreeAsString(
   elem,
   options = {},
 ) {
-
   if (!elem) {
     return '<unknown>';
   }
@@ -575,6 +577,14 @@ function _htmlElementAsString(el, keyAttrs) {
     return '';
   }
 
+  // @ts-expect-error WINDOW has HTMLElement
+  if (WINDOW$7.HTMLElement) {
+    // If using the component name annotation plugin, this value may be available on the DOM node
+    if (elem instanceof HTMLElement && elem.dataset && elem.dataset['sentryComponent']) {
+      return elem.dataset['sentryComponent'];
+    }
+  }
+
   out.push(elem.tagName.toLowerCase());
 
   // Pairs of attribute keys defined in `serializeAttribute` and their values on element.
@@ -610,6 +620,36 @@ function _htmlElementAsString(el, keyAttrs) {
     }
   }
   return out.join('');
+}
+
+/**
+ * Given a DOM element, traverses up the tree until it finds the first ancestor node
+ * that has the `data-sentry-component` attribute. This attribute is added at build-time
+ * by projects that have the component name annotation plugin installed.
+ *
+ * @returns a string representation of the component for the provided DOM element, or `null` if not found
+ */
+function getComponentName(elem) {
+  // @ts-expect-error WINDOW has HTMLElement
+  if (!WINDOW$7.HTMLElement) {
+    return null;
+  }
+
+  let currentElem = elem ;
+  const MAX_TRAVERSE_HEIGHT = 5;
+  for (let i = 0; i < MAX_TRAVERSE_HEIGHT; i++) {
+    if (!currentElem) {
+      return null;
+    }
+
+    if (currentElem instanceof HTMLElement && currentElem.dataset['sentryComponent']) {
+      return currentElem.dataset['sentryComponent'];
+    }
+
+    currentElem = currentElem.parentNode;
+  }
+
+  return null;
 }
 
 /**
@@ -4074,6 +4114,73 @@ function applyScopeDataToEvent(event, data) {
   applySdkMetadataToEvent(event, sdkProcessingMetadata, propagationContext);
 }
 
+/** Merge data of two scopes together. */
+function mergeScopeData(data, mergeData) {
+  const {
+    extra,
+    tags,
+    user,
+    contexts,
+    level,
+    sdkProcessingMetadata,
+    breadcrumbs,
+    fingerprint,
+    eventProcessors,
+    attachments,
+    propagationContext,
+    transactionName,
+    span,
+  } = mergeData;
+
+  mergePropOverwrite(data, 'extra', extra);
+  mergePropOverwrite(data, 'tags', tags);
+  mergePropOverwrite(data, 'user', user);
+  mergePropOverwrite(data, 'contexts', contexts);
+  mergePropOverwrite(data, 'sdkProcessingMetadata', sdkProcessingMetadata);
+
+  if (level) {
+    data.level = level;
+  }
+
+  if (transactionName) {
+    data.transactionName = transactionName;
+  }
+
+  if (span) {
+    data.span = span;
+  }
+
+  if (breadcrumbs.length) {
+    data.breadcrumbs = [...data.breadcrumbs, ...breadcrumbs];
+  }
+
+  if (fingerprint.length) {
+    data.fingerprint = [...data.fingerprint, ...fingerprint];
+  }
+
+  if (eventProcessors.length) {
+    data.eventProcessors = [...data.eventProcessors, ...eventProcessors];
+  }
+
+  if (attachments.length) {
+    data.attachments = [...data.attachments, ...attachments];
+  }
+
+  data.propagationContext = { ...data.propagationContext, ...propagationContext };
+}
+
+/**
+ * Merge properties, overwriting existing keys.
+ * Exported only for tests.
+ */
+function mergePropOverwrite
+
+(data, prop, mergeVal) {
+  if (mergeVal && Object.keys(mergeVal).length) {
+    data[prop] = { ...data[prop], ...mergeVal };
+  }
+}
+
 function applyDataToEvent(event, data) {
   const { extra, tags, user, contexts, level, transactionName } = data;
 
@@ -4152,6 +4259,12 @@ function applyFingerprintToEvent(event, fingerprint) {
  * Default value for maximum number of breadcrumbs added to an event.
  */
 const DEFAULT_MAX_BREADCRUMBS = 100;
+
+/**
+ * The global scope is kept in this module.
+ * When accessing this via `getGlobalScope()` we'll make sure to set one if none is currently present.
+ */
+let globalScope;
 
 /**
  * Holds additional event information. {@link Scope.applyToEvent} will be
@@ -4557,9 +4670,12 @@ class Scope  {
 
   /**
    * @inheritDoc
+   * @deprecated Use `getScopeData()` instead.
    */
    getAttachments() {
-    return this._attachments;
+    const data = this.getScopeData();
+
+    return data.attachments;
   }
 
   /**
@@ -4672,6 +4788,18 @@ class Scope  {
   }
 }
 
+/**
+ * Get the global scope.
+ * This scope is applied to _all_ events.
+ */
+function getGlobalScope() {
+  if (!globalScope) {
+    globalScope = new Scope();
+  }
+
+  return globalScope;
+}
+
 function generatePropagationContext() {
   return {
     traceId: uuid4(),
@@ -4679,7 +4807,7 @@ function generatePropagationContext() {
   };
 }
 
-const SDK_VERSION = '7.90.0';
+const SDK_VERSION = '7.91.0';
 
 /**
  * API compatibility version of this hub.
@@ -4713,11 +4841,18 @@ class Hub  {
    * @param scope bound to the hub.
    * @param version number, higher number means higher priority.
    */
-   constructor(client, scope = new Scope(),   _version = API_VERSION) {this._version = _version;
+   constructor(
+    client,
+    scope = new Scope(),
+    isolationScope = new Scope(),
+      _version = API_VERSION,
+  ) {this._version = _version;
     this._stack = [{ scope }];
     if (client) {
       this.bindClient(client);
     }
+
+    this._isolationScope = isolationScope;
   }
 
   /**
@@ -4787,6 +4922,11 @@ class Hub  {
   /** Returns the scope of the top stack. */
    getScope() {
     return this.getStackTop().scope;
+  }
+
+  /** @inheritdoc */
+   getIsolationScope() {
+    return this._isolationScope;
   }
 
   /** Returns the scope stack for domains or the process. */
@@ -5168,6 +5308,15 @@ function getCurrentHub() {
   return getGlobalHub(registry);
 }
 
+/**
+ * Get the currently active isolation scope.
+ * The isolation scope is active for the current exection context,
+ * meaning that it will remain stable for the same Hub.
+ */
+function getIsolationScope() {
+  return getCurrentHub().getIsolationScope();
+}
+
 function getGlobalHub(registry = getMainCarrier()) {
   // If there's no hub, or its an old API, assign a new one
   if (!hasHubOnCarrier(registry) || getHubFromCarrier(registry).isOlderThan(API_VERSION)) {
@@ -5247,6 +5396,14 @@ function getActiveTransaction(maybeHub) {
  * @deprecated Import this function from `@sentry/utils` instead
  */
 const extractTraceparentData = extractTraceparentData$1;
+
+/**
+ * Converts a timestamp to second, if it was in milliseconds, or keeps it as second.
+ */
+function ensureTimestampInSeconds(timestamp) {
+  const isMs = timestamp > 9999999999;
+  return isMs ? timestamp / 1000 : timestamp;
+}
 
 let errorsInstrumented = false;
 
@@ -5508,8 +5665,15 @@ class Span  {
 
   /**
    * @inheritDoc
+   *
+   * @deprecated Use `.end()` instead.
    */
    finish(endTimestamp) {
+    return this.end(endTimestamp);
+  }
+
+  /** @inheritdoc */
+   end(endTimestamp) {
     if (
       DEBUG_BUILD$1 &&
       // Don't call this for transactions
@@ -5522,7 +5686,8 @@ class Span  {
       }
     }
 
-    this.endTimestamp = typeof endTimestamp === 'number' ? endTimestamp : timestampInSeconds();
+    this.endTimestamp =
+      typeof endTimestamp === 'number' ? ensureTimestampInSeconds(endTimestamp) : timestampInSeconds();
   }
 
   /**
@@ -5788,8 +5953,10 @@ class Transaction extends Span  {
   /**
    * @inheritDoc
    */
-   finish(endTimestamp) {
-    const transaction = this._finishTransaction(endTimestamp);
+   end(endTimestamp) {
+    const timestampInS =
+      typeof endTimestamp === 'number' ? ensureTimestampInSeconds(endTimestamp) : timestampInSeconds();
+    const transaction = this._finishTransaction(timestampInS);
     if (!transaction) {
       return undefined;
     }
@@ -5886,7 +6053,7 @@ class Transaction extends Span  {
     }
 
     // just sets the end timestamp
-    super.finish(endTimestamp);
+    super.end(endTimestamp);
 
     const client = this._hub.getClient();
     if (client && client.emit) {
@@ -5986,6 +6153,7 @@ function prepareEvent(
   hint,
   scope,
   client,
+  isolationScope,
 ) {
   const { normalizeDepth = 3, normalizeMaxBreadth = 1000 } = options;
   const prepared = {
@@ -6012,36 +6180,37 @@ function prepareEvent(
   }
 
   const clientEventProcessors = client && client.getEventProcessors ? client.getEventProcessors() : [];
+
+  // This should be the last thing called, since we want that
+  // {@link Hub.addEventProcessor} gets the finished prepared event.
+  // Merge scope data together
+  const data = getGlobalScope().getScopeData();
+
+  if (isolationScope) {
+    const isolationData = isolationScope.getScopeData();
+    mergeScopeData(data, isolationData);
+  }
+
+  if (finalScope) {
+    const finalScopeData = finalScope.getScopeData();
+    mergeScopeData(data, finalScopeData);
+  }
+
+  const attachments = [...(hint.attachments || []), ...data.attachments];
+  if (attachments.length) {
+    hint.attachments = attachments;
+  }
+
+  applyScopeDataToEvent(prepared, data);
+
   // TODO (v8): Update this order to be: Global > Client > Scope
   const eventProcessors = [
     ...clientEventProcessors,
     // eslint-disable-next-line deprecation/deprecation
     ...getGlobalEventProcessors(),
-  ];
-
-  // This should be the last thing called, since we want that
-  // {@link Hub.addEventProcessor} gets the finished prepared event.
-  //
-  // We need to check for the existence of `finalScope.getAttachments`
-  // because `getAttachments` can be undefined if users are using an older version
-  // of `@sentry/core` that does not have the `getAttachments` method.
-  // See: https://github.com/getsentry/sentry-javascript/issues/5229
-  if (finalScope) {
-    // Collect attachments from the hint and scope
-    if (finalScope.getAttachments) {
-      const attachments = [...(hint.attachments || []), ...finalScope.getAttachments()];
-
-      if (attachments.length) {
-        hint.attachments = attachments;
-      }
-    }
-
-    const scopeData = finalScope.getScopeData();
-    applyScopeDataToEvent(prepared, scopeData);
-
     // Run scope event processors _after_ all other processors
-    eventProcessors.push(...scopeData.eventProcessors);
-  }
+    ...data.eventProcessors,
+  ];
 
   const result = notifyEventProcessors(eventProcessors, prepared, hint);
 
@@ -6482,7 +6651,7 @@ function withScope(callback) {
  *
  * Every child span must be finished before the transaction is finished, otherwise the unfinished spans are discarded.
  *
- * The transaction must be finished with a call to its `.finish()` method, at which point the transaction with all its
+ * The transaction must be finished with a call to its `.end()` method, at which point the transaction with all its
  * finished child spans will be sent to Sentry.
  *
  * NOTE: This function should only be used for *manual* instrumentation. Auto-instrumentation should call
@@ -6871,7 +7040,7 @@ function trace(
   scope.setSpan(activeSpan);
 
   function finishAndSetSpan() {
-    activeSpan && activeSpan.finish();
+    activeSpan && activeSpan.end();
     scope.setSpan(parentSpan);
   }
 
@@ -6887,23 +7056,25 @@ function trace(
   }
 
   if (isThenable(maybePromiseResult)) {
-    Promise.resolve(maybePromiseResult).then(
-      () => {
+    // @ts-expect-error - the isThenable check returns the "wrong" type here
+    return maybePromiseResult.then(
+      res => {
         finishAndSetSpan();
         afterFinish();
+        return res;
       },
       e => {
         activeSpan && activeSpan.setStatus('internal_error');
         onError(e, activeSpan);
         finishAndSetSpan();
         afterFinish();
+        throw e;
       },
     );
-  } else {
-    finishAndSetSpan();
-    afterFinish();
   }
 
+  finishAndSetSpan();
+  afterFinish();
   return maybePromiseResult;
 }
 
@@ -6921,42 +7092,44 @@ function trace(
 function startSpan(context, callback) {
   const ctx = normalizeContext(context);
 
-  const hub = getCurrentHub();
-  const scope = getCurrentScope();
-  const parentSpan = scope.getSpan();
+  // @ts-expect-error - isThenable returns the wrong type
+  return withScope(scope => {
+    const hub = getCurrentHub();
+    const parentSpan = scope.getSpan();
 
-  const activeSpan = createChildSpanOrTransaction(hub, parentSpan, ctx);
-  scope.setSpan(activeSpan);
+    const activeSpan = createChildSpanOrTransaction(hub, parentSpan, ctx);
+    scope.setSpan(activeSpan);
 
-  function finishAndSetSpan() {
-    activeSpan && activeSpan.finish();
-    scope.setSpan(parentSpan);
-  }
+    function finishAndSetSpan() {
+      activeSpan && activeSpan.end();
+    }
 
-  let maybePromiseResult;
-  try {
-    maybePromiseResult = callback(activeSpan);
-  } catch (e) {
-    activeSpan && activeSpan.setStatus('internal_error');
+    let maybePromiseResult;
+    try {
+      maybePromiseResult = callback(activeSpan);
+    } catch (e) {
+      activeSpan && activeSpan.setStatus('internal_error');
+      finishAndSetSpan();
+      throw e;
+    }
+
+    if (isThenable(maybePromiseResult)) {
+      return maybePromiseResult.then(
+        res => {
+          finishAndSetSpan();
+          return res;
+        },
+        e => {
+          activeSpan && activeSpan.setStatus('internal_error');
+          finishAndSetSpan();
+          throw e;
+        },
+      );
+    }
+
     finishAndSetSpan();
-    throw e;
-  }
-
-  if (isThenable(maybePromiseResult)) {
-    Promise.resolve(maybePromiseResult).then(
-      () => {
-        finishAndSetSpan();
-      },
-      () => {
-        activeSpan && activeSpan.setStatus('internal_error');
-        finishAndSetSpan();
-      },
-    );
-  } else {
-    finishAndSetSpan();
-  }
-
-  return maybePromiseResult;
+    return maybePromiseResult;
+  });
 }
 
 /**
@@ -6976,33 +7149,38 @@ function startSpanManual(
 ) {
   const ctx = normalizeContext(context);
 
-  const hub = getCurrentHub();
-  const scope = getCurrentScope();
-  const parentSpan = scope.getSpan();
+  // @ts-expect-error - isThenable returns the wrong type
+  return withScope(scope => {
+    const hub = getCurrentHub();
+    const parentSpan = scope.getSpan();
 
-  const activeSpan = createChildSpanOrTransaction(hub, parentSpan, ctx);
-  scope.setSpan(activeSpan);
+    const activeSpan = createChildSpanOrTransaction(hub, parentSpan, ctx);
+    scope.setSpan(activeSpan);
 
-  function finishAndSetSpan() {
-    activeSpan && activeSpan.finish();
-    scope.setSpan(parentSpan);
-  }
+    function finishAndSetSpan() {
+      activeSpan && activeSpan.end();
+    }
 
-  let maybePromiseResult;
-  try {
-    maybePromiseResult = callback(activeSpan, finishAndSetSpan);
-  } catch (e) {
-    activeSpan && activeSpan.setStatus('internal_error');
-    throw e;
-  }
-
-  if (isThenable(maybePromiseResult)) {
-    Promise.resolve(maybePromiseResult).then(undefined, () => {
+    let maybePromiseResult;
+    try {
+      maybePromiseResult = callback(activeSpan, finishAndSetSpan);
+    } catch (e) {
       activeSpan && activeSpan.setStatus('internal_error');
-    });
-  }
+      throw e;
+    }
 
-  return maybePromiseResult;
+    if (isThenable(maybePromiseResult)) {
+      return maybePromiseResult.then(
+        res => res,
+        e => {
+          activeSpan && activeSpan.setStatus('internal_error');
+          throw e;
+        },
+      );
+    }
+
+    return maybePromiseResult;
+  });
 }
 
 /**
@@ -7482,6 +7660,74 @@ function convertIntegrationFnToClass(
 ;
 }
 
+const COUNTER_METRIC_TYPE = 'c' ;
+const GAUGE_METRIC_TYPE = 'g' ;
+const SET_METRIC_TYPE = 's' ;
+const DISTRIBUTION_METRIC_TYPE = 'd' ;
+
+/**
+ * Normalization regex for metric names and metric tag names.
+ *
+ * This enforces that names and tag keys only contain alphanumeric characters,
+ * underscores, forward slashes, periods, and dashes.
+ *
+ * See: https://develop.sentry.dev/sdk/metrics/#normalization
+ */
+const NAME_AND_TAG_KEY_NORMALIZATION_REGEX = /[^a-zA-Z0-9_/.-]+/g;
+
+/**
+ * Normalization regex for metric tag values.
+ *
+ * This enforces that values only contain words, digits, or the following
+ * special characters: _:/@.{}[\]$-
+ *
+ * See: https://develop.sentry.dev/sdk/metrics/#normalization
+ */
+const TAG_VALUE_NORMALIZATION_REGEX = /[^\w\d_:/@.{}[\]$-]+/g;
+
+/**
+ * This does not match spec in https://develop.sentry.dev/sdk/metrics
+ * but was chosen to optimize for the most common case in browser environments.
+ */
+const DEFAULT_BROWSER_FLUSH_INTERVAL = 5000;
+
+/**
+ * SDKs are required to bucket into 10 second intervals (rollup in seconds)
+ * which is the current lower bound of metric accuracy.
+ */
+const DEFAULT_FLUSH_INTERVAL = 10000;
+
+/**
+ * The maximum number of metrics that should be stored in memory.
+ */
+const MAX_WEIGHT = 10000;
+
+/**
+ * Generate bucket key from metric properties.
+ */
+function getBucketKey(
+  metricType,
+  name,
+  unit,
+  tags,
+) {
+  const stringifiedTags = Object.entries(dropUndefinedKeys(tags)).sort((a, b) => a[0].localeCompare(b[0]));
+  return `${metricType}${name}${unit}${stringifiedTags}`;
+}
+
+/* eslint-disable no-bitwise */
+/**
+ * Simple hash function for strings.
+ */
+function simpleHash(s) {
+  let rv = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    rv = (rv << 5) - rv + c;
+    rv &= rv;
+  }
+  return rv >>> 0;
+}
 /* eslint-enable no-bitwise */
 
 /**
@@ -7499,15 +7745,26 @@ function convertIntegrationFnToClass(
  */
 function serializeMetricBuckets(metricBucketItems) {
   let out = '';
-  for (const [metric, timestamp, metricType, name, unit, tags] of metricBucketItems) {
-    const maybeTags = Object.keys(tags).length
-      ? `|#${Object.entries(tags)
-          .map(([key, value]) => `${key}:${String(value)}`)
-          .join(',')}`
-      : '';
-    out += `${name}@${unit}:${metric}|${metricType}${maybeTags}|T${timestamp}\n`;
+  for (const item of metricBucketItems) {
+    const tagEntries = Object.entries(item.tags);
+    const maybeTags = tagEntries.length > 0 ? `|#${tagEntries.map(([key, value]) => `${key}:${value}`).join(',')}` : '';
+    out += `${item.name}@${item.unit}:${item.metric}|${item.metricType}${maybeTags}|T${item.timestamp}\n`;
   }
   return out;
+}
+
+/**
+ * Sanitizes tags.
+ */
+function sanitizeTags(unsanitizedTags) {
+  const tags = {};
+  for (const key in unsanitizedTags) {
+    if (Object.prototype.hasOwnProperty.call(unsanitizedTags, key)) {
+      const sanitizedKey = key.replace(NAME_AND_TAG_KEY_NORMALIZATION_REGEX, '_');
+      tags[sanitizedKey] = String(unsanitizedTags[key]).replace(TAG_VALUE_NORMALIZATION_REGEX, '_');
+    }
+  }
+  return tags;
 }
 
 /**
@@ -7884,6 +8141,7 @@ class BaseClient {
    * @inheritDoc
    */
    captureAggregateMetrics(metricBucketItems) {
+    DEBUG_BUILD$1 && logger.log(`Flushing aggregated metrics, number of metrics: ${metricBucketItems.length}`);
     const metricsEnvelope = createMetricEnvelope(
       metricBucketItems,
       this._dsn,
@@ -8004,7 +8262,12 @@ class BaseClient {
    * @param scope A scope containing event metadata.
    * @returns A new event with more information.
    */
-   _prepareEvent(event, hint, scope) {
+   _prepareEvent(
+    event,
+    hint,
+    scope,
+    isolationScope = getIsolationScope(),
+  ) {
     const options = this.getOptions();
     const integrations = Object.keys(this._integrations);
     if (!hint.integrations && integrations.length > 0) {
@@ -8013,7 +8276,7 @@ class BaseClient {
 
     this.emit('preprocessEvent', event, hint);
 
-    return prepareEvent(options, event, hint, scope, this).then(evt => {
+    return prepareEvent(options, event, hint, scope, this, isolationScope).then(evt => {
       if (evt === null) {
         return evt;
       }
@@ -8332,6 +8595,269 @@ function createCheckInEnvelopeItem(checkIn) {
 }
 
 /**
+ * A metric instance representing a counter.
+ */
+class CounterMetric  {
+   constructor( _value) {this._value = _value;}
+
+  /** @inheritDoc */
+   get weight() {
+    return 1;
+  }
+
+  /** @inheritdoc */
+   add(value) {
+    this._value += value;
+  }
+
+  /** @inheritdoc */
+   toString() {
+    return `${this._value}`;
+  }
+}
+
+/**
+ * A metric instance representing a gauge.
+ */
+class GaugeMetric  {
+
+   constructor(value) {
+    this._last = value;
+    this._min = value;
+    this._max = value;
+    this._sum = value;
+    this._count = 1;
+  }
+
+  /** @inheritDoc */
+   get weight() {
+    return 5;
+  }
+
+  /** @inheritdoc */
+   add(value) {
+    this._last = value;
+    if (value < this._min) {
+      this._min = value;
+    }
+    if (value > this._max) {
+      this._max = value;
+    }
+    this._sum += value;
+    this._count++;
+  }
+
+  /** @inheritdoc */
+   toString() {
+    return `${this._last}:${this._min}:${this._max}:${this._sum}:${this._count}`;
+  }
+}
+
+/**
+ * A metric instance representing a distribution.
+ */
+class DistributionMetric  {
+
+   constructor(first) {
+    this._value = [first];
+  }
+
+  /** @inheritDoc */
+   get weight() {
+    return this._value.length;
+  }
+
+  /** @inheritdoc */
+   add(value) {
+    this._value.push(value);
+  }
+
+  /** @inheritdoc */
+   toString() {
+    return this._value.join(':');
+  }
+}
+
+/**
+ * A metric instance representing a set.
+ */
+class SetMetric  {
+
+   constructor( first) {this.first = first;
+    this._value = new Set([first]);
+  }
+
+  /** @inheritDoc */
+   get weight() {
+    return this._value.size;
+  }
+
+  /** @inheritdoc */
+   add(value) {
+    this._value.add(value);
+  }
+
+  /** @inheritdoc */
+   toString() {
+    return Array.from(this._value)
+      .map(val => (typeof val === 'string' ? simpleHash(val) : val))
+      .join(':');
+  }
+}
+
+const METRIC_MAP = {
+  [COUNTER_METRIC_TYPE]: CounterMetric,
+  [GAUGE_METRIC_TYPE]: GaugeMetric,
+  [DISTRIBUTION_METRIC_TYPE]: DistributionMetric,
+  [SET_METRIC_TYPE]: SetMetric,
+};
+
+/**
+ * A metrics aggregator that aggregates metrics in memory and flushes them periodically.
+ */
+class MetricsAggregator$1  {
+  // TODO(@anonrig): Use FinalizationRegistry to have a proper way of flushing the buckets
+  // when the aggregator is garbage collected.
+  // Ref: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/FinalizationRegistry
+
+  // Different metrics have different weights. We use this to limit the number of metrics
+  // that we store in memory.
+
+  // SDKs are required to shift the flush interval by random() * rollup_in_seconds.
+  // That shift is determined once per startup to create jittering.
+
+  // An SDK is required to perform force flushing ahead of scheduled time if the memory
+  // pressure is too high. There is no rule for this other than that SDKs should be tracking
+  // abstract aggregation complexity (eg: a counter only carries a single float, whereas a
+  // distribution is a float per emission).
+  //
+  // Force flush is used on either shutdown, flush() or when we exceed the max weight.
+
+   constructor(  _client) {this._client = _client;
+    this._buckets = new Map();
+    this._bucketsTotalWeight = 0;
+    this._interval = setInterval(() => this._flush(), DEFAULT_FLUSH_INTERVAL);
+    this._flushShift = Math.floor((Math.random() * DEFAULT_FLUSH_INTERVAL) / 1000);
+    this._forceFlush = false;
+  }
+
+  /**
+   * @inheritDoc
+   */
+   add(
+    metricType,
+    unsanitizedName,
+    value,
+    unit = 'none',
+    unsanitizedTags = {},
+    maybeFloatTimestamp = timestampInSeconds(),
+  ) {
+    const timestamp = Math.floor(maybeFloatTimestamp);
+    const name = unsanitizedName.replace(NAME_AND_TAG_KEY_NORMALIZATION_REGEX, '_');
+    const tags = sanitizeTags(unsanitizedTags);
+
+    const bucketKey = getBucketKey(metricType, name, unit, tags);
+    let bucketItem = this._buckets.get(bucketKey);
+    if (bucketItem) {
+      bucketItem.metric.add(value);
+      // TODO(abhi): Do we need this check?
+      if (bucketItem.timestamp < timestamp) {
+        bucketItem.timestamp = timestamp;
+      }
+    } else {
+      bucketItem = {
+        // @ts-expect-error we don't need to narrow down the type of value here, saves bundle size.
+        metric: new METRIC_MAP[metricType](value),
+        timestamp,
+        metricType,
+        name,
+        unit,
+        tags,
+      };
+      this._buckets.set(bucketKey, bucketItem);
+    }
+
+    // We need to keep track of the total weight of the buckets so that we can
+    // flush them when we exceed the max weight.
+    this._bucketsTotalWeight += bucketItem.metric.weight;
+
+    if (this._bucketsTotalWeight >= MAX_WEIGHT) {
+      this.flush();
+    }
+  }
+
+  /**
+   * Flushes the current metrics to the transport via the transport.
+   */
+   flush() {
+    this._forceFlush = true;
+    this._flush();
+  }
+
+  /**
+   * Shuts down metrics aggregator and clears all metrics.
+   */
+   close() {
+    this._forceFlush = true;
+    clearInterval(this._interval);
+    this._flush();
+  }
+
+  /**
+   * Flushes the buckets according to the internal state of the aggregator.
+   * If it is a force flush, which happens on shutdown, it will flush all buckets.
+   * Otherwise, it will only flush buckets that are older than the flush interval,
+   * and according to the flush shift.
+   *
+   * This function mutates `_forceFlush` and `_bucketsTotalWeight` properties.
+   */
+   _flush() {
+    // TODO(@anonrig): Add Atomics for locking to avoid having force flush and regular flush
+    // running at the same time.
+    // Ref: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Atomics
+
+    // This path eliminates the need for checking for timestamps since we're forcing a flush.
+    // Remember to reset the flag, or it will always flush all metrics.
+    if (this._forceFlush) {
+      this._forceFlush = false;
+      this._bucketsTotalWeight = 0;
+      this._captureMetrics(this._buckets);
+      this._buckets.clear();
+      return;
+    }
+    const cutoffSeconds = Math.floor(timestampInSeconds()) - DEFAULT_FLUSH_INTERVAL / 1000 - this._flushShift;
+    // TODO(@anonrig): Optimization opportunity.
+    // Convert this map to an array and store key in the bucketItem.
+    const flushedBuckets = new Map();
+    for (const [key, bucket] of this._buckets) {
+      if (bucket.timestamp <= cutoffSeconds) {
+        flushedBuckets.set(key, bucket);
+        this._bucketsTotalWeight -= bucket.metric.weight;
+      }
+    }
+
+    for (const [key] of flushedBuckets) {
+      this._buckets.delete(key);
+    }
+
+    this._captureMetrics(flushedBuckets);
+  }
+
+  /**
+   * Only captures a subset of the buckets passed to this function.
+   * @param flushedBuckets
+   */
+   _captureMetrics(flushedBuckets) {
+    if (flushedBuckets.size > 0 && this._client.captureAggregateMetrics) {
+      // TODO(@anonrig): Optimization opportunity.
+      // This copy operation can be avoided if we store the key in the bucketItem.
+      const buckets = Array.from(flushedBuckets).map(([, bucketItem]) => bucketItem);
+      this._client.captureAggregateMetrics(buckets);
+    }
+  }
+}
+
+/**
  * The Sentry Server Runtime Client SDK.
  */
 class ServerRuntimeClient
@@ -8347,6 +8873,10 @@ class ServerRuntimeClient
     addTracingExtensions();
 
     super(options);
+
+    if (options._experiments && options._experiments['metricsAggregator']) {
+      this.metricsAggregator = new MetricsAggregator$1(this);
+    }
   }
 
   /**
@@ -8519,7 +9049,12 @@ class ServerRuntimeClient
   /**
    * @inheritDoc
    */
-   _prepareEvent(event, hint, scope) {
+   _prepareEvent(
+    event,
+    hint,
+    scope,
+    isolationScope,
+  ) {
     if (this._options.platform) {
       event.platform = event.platform || this._options.platform;
     }
@@ -8535,7 +9070,7 @@ class ServerRuntimeClient
       event.server_name = event.server_name || this._options.serverName;
     }
 
-    return super._prepareEvent(event, hint, scope);
+    return super._prepareEvent(event, hint, scope, isolationScope);
   }
 
   /** Extract trace information from scope */
@@ -8697,11 +9232,11 @@ function getEventForEnvelopeItem(item, type) {
 
 let originalFunctionToString;
 
-const INTEGRATION_NAME$4 = 'FunctionToString';
+const INTEGRATION_NAME$a = 'FunctionToString';
 
 const functionToStringIntegration = () => {
   return {
-    name: INTEGRATION_NAME$4,
+    name: INTEGRATION_NAME$a,
     setupOnce() {
       // eslint-disable-next-line @typescript-eslint/unbound-method
       originalFunctionToString = Function.prototype.toString;
@@ -8723,7 +9258,7 @@ const functionToStringIntegration = () => {
 
 /** Patch toString calls to return proper name for wrapped functions */
 // eslint-disable-next-line deprecation/deprecation
-const FunctionToString = convertIntegrationFnToClass(INTEGRATION_NAME$4, functionToStringIntegration);
+const FunctionToString = convertIntegrationFnToClass(INTEGRATION_NAME$a, functionToStringIntegration);
 
 // "Script error." is hard coded into browsers for errors that it can't read.
 // this is the result of a script being pulled in from an external domain and CORS.
@@ -8741,10 +9276,10 @@ const DEFAULT_IGNORE_TRANSACTIONS = [
 
 /** Options for the InboundFilters integration */
 
-const INTEGRATION_NAME$3 = 'InboundFilters';
+const INTEGRATION_NAME$9 = 'InboundFilters';
 const inboundFiltersIntegration = (options) => {
   return {
-    name: INTEGRATION_NAME$3,
+    name: INTEGRATION_NAME$9,
     processEvent(event, _hint, client) {
       const clientOptions = client.getOptions();
       const mergedOptions = _mergeOptions(options, clientOptions);
@@ -8755,7 +9290,7 @@ const inboundFiltersIntegration = (options) => {
 
 /** Inbound filters configurable by the user */
 // eslint-disable-next-line deprecation/deprecation
-const InboundFilters = convertIntegrationFnToClass(INTEGRATION_NAME$3, inboundFiltersIntegration);
+const InboundFilters = convertIntegrationFnToClass(INTEGRATION_NAME$9, inboundFiltersIntegration);
 
 function _mergeOptions(
   internalOptions = {},
@@ -8929,14 +9464,14 @@ function _getEventFilterUrl(event) {
 const DEFAULT_KEY = 'cause';
 const DEFAULT_LIMIT = 5;
 
-const INTEGRATION_NAME$2 = 'LinkedErrors';
+const INTEGRATION_NAME$8 = 'LinkedErrors';
 
 const linkedErrorsIntegration = (options = {}) => {
   const limit = options.limit || DEFAULT_LIMIT;
   const key = options.key || DEFAULT_KEY;
 
   return {
-    name: INTEGRATION_NAME$2,
+    name: INTEGRATION_NAME$8,
     preprocessEvent(event, hint, client) {
       const options = client.getOptions();
 
@@ -8955,13 +9490,186 @@ const linkedErrorsIntegration = (options = {}) => {
 
 /** Adds SDK info to an event. */
 // eslint-disable-next-line deprecation/deprecation
-const LinkedErrors = convertIntegrationFnToClass(INTEGRATION_NAME$2, linkedErrorsIntegration);
+const LinkedErrors = convertIntegrationFnToClass(INTEGRATION_NAME$8, linkedErrorsIntegration);
 
 var CoreIntegrations = {
   __proto__: null,
   FunctionToString: FunctionToString,
   InboundFilters: InboundFilters,
   LinkedErrors: LinkedErrors
+};
+
+/**
+ * A simple metrics aggregator that aggregates metrics in memory and flushes them periodically.
+ * Default flush interval is 5 seconds.
+ *
+ * @experimental This API is experimental and might change in the future.
+ */
+class BrowserMetricsAggregator  {
+  // TODO(@anonrig): Use FinalizationRegistry to have a proper way of flushing the buckets
+  // when the aggregator is garbage collected.
+  // Ref: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/FinalizationRegistry
+
+   constructor(  _client) {this._client = _client;
+    this._buckets = new Map();
+    this._interval = setInterval(() => this.flush(), DEFAULT_BROWSER_FLUSH_INTERVAL);
+  }
+
+  /**
+   * @inheritDoc
+   */
+   add(
+    metricType,
+    unsanitizedName,
+    value,
+    unit = 'none',
+    unsanitizedTags = {},
+    maybeFloatTimestamp = timestampInSeconds(),
+  ) {
+    const timestamp = Math.floor(maybeFloatTimestamp);
+    const name = unsanitizedName.replace(NAME_AND_TAG_KEY_NORMALIZATION_REGEX, '_');
+    const tags = sanitizeTags(unsanitizedTags);
+
+    const bucketKey = getBucketKey(metricType, name, unit, tags);
+    const bucketItem = this._buckets.get(bucketKey);
+    if (bucketItem) {
+      bucketItem.metric.add(value);
+      // TODO(abhi): Do we need this check?
+      if (bucketItem.timestamp < timestamp) {
+        bucketItem.timestamp = timestamp;
+      }
+    } else {
+      this._buckets.set(bucketKey, {
+        // @ts-expect-error we don't need to narrow down the type of value here, saves bundle size.
+        metric: new METRIC_MAP[metricType](value),
+        timestamp,
+        metricType,
+        name,
+        unit,
+        tags,
+      });
+    }
+  }
+
+  /**
+   * @inheritDoc
+   */
+   flush() {
+    // short circuit if buckets are empty.
+    if (this._buckets.size === 0) {
+      return;
+    }
+    if (this._client.captureAggregateMetrics) {
+      // TODO(@anonrig): Use Object.values() when we support ES6+
+      const metricBuckets = Array.from(this._buckets).map(([, bucketItem]) => bucketItem);
+      this._client.captureAggregateMetrics(metricBuckets);
+    }
+    this._buckets.clear();
+  }
+
+  /**
+   * @inheritDoc
+   */
+   close() {
+    clearInterval(this._interval);
+    this.flush();
+  }
+}
+
+const INTEGRATION_NAME$7 = 'MetricsAggregator';
+
+const metricsAggregatorIntegration = () => {
+  return {
+    name: INTEGRATION_NAME$7,
+    setup(client) {
+      client.metricsAggregator = new BrowserMetricsAggregator(client);
+    },
+  };
+};
+
+/**
+ * Enables Sentry metrics monitoring.
+ *
+ * @experimental This API is experimental and might having breaking changes in the future.
+ */
+// eslint-disable-next-line deprecation/deprecation
+const MetricsAggregator = convertIntegrationFnToClass(INTEGRATION_NAME$7, metricsAggregatorIntegration);
+
+function addToMetricsAggregator(
+  metricType,
+  name,
+  value,
+  data = {},
+) {
+  const client = getClient();
+  const scope = getCurrentScope();
+  if (client) {
+    if (!client.metricsAggregator) {
+      DEBUG_BUILD$1 &&
+        logger.warn('No metrics aggregator enabled. Please add the MetricsAggregator integration to use metrics APIs');
+      return;
+    }
+    const { unit, tags, timestamp } = data;
+    const { release, environment } = client.getOptions();
+    const transaction = scope.getTransaction();
+    const metricTags = {};
+    if (release) {
+      metricTags.release = release;
+    }
+    if (environment) {
+      metricTags.environment = environment;
+    }
+    if (transaction) {
+      metricTags.transaction = transaction.name;
+    }
+
+    DEBUG_BUILD$1 && logger.log(`Adding value of ${value} to ${metricType} metric ${name}`);
+    client.metricsAggregator.add(metricType, name, value, unit, { ...metricTags, ...tags }, timestamp);
+  }
+}
+
+/**
+ * Adds a value to a counter metric
+ *
+ * @experimental This API is experimental and might have breaking changes in the future.
+ */
+function increment(name, value = 1, data) {
+  addToMetricsAggregator(COUNTER_METRIC_TYPE, name, value, data);
+}
+
+/**
+ * Adds a value to a distribution metric
+ *
+ * @experimental This API is experimental and might have breaking changes in the future.
+ */
+function distribution(name, value, data) {
+  addToMetricsAggregator(DISTRIBUTION_METRIC_TYPE, name, value, data);
+}
+
+/**
+ * Adds a value to a set metric. Value must be a string or integer.
+ *
+ * @experimental This API is experimental and might have breaking changes in the future.
+ */
+function set(name, value, data) {
+  addToMetricsAggregator(SET_METRIC_TYPE, name, value, data);
+}
+
+/**
+ * Adds a value to a gauge metric
+ *
+ * @experimental This API is experimental and might have breaking changes in the future.
+ */
+function gauge(name, value, data) {
+  addToMetricsAggregator(GAUGE_METRIC_TYPE, name, value, data);
+}
+
+const metrics = {
+  increment,
+  distribution,
+  set,
+  gauge,
+  MetricsAggregator,
 };
 
 function getHostName() {
@@ -9013,10 +9721,12 @@ const WINDOW = GLOBAL_OBJ ;
  */
 const DEBUG_BUILD = (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__);
 
+/* eslint-disable max-lines */
+
 /** maxStringLength gets capped to prevent 100 breadcrumbs exceeding 1MB event payload size */
 const MAX_ALLOWED_STRING_LENGTH = 1024;
 
-const INTEGRATION_NAME$1 = 'Breadcrumbs';
+const INTEGRATION_NAME$6 = 'Breadcrumbs';
 
 const breadcrumbsIntegration = (options = {}) => {
   const _options = {
@@ -9030,7 +9740,7 @@ const breadcrumbsIntegration = (options = {}) => {
   };
 
   return {
-    name: INTEGRATION_NAME$1,
+    name: INTEGRATION_NAME$6,
     setup(client) {
       if (_options.console) {
         addConsoleInstrumentationHandler(_getConsoleBreadcrumbHandler(client));
@@ -9058,7 +9768,7 @@ const breadcrumbsIntegration = (options = {}) => {
  * Default Breadcrumbs instrumentations
  */
 // eslint-disable-next-line deprecation/deprecation
-const Breadcrumbs = convertIntegrationFnToClass(INTEGRATION_NAME$1, breadcrumbsIntegration);
+const Breadcrumbs = convertIntegrationFnToClass(INTEGRATION_NAME$6, breadcrumbsIntegration);
 
 /**
  * Adds a breadcrumb for Sentry events or transactions if this option is enabled.
@@ -9097,6 +9807,7 @@ function _getDomBreadcrumbHandler(
     }
 
     let target;
+    let componentName;
     let keyAttrs = typeof dom === 'object' ? dom.serializeAttribute : undefined;
 
     let maxStringLength =
@@ -9116,9 +9827,10 @@ function _getDomBreadcrumbHandler(
     // Accessing event.target can throw (see getsentry/raven-js#838, #768)
     try {
       const event = handlerData.event ;
-      target = _isEvent(event)
-        ? htmlTreeAsString(event.target, { keyAttrs, maxStringLength })
-        : htmlTreeAsString(event, { keyAttrs, maxStringLength });
+      const element = _isEvent(event) ? event.target : event;
+
+      target = htmlTreeAsString(element, { keyAttrs, maxStringLength });
+      componentName = getComponentName(element);
     } catch (e) {
       target = '<unknown>';
     }
@@ -9127,17 +9839,20 @@ function _getDomBreadcrumbHandler(
       return;
     }
 
-    addBreadcrumb(
-      {
-        category: `ui.${handlerData.name}`,
-        message: target,
-      },
-      {
-        event: handlerData.event,
-        name: handlerData.name,
-        global: handlerData.global,
-      },
-    );
+    const breadcrumb = {
+      category: `ui.${handlerData.name}`,
+      message: target,
+    };
+
+    if (componentName) {
+      breadcrumb.data = { 'ui.component_name': componentName };
+    }
+
+    addBreadcrumb(breadcrumb, {
+      event: handlerData.event,
+      name: handlerData.name,
+      global: handlerData.global,
+    });
   };
 }
 
@@ -9327,13 +10042,13 @@ function _isEvent(event) {
   return !!event && !!(event ).target;
 }
 
-const INTEGRATION_NAME = 'Dedupe';
+const INTEGRATION_NAME$5 = 'Dedupe';
 
 const dedupeIntegration = () => {
   let previousEvent;
 
   return {
-    name: INTEGRATION_NAME,
+    name: INTEGRATION_NAME$5,
     processEvent(currentEvent) {
       // We want to ignore any non-error type events, e.g. transactions or replays
       // These should never be deduped, and also not be compared against as _previousEvent.
@@ -9356,7 +10071,7 @@ const dedupeIntegration = () => {
 
 /** Deduplication filter */
 // eslint-disable-next-line deprecation/deprecation
-const Dedupe = convertIntegrationFnToClass(INTEGRATION_NAME, dedupeIntegration);
+const Dedupe = convertIntegrationFnToClass(INTEGRATION_NAME$5, dedupeIntegration);
 
 function _shouldDropEvent(currentEvent, previousEvent) {
   if (!previousEvent) {
@@ -9509,6 +10224,8 @@ function _getFramesFromEvent(event) {
   return undefined;
 }
 
+const INTEGRATION_NAME$4 = 'DenoContext';
+
 function getOSName() {
   switch (Deno.build.os) {
     case 'darwin':
@@ -9528,7 +10245,7 @@ function getOSRelease() {
     : undefined;
 }
 
-async function denoRuntime(event) {
+async function addDenoRuntimeContext(event) {
   event.contexts = {
     ...{
       app: {
@@ -9558,67 +10275,45 @@ async function denoRuntime(event) {
   return event;
 }
 
-/** Adds Electron context to events. */
-class DenoContext  {constructor() { DenoContext.prototype.__init.call(this); }
-  /** @inheritDoc */
-   static __initStatic() {this.id = 'DenoContext';}
+const denoContextIntegration = () => {
+  return {
+    name: INTEGRATION_NAME$4,
+    processEvent(event) {
+      return addDenoRuntimeContext(event);
+    },
+  };
+};
 
-  /** @inheritDoc */
-   __init() {this.name = DenoContext.id;}
+/** Adds Deno context to events. */
+// eslint-disable-next-line deprecation/deprecation
+const DenoContext = convertIntegrationFnToClass(INTEGRATION_NAME$4, denoContextIntegration);
 
-  /** @inheritDoc */
-   setupOnce(_addGlobalEventProcessor) {
-    // noop
-  }
-
-  /** @inheritDoc */
-   processEvent(event) {
-    return denoRuntime(event);
-  }
-} DenoContext.__initStatic();
-
+const INTEGRATION_NAME$3 = 'GlobalHandlers';
 let isExiting = false;
 
+const globalHandlersIntegration = (options) => {
+  const _options = {
+    error: true,
+    unhandledrejection: true,
+    ...options,
+  };
+
+  return {
+    name: INTEGRATION_NAME$3,
+    setup(client) {
+      if (_options.error) {
+        installGlobalErrorHandler(client);
+      }
+      if (_options.unhandledrejection) {
+        installGlobalUnhandledRejectionHandler(client);
+      }
+    },
+  };
+};
+
 /** Global handlers */
-class GlobalHandlers  {
-  /**
-   * @inheritDoc
-   */
-   static __initStatic() {this.id = 'GlobalHandlers';}
-
-  /**
-   * @inheritDoc
-   */
-   __init() {this.name = GlobalHandlers.id;}
-
-  /** JSDoc */
-  
-
-  /** JSDoc */
-   constructor(options) {GlobalHandlers.prototype.__init.call(this);
-    this._options = {
-      error: true,
-      unhandledrejection: true,
-      ...options,
-    };
-  }
-  /**
-   * @inheritDoc
-   */
-   setupOnce() {
-    // noop
-  }
-
-  /** @inheritdoc */
-   setup(client) {
-    if (this._options.error) {
-      installGlobalErrorHandler(client);
-    }
-    if (this._options.unhandledrejection) {
-      installGlobalUnhandledRejectionHandler(client);
-    }
-  }
-} GlobalHandlers.__initStatic();
+// eslint-disable-next-line deprecation/deprecation
+const GlobalHandlers = convertIntegrationFnToClass(INTEGRATION_NAME$3, globalHandlersIntegration);
 
 function installGlobalErrorHandler(client) {
   globalThis.addEventListener('error', data => {
@@ -9739,6 +10434,7 @@ function getStackParser() {
 }
 
 function _optionalChain(ops) { let lastAccessLHS = undefined; let value = ops[0]; let i = 1; while (i < ops.length) { const op = ops[i]; const fn = ops[i + 1]; i += 2; if ((op === 'optionalAccess' || op === 'optionalCall') && value == null) { return undefined; } if (op === 'access' || op === 'optionalAccess') { lastAccessLHS = value; value = fn(value); } else if (op === 'call' || op === 'optionalCall') { value = fn((...args) => value.call(lastAccessLHS, ...args)); lastAccessLHS = undefined; } } return value; }
+const INTEGRATION_NAME$2 = 'NormalizePaths';
 
 function appRootFromErrorStack(error) {
   // We know at the other end of the stack from here is the entry point that called 'init'
@@ -9791,56 +10487,51 @@ function getCwd() {
   return undefined;
 }
 
-// Cached here
-let appRoot;
+const normalizePathsIntegration = () => {
+  // Cached here
+  let appRoot;
 
-function getAppRoot(error) {
-  if (appRoot === undefined) {
-    appRoot = getCwd() || appRootFromErrorStack(error);
+  function getAppRoot(error) {
+    if (appRoot === undefined) {
+      appRoot = getCwd() || appRootFromErrorStack(error);
+    }
+
+    return appRoot;
   }
 
-  return appRoot;
-}
+  return {
+    name: INTEGRATION_NAME$2,
+    processEvent(event) {
+      // This error.stack hopefully contains paths that traverse the app cwd
+      const error = new Error();
 
-/** Normalises paths to the app root directory. */
-class NormalizePaths  {constructor() { NormalizePaths.prototype.__init.call(this); }
-  /** @inheritDoc */
-   static __initStatic() {this.id = 'NormalizePaths';}
+      const appRoot = getAppRoot(error);
 
-  /** @inheritDoc */
-   __init() {this.name = NormalizePaths.id;}
+      if (appRoot) {
+        for (const exception of _optionalChain([event, 'access', _2 => _2.exception, 'optionalAccess', _3 => _3.values]) || []) {
+          for (const frame of _optionalChain([exception, 'access', _4 => _4.stacktrace, 'optionalAccess', _5 => _5.frames]) || []) {
+            if (frame.filename && frame.in_app) {
+              const startIndex = frame.filename.indexOf(appRoot);
 
-  /** @inheritDoc */
-   setupOnce(_addGlobalEventProcessor) {
-    // noop
-  }
-
-  /** @inheritDoc */
-   processEvent(event) {
-    // This error.stack hopefully contains paths that traverse the app cwd
-    const error = new Error();
-
-    const appRoot = getAppRoot(error);
-
-    if (appRoot) {
-      for (const exception of _optionalChain([event, 'access', _2 => _2.exception, 'optionalAccess', _3 => _3.values]) || []) {
-        for (const frame of _optionalChain([exception, 'access', _4 => _4.stacktrace, 'optionalAccess', _5 => _5.frames]) || []) {
-          if (frame.filename && frame.in_app) {
-            const startIndex = frame.filename.indexOf(appRoot);
-
-            if (startIndex > -1) {
-              const endIndex = startIndex + appRoot.length;
-              frame.filename = `app://${frame.filename.substring(endIndex)}`;
+              if (startIndex > -1) {
+                const endIndex = startIndex + appRoot.length;
+                frame.filename = `app://${frame.filename.substring(endIndex)}`;
+              }
             }
           }
         }
       }
-    }
 
-    return event;
-  }
-} NormalizePaths.__initStatic();
+      return event;
+    },
+  };
+};
 
+/** Normalises paths to the app root directory. */
+// eslint-disable-next-line deprecation/deprecation
+const NormalizePaths = convertIntegrationFnToClass(INTEGRATION_NAME$2, normalizePathsIntegration);
+
+const INTEGRATION_NAME$1 = 'ContextLines';
 const FILE_CONTENT_CACHE = new LRUMap(100);
 const DEFAULT_LINES_OF_CONTEXT = 7;
 
@@ -9877,79 +10568,60 @@ async function readSourceFile(filename) {
 
 
 
+const denoContextLinesIntegration = (options = {}) => {
+  const contextLines = options.frameContextLines !== undefined ? options.frameContextLines : DEFAULT_LINES_OF_CONTEXT;
+
+  return {
+    name: INTEGRATION_NAME$1,
+    processEvent(event) {
+      return addSourceContext(event, contextLines);
+    },
+  };
+};
+
 /** Add node modules / packages to the event */
-class ContextLines  {
-  /**
-   * @inheritDoc
-   */
-   static __initStatic() {this.id = 'ContextLines';}
+// eslint-disable-next-line deprecation/deprecation
+const ContextLines = convertIntegrationFnToClass(INTEGRATION_NAME$1, denoContextLinesIntegration);
 
-  /**
-   * @inheritDoc
-   */
-   __init() {this.name = ContextLines.id;}
-
-   constructor(  _options = {}) {this._options = _options;ContextLines.prototype.__init.call(this);}
-
-  /** Get's the number of context lines to add */
-   get _contextLines() {
-    return this._options.frameContextLines !== undefined ? this._options.frameContextLines : DEFAULT_LINES_OF_CONTEXT;
-  }
-
-  /**
-   * @inheritDoc
-   */
-   setupOnce(_addGlobalEventProcessor) {
-    // noop
-  }
-
-  /** @inheritDoc */
-   processEvent(event) {
-    return this.addSourceContext(event);
-  }
-
-  /** Processes an event and adds context lines */
-   async addSourceContext(event) {
-    if (this._contextLines > 0 && event.exception && event.exception.values) {
-      for (const exception of event.exception.values) {
-        if (exception.stacktrace && exception.stacktrace.frames) {
-          await this.addSourceContextToFrames(exception.stacktrace.frames);
-        }
+/** Processes an event and adds context lines */
+async function addSourceContext(event, contextLines) {
+  if (contextLines > 0 && event.exception && event.exception.values) {
+    for (const exception of event.exception.values) {
+      if (exception.stacktrace && exception.stacktrace.frames) {
+        await addSourceContextToFrames(exception.stacktrace.frames, contextLines);
       }
     }
-
-    return event;
   }
 
-  /** Adds context lines to frames */
-   async addSourceContextToFrames(frames) {
-    const contextLines = this._contextLines;
+  return event;
+}
 
-    for (const frame of frames) {
-      // Only add context if we have a filename and it hasn't already been added
-      if (frame.filename && frame.in_app && frame.context_line === undefined) {
-        const permission = await Deno.permissions.query({
-          name: 'read',
-          path: frame.filename,
-        });
+/** Adds context lines to frames */
+async function addSourceContextToFrames(frames, contextLines) {
+  for (const frame of frames) {
+    // Only add context if we have a filename and it hasn't already been added
+    if (frame.filename && frame.in_app && frame.context_line === undefined) {
+      const permission = await Deno.permissions.query({
+        name: 'read',
+        path: frame.filename,
+      });
 
-        if (permission.state == 'granted') {
-          const sourceFile = await readSourceFile(frame.filename);
+      if (permission.state == 'granted') {
+        const sourceFile = await readSourceFile(frame.filename);
 
-          if (sourceFile) {
-            try {
-              const lines = sourceFile.split('\n');
-              addContextToFrame(lines, frame, contextLines);
-            } catch (_) {
-              // anomaly, being defensive in case
-              // unlikely to ever happen in practice but can definitely happen in theory
-            }
+        if (sourceFile) {
+          try {
+            const lines = sourceFile.split('\n');
+            addContextToFrame(lines, frame, contextLines);
+          } catch (_) {
+            // anomaly, being defensive in case
+            // unlikely to ever happen in practice but can definitely happen in theory
           }
         }
       }
     }
   }
-} ContextLines.__initStatic();
+}
 
 /**
  * These functions were copied from the Deno source code here:
@@ -10036,57 +10708,62 @@ function parseScheduleToString(schedule) {
   }
 }
 
+const INTEGRATION_NAME = 'DenoCron';
+
+const SETUP_CLIENTS = new WeakMap();
+
+const denoCronIntegration = (() => {
+  return {
+    name: INTEGRATION_NAME,
+    setupOnce() {
+      // eslint-disable-next-line deprecation/deprecation
+      if (!Deno.cron) {
+        // The cron API is not available in this Deno version use --unstable flag!
+        return;
+      }
+
+      // eslint-disable-next-line deprecation/deprecation
+      Deno.cron = new Proxy(Deno.cron, {
+        apply(target, thisArg, argArray) {
+          const [monitorSlug, schedule, opt1, opt2] = argArray;
+          let options;
+          let fn;
+
+          if (typeof opt1 === 'function' && typeof opt2 !== 'function') {
+            fn = opt1;
+            options = opt2;
+          } else if (typeof opt1 !== 'function' && typeof opt2 === 'function') {
+            fn = opt2;
+            options = opt1;
+          }
+
+          async function cronCalled() {
+            if (SETUP_CLIENTS.has(getClient() )) {
+              return;
+            }
+
+            await withMonitor(monitorSlug, async () => fn(), {
+              schedule: { type: 'crontab', value: parseScheduleToString(schedule) },
+              // (minutes) so 12 hours - just a very high arbitrary number since we don't know the actual duration of the users cron job
+              maxRuntime: 60 * 12,
+              // Deno Deploy docs say that the cron job will be called within 1 minute of the scheduled time
+              checkinMargin: 1,
+            });
+          }
+
+          return target.call(thisArg, monitorSlug, schedule, options || {}, cronCalled);
+        },
+      });
+    },
+    setup(client) {
+      SETUP_CLIENTS.set(client, true);
+    },
+  };
+}) ;
+
 /** Instruments Deno.cron to automatically capture cron check-ins */
-class DenoCron  {constructor() { DenoCron.prototype.__init.call(this); }
-  /** @inheritDoc */
-   static __initStatic() {this.id = 'DenoCron';}
-
-  /** @inheritDoc */
-   __init() {this.name = DenoCron.id;}
-
-  /** @inheritDoc */
-   setupOnce() {
-    //
-  }
-
-  /** @inheritDoc */
-   setup() {
-    // eslint-disable-next-line deprecation/deprecation
-    if (!Deno.cron) {
-      // The cron API is not available in this Deno version use --unstable flag!
-      return;
-    }
-
-    // eslint-disable-next-line deprecation/deprecation
-    Deno.cron = new Proxy(Deno.cron, {
-      apply(target, thisArg, argArray) {
-        const [monitorSlug, schedule, opt1, opt2] = argArray;
-        let options;
-        let fn;
-
-        if (typeof opt1 === 'function' && typeof opt2 !== 'function') {
-          fn = opt1;
-          options = opt2;
-        } else if (typeof opt1 !== 'function' && typeof opt2 === 'function') {
-          fn = opt2;
-          options = opt1;
-        }
-
-        async function cronCalled() {
-          await withMonitor(monitorSlug, async () => fn(), {
-            schedule: { type: 'crontab', value: parseScheduleToString(schedule) },
-            // (minutes) so 12 hours - just a very high arbitrary number since we don't know the actual duration of the users cron job
-            maxRuntime: 60 * 12,
-            // Deno Deploy docs say that the cron job will be called within 1 minute of the scheduled time
-            checkinMargin: 1,
-          });
-        }
-
-        return target.call(thisArg, monitorSlug, schedule, options || {}, cronCalled);
-      },
-    });
-  }
-} DenoCron.__initStatic();
+// eslint-disable-next-line deprecation/deprecation
+const DenoCron = convertIntegrationFnToClass(INTEGRATION_NAME, denoCronIntegration);
 
 var DenoIntegrations = {
   __proto__: null,
@@ -10234,5 +10911,5 @@ const INTEGRATIONS = {
   ...DenoIntegrations,
 };
 
-export { DenoClient, Hub, INTEGRATIONS as Integrations, SDK_VERSION, Scope, addBreadcrumb, addEventProcessor, addGlobalEventProcessor, captureCheckIn, captureEvent, captureException, captureMessage, close, configureScope, continueTrace, createTransport, defaultIntegrations, extractTraceparentData, flush, getActiveSpan, getActiveTransaction, getClient, getCurrentHub, getCurrentScope, getHubFromCarrier, init, lastEventId, makeMain, runWithAsyncContext, setContext, setExtra, setExtras, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSpan, startSpanManual, startTransaction, trace, withMonitor, withScope };
+export { DenoClient, Hub, INTEGRATIONS as Integrations, SDK_VERSION, Scope, addBreadcrumb, addEventProcessor, addGlobalEventProcessor, captureCheckIn, captureEvent, captureException, captureMessage, close, configureScope, continueTrace, createTransport, defaultIntegrations, extractTraceparentData, flush, getActiveSpan, getActiveTransaction, getClient, getCurrentHub, getCurrentScope, getGlobalScope, getHubFromCarrier, getIsolationScope, init, lastEventId, makeMain, metrics, runWithAsyncContext, setContext, setExtra, setExtras, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSpan, startSpanManual, startTransaction, trace, withMonitor, withScope };
 //# sourceMappingURL=index.mjs.map
