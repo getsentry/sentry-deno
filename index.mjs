@@ -3267,10 +3267,10 @@ function baggageHeaderToDynamicSamplingContext(
     // Combine all baggage headers into one object containing the baggage values so we can later read the Sentry-DSC-values from it
     baggageObject = baggageHeader.reduce((acc, curr) => {
       const currBaggageObject = baggageHeaderToObject(curr);
-      return {
-        ...acc,
-        ...currBaggageObject,
-      };
+      for (const key of Object.keys(currBaggageObject)) {
+        acc[key] = currBaggageObject[key];
+      }
+      return acc;
     }, {});
   } else {
     // Return undefined if baggage header is an empty string (technically an empty baggage header is not spec conform but
@@ -3316,6 +3316,7 @@ function baggageHeaderToObject(baggageHeader) {
     }, {});
 }
 
+// eslint-disable-next-line @sentry-internal/sdk/no-regexp-constructor -- RegExp is used for readability here
 const TRACEPARENT_REGEXP = new RegExp(
   '^[ \\t]*' + // whitespace
     '([0-9a-f]{32})?' + // trace_id
@@ -4094,6 +4095,32 @@ function sessionToJSON(session) {
 }
 
 /**
+ * Convert a span to a trace context, which can be sent as the `trace` context in an event.
+ */
+function spanToTraceContext(span) {
+  const { data, description, op, parent_span_id, span_id, status, tags, trace_id, origin } = span.toJSON();
+
+  return dropUndefinedKeys({
+    data,
+    description,
+    op,
+    parent_span_id,
+    span_id,
+    status,
+    tags,
+    trace_id,
+    origin,
+  });
+}
+
+/**
+ * Convert a Span to a Sentry trace header.
+ */
+function spanToTraceHeader(span) {
+  return generateSentryTraceHeader(span.traceId, span.spanId, span.sampled);
+}
+
+/**
  * Applies data from the scope to the event and runs all event processors on it.
  */
 function applyScopeDataToEvent(event, data) {
@@ -4222,7 +4249,7 @@ function applySdkMetadataToEvent(
 }
 
 function applySpanToEvent(event, span) {
-  event.contexts = { trace: span.getTraceContext(), ...event.contexts };
+  event.contexts = { trace: spanToTraceContext(span), ...event.contexts };
   const transaction = span.transaction;
   if (transaction) {
     event.sdkProcessingMetadata = {
@@ -4309,6 +4336,8 @@ class Scope  {
 
   /** Request Mode Session Status */
 
+  /** The client on this scope */
+
   // NOTE: Any field which gets added here should get added not only to the constructor but also to the `clone` method.
 
    constructor() {
@@ -4353,8 +4382,23 @@ class Scope  {
     newScope._attachments = [...this._attachments];
     newScope._sdkProcessingMetadata = { ...this._sdkProcessingMetadata };
     newScope._propagationContext = { ...this._propagationContext };
+    newScope._client = this._client;
 
     return newScope;
+  }
+
+  /** Update the client on the scope. */
+   setClient(client) {
+    this._client = client;
+  }
+
+  /**
+   * Get the client assigned to this scope.
+   *
+   * It is generally recommended to use the global function `Sentry.getClient()` instead, unless you know what you are doing.
+   */
+   getClient() {
+    return this._client;
   }
 
   /**
@@ -4807,7 +4851,7 @@ function generatePropagationContext() {
   };
 }
 
-const SDK_VERSION = '7.91.0';
+const SDK_VERSION = '7.92.0';
 
 /**
  * API compatibility version of this hub.
@@ -4843,16 +4887,33 @@ class Hub  {
    */
    constructor(
     client,
-    scope = new Scope(),
-    isolationScope = new Scope(),
+    scope,
+    isolationScope,
       _version = API_VERSION,
   ) {this._version = _version;
-    this._stack = [{ scope }];
+    let assignedScope;
+    if (!scope) {
+      assignedScope = new Scope();
+      assignedScope.setClient(client);
+    } else {
+      assignedScope = scope;
+    }
+
+    let assignedIsolationScope;
+    if (!isolationScope) {
+      assignedIsolationScope = new Scope();
+      assignedIsolationScope.setClient(client);
+    } else {
+      assignedIsolationScope = isolationScope;
+    }
+
+    this._stack = [{ scope: assignedScope }];
+
     if (client) {
       this.bindClient(client);
     }
 
-    this._isolationScope = isolationScope;
+    this._isolationScope = assignedIsolationScope;
   }
 
   /**
@@ -4904,12 +4965,35 @@ class Hub  {
    withScope(callback) {
     // eslint-disable-next-line deprecation/deprecation
     const scope = this.pushScope();
+
+    let maybePromiseResult;
     try {
-      return callback(scope);
-    } finally {
+      maybePromiseResult = callback(scope);
+    } catch (e) {
       // eslint-disable-next-line deprecation/deprecation
       this.popScope();
+      throw e;
     }
+
+    if (isThenable(maybePromiseResult)) {
+      // @ts-expect-error - isThenable returns the wrong type
+      return maybePromiseResult.then(
+        res => {
+          // eslint-disable-next-line deprecation/deprecation
+          this.popScope();
+          return res;
+        },
+        e => {
+          // eslint-disable-next-line deprecation/deprecation
+          this.popScope();
+          throw e;
+        },
+      );
+    }
+
+    // eslint-disable-next-line deprecation/deprecation
+    this.popScope();
+    return maybePromiseResult;
   }
 
   /**
@@ -5514,6 +5598,10 @@ class Span  {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 
   /**
+   * @inheritDoc
+   */
+
+  /**
    * List of spans that were finalized
    */
 
@@ -5542,6 +5630,7 @@ class Span  {
     this.startTimestamp = spanContext.startTimestamp || timestampInSeconds();
     this.tags = spanContext.tags || {};
     this.data = spanContext.data || {};
+    this.attributes = spanContext.attributes || {};
     this.instrumenter = spanContext.instrumenter || 'sentry';
     this.origin = spanContext.origin || 'manual';
 
@@ -5573,9 +5662,11 @@ class Span  {
    get name() {
     return this.description || '';
   }
-  /** Update the name of the span. */
+  /**
+   * Update the name of the span.
+   */
    set name(name) {
-    this.setName(name);
+    this.updateName(name);
   }
 
   /**
@@ -5622,10 +5713,25 @@ class Span  {
   /**
    * @inheritDoc
    */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/explicit-module-boundary-types
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
    setData(key, value) {
     this.data = { ...this.data, [key]: value };
     return this;
+  }
+
+  /** @inheritdoc */
+   setAttribute(key, value) {
+    if (value === undefined) {
+      // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+      delete this.attributes[key];
+    } else {
+      this.attributes[key] = value;
+    }
+  }
+
+  /** @inheritdoc */
+   setAttributes(attributes) {
+    Object.keys(attributes).forEach(key => this.setAttribute(key, attributes[key]));
   }
 
   /**
@@ -5649,11 +5755,17 @@ class Span  {
     return this;
   }
 
+  /** @inheritdoc */
+   setName(name) {
+    this.updateName(name);
+  }
+
   /**
    * @inheritDoc
    */
-   setName(name) {
+   updateName(name) {
     this.description = name;
+    return this;
   }
 
   /**
@@ -5694,7 +5806,7 @@ class Span  {
    * @inheritDoc
    */
    toTraceparent() {
-    return generateSentryTraceHeader(this.traceId, this.spanId, this.sampled);
+    return spanToTraceHeader(this);
   }
 
   /**
@@ -5702,7 +5814,7 @@ class Span  {
    */
    toContext() {
     return dropUndefinedKeys({
-      data: this.data,
+      data: this._getData(),
       description: this.description,
       endTimestamp: this.endTimestamp,
       op: this.op,
@@ -5739,17 +5851,7 @@ class Span  {
    * @inheritDoc
    */
    getTraceContext() {
-    return dropUndefinedKeys({
-      data: Object.keys(this.data).length > 0 ? this.data : undefined,
-      description: this.description,
-      op: this.op,
-      parent_span_id: this.parentSpanId,
-      span_id: this.spanId,
-      status: this.status,
-      tags: Object.keys(this.tags).length > 0 ? this.tags : undefined,
-      trace_id: this.traceId,
-      origin: this.origin,
-    });
+    return spanToTraceContext(this);
   }
 
   /**
@@ -5759,7 +5861,7 @@ class Span  {
 
  {
     return dropUndefinedKeys({
-      data: Object.keys(this.data).length > 0 ? this.data : undefined,
+      data: this._getData(),
       description: this.description,
       op: this.op,
       parent_span_id: this.parentSpanId,
@@ -5771,6 +5873,33 @@ class Span  {
       trace_id: this.traceId,
       origin: this.origin,
     });
+  }
+
+  /**
+   * Get the merged data for this span.
+   * For now, this combines `data` and `attributes` together,
+   * until eventually we can ingest `attributes` directly.
+   */
+   _getData()
+
+ {
+    const { data, attributes } = this;
+
+    const hasData = Object.keys(data).length > 0;
+    const hasAttributes = Object.keys(attributes).length > 0;
+
+    if (!hasData && !hasAttributes) {
+      return undefined;
+    }
+
+    if (hasData && hasAttributes) {
+      return {
+        ...data,
+        ...attributes,
+      };
+    }
+
+    return hasData ? data : attributes;
   }
 }
 
@@ -5900,17 +6029,28 @@ class Transaction extends Span  {
     return this._name;
   }
 
-  /** Setter for `name` property, which also sets `source` as custom */
+  /**
+   * Setter for `name` property, which also sets `source` as custom.
+   */
    set name(newName) {
+    // eslint-disable-next-line deprecation/deprecation
     this.setName(newName);
   }
 
   /**
-   * JSDoc
+   * Setter for `name` property, which also sets `source` on the metadata.
+   *
+   * @deprecated Use `updateName()` and `setMetadata()` instead.
    */
    setName(name, source = 'custom') {
     this._name = name;
     this.metadata.source = source;
+  }
+
+  /** @inheritdoc */
+   updateName(name) {
+    this._name = name;
+    return this;
   }
 
   /**
@@ -5967,6 +6107,7 @@ class Transaction extends Span  {
    * @inheritDoc
    */
    toContext() {
+    // eslint-disable-next-line deprecation/deprecation
     const spanContext = super.toContext();
 
     return dropUndefinedKeys({
@@ -5980,6 +6121,7 @@ class Transaction extends Span  {
    * @inheritDoc
    */
    updateWithContext(transactionContext) {
+    // eslint-disable-next-line deprecation/deprecation
     super.updateWithContext(transactionContext);
 
     this.name = transactionContext.name || '';
@@ -6088,7 +6230,7 @@ class Transaction extends Span  {
       contexts: {
         ...this._contexts,
         // We don't want to override trace context
-        trace: this.getTraceContext(),
+        trace: spanToTraceContext(this),
       },
       spans: finishedSpans,
       start_timestamp: this.startTimestamp,
@@ -6772,6 +6914,7 @@ async function close(timeout) {
  * This is the getter for lastEventId.
  *
  * @returns The last event id of a captured event.
+ * @deprecated This function will be removed in the next major version of the Sentry SDK.
  */
 function lastEventId() {
   return getCurrentHub().lastEventId();
@@ -6934,7 +7077,7 @@ function traceHeaders() {
 
   return span
     ? {
-        'sentry-trace': span.toTraceparent(),
+        'sentry-trace': spanToTraceHeader(span),
       }
     : {};
 }
@@ -7010,6 +7153,67 @@ function addTracingExtensions() {
 }
 
 /**
+ * Wrap a callback function with error handling.
+ * If an error is thrown, it will be passed to the `onError` callback and re-thrown.
+ *
+ * If the return value of the function is a promise, it will be handled with `maybeHandlePromiseRejection`.
+ *
+ * If an `onFinally` callback is provided, this will be called when the callback has finished
+ * - so if it returns a promise, once the promise resolved/rejected,
+ * else once the callback has finished executing.
+ * The `onFinally` callback will _always_ be called, no matter if an error was thrown or not.
+ */
+function handleCallbackErrors
+
+(
+  fn,
+  onError,
+  // eslint-disable-next-line @typescript-eslint/no-empty-function
+  onFinally = () => {},
+) {
+  let maybePromiseResult;
+  try {
+    maybePromiseResult = fn();
+  } catch (e) {
+    onError(e);
+    onFinally();
+    throw e;
+  }
+
+  return maybeHandlePromiseRejection(maybePromiseResult, onError, onFinally);
+}
+
+/**
+ * Maybe handle a promise rejection.
+ * This expects to be given a value that _may_ be a promise, or any other value.
+ * If it is a promise, and it rejects, it will call the `onError` callback.
+ * Other than this, it will generally return the given value as-is.
+ */
+function maybeHandlePromiseRejection(
+  value,
+  onError,
+  onFinally,
+) {
+  if (isThenable(value)) {
+    // @ts-expect-error - the isThenable check returns the "wrong" type here
+    return value.then(
+      res => {
+        onFinally();
+        return res;
+      },
+      e => {
+        onError(e);
+        onFinally();
+        throw e;
+      },
+    );
+  }
+
+  onFinally();
+  return value;
+}
+
+/**
  * Wraps a function with a transaction/span and finishes the span after the function is done.
  *
  * Note that if you have not enabled tracing extensions via `addTracingExtensions`
@@ -7020,6 +7224,8 @@ function addTracingExtensions() {
  *
  * @internal
  * @private
+ *
+ * @deprecated Use `startSpan` instead.
  */
 function trace(
   context,
@@ -7039,43 +7245,18 @@ function trace(
 
   scope.setSpan(activeSpan);
 
-  function finishAndSetSpan() {
-    activeSpan && activeSpan.end();
-    scope.setSpan(parentSpan);
-  }
-
-  let maybePromiseResult;
-  try {
-    maybePromiseResult = callback(activeSpan);
-  } catch (e) {
-    activeSpan && activeSpan.setStatus('internal_error');
-    onError(e, activeSpan);
-    finishAndSetSpan();
-    afterFinish();
-    throw e;
-  }
-
-  if (isThenable(maybePromiseResult)) {
-    // @ts-expect-error - the isThenable check returns the "wrong" type here
-    return maybePromiseResult.then(
-      res => {
-        finishAndSetSpan();
-        afterFinish();
-        return res;
-      },
-      e => {
-        activeSpan && activeSpan.setStatus('internal_error');
-        onError(e, activeSpan);
-        finishAndSetSpan();
-        afterFinish();
-        throw e;
-      },
-    );
-  }
-
-  finishAndSetSpan();
-  afterFinish();
-  return maybePromiseResult;
+  return handleCallbackErrors(
+    () => callback(activeSpan),
+    error => {
+      activeSpan && activeSpan.setStatus('internal_error');
+      onError(error, activeSpan);
+    },
+    () => {
+      activeSpan && activeSpan.end();
+      scope.setSpan(parentSpan);
+      afterFinish();
+    },
+  );
 }
 
 /**
@@ -7092,7 +7273,6 @@ function trace(
 function startSpan(context, callback) {
   const ctx = normalizeContext(context);
 
-  // @ts-expect-error - isThenable returns the wrong type
   return withScope(scope => {
     const hub = getCurrentHub();
     const parentSpan = scope.getSpan();
@@ -7100,41 +7280,22 @@ function startSpan(context, callback) {
     const activeSpan = createChildSpanOrTransaction(hub, parentSpan, ctx);
     scope.setSpan(activeSpan);
 
-    function finishAndSetSpan() {
-      activeSpan && activeSpan.end();
-    }
-
-    let maybePromiseResult;
-    try {
-      maybePromiseResult = callback(activeSpan);
-    } catch (e) {
-      activeSpan && activeSpan.setStatus('internal_error');
-      finishAndSetSpan();
-      throw e;
-    }
-
-    if (isThenable(maybePromiseResult)) {
-      return maybePromiseResult.then(
-        res => {
-          finishAndSetSpan();
-          return res;
-        },
-        e => {
-          activeSpan && activeSpan.setStatus('internal_error');
-          finishAndSetSpan();
-          throw e;
-        },
-      );
-    }
-
-    finishAndSetSpan();
-    return maybePromiseResult;
+    return handleCallbackErrors(
+      () => callback(activeSpan),
+      () => {
+        // Only update the span status if it hasn't been changed yet
+        if (activeSpan && (!activeSpan.status || activeSpan.status === 'ok')) {
+          activeSpan.setStatus('internal_error');
+        }
+      },
+      () => activeSpan && activeSpan.end(),
+    );
   });
 }
 
 /**
  * Similar to `Sentry.startSpan`. Wraps a function with a transaction/span, but does not finish the span
- * after the function is done automatically.
+ * after the function is done automatically. You'll have to call `span.end()` manually.
  *
  * The created span is the active span and will be used as parent by other spans created inside the function
  * and can be accessed via `Sentry.getActiveSpan()`, as long as the function is executed while the scope is active.
@@ -7149,7 +7310,6 @@ function startSpanManual(
 ) {
   const ctx = normalizeContext(context);
 
-  // @ts-expect-error - isThenable returns the wrong type
   return withScope(scope => {
     const hub = getCurrentHub();
     const parentSpan = scope.getSpan();
@@ -7161,25 +7321,15 @@ function startSpanManual(
       activeSpan && activeSpan.end();
     }
 
-    let maybePromiseResult;
-    try {
-      maybePromiseResult = callback(activeSpan, finishAndSetSpan);
-    } catch (e) {
-      activeSpan && activeSpan.setStatus('internal_error');
-      throw e;
-    }
-
-    if (isThenable(maybePromiseResult)) {
-      return maybePromiseResult.then(
-        res => res,
-        e => {
-          activeSpan && activeSpan.setStatus('internal_error');
-          throw e;
-        },
-      );
-    }
-
-    return maybePromiseResult;
+    return handleCallbackErrors(
+      () => callback(activeSpan, finishAndSetSpan),
+      () => {
+        // Only update the span status if it hasn't been changed yet, and the span is not yet finished
+        if (activeSpan && !activeSpan.endTimestamp && (!activeSpan.status || activeSpan.status === 'ok')) {
+          activeSpan.setStatus('internal_error');
+        }
+      },
+    );
   });
 }
 
@@ -9084,7 +9234,7 @@ class ServerRuntimeClient
     const span = scope.getSpan();
     if (span) {
       const samplingContext = span.transaction ? span.transaction.getDynamicSamplingContext() : undefined;
-      return [samplingContext, span.getTraceContext()];
+      return [samplingContext, spanToTraceContext(span)];
     }
 
     const { traceId, spanId, parentSpanId, dsc } = scope.getPropagationContext();

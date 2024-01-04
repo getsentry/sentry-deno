@@ -435,12 +435,22 @@ interface ScopeData {
     fingerprint: string[];
     level?: SeverityLevel;
     transactionName?: string;
-    span?: Span$1;
+    span?: Span;
 }
 /**
  * Holds additional event information. {@link Scope.applyToEvent} will be called by the client before an event is sent.
  */
 interface Scope$1 {
+    /**
+     * Update the client on the scope.
+     */
+    setClient(client: Client | undefined): void;
+    /**
+     * Get the client assigned to this scope.
+     *
+     * It is generally recommended to use the global function `Sentry.getClient()` instead, unless you know what you are doing.
+     */
+    getClient(): Client | undefined;
     /** Add new event processor that will be called after {@link applyToEvent}. */
     addEventProcessor(callback: EventProcessor): this;
     /** Get the data of this scope, which is applied to an event during processing. */
@@ -506,11 +516,11 @@ interface Scope$1 {
      * Sets the Span on the scope.
      * @param span Span
      */
-    setSpan(span?: Span$1): this;
+    setSpan(span?: Span): this;
     /**
      * Returns the `Span` if there is one
      */
-    getSpan(): Span$1 | undefined;
+    getSpan(): Span | undefined;
     /**
      * Returns the `Transaction` attached to the scope (if there is one)
      */
@@ -639,7 +649,7 @@ interface Event {
     extra?: Extras;
     user?: User;
     type?: EventType;
-    spans?: Span$1[];
+    spans?: Span[];
     measurements?: Measurements;
     debug_meta?: DebugMeta;
     sdkProcessingMetadata?: {
@@ -991,7 +1001,7 @@ type TraceparentData = Pick<TransactionContext, 'traceId' | 'parentSpanId' | 'pa
 /**
  * Transaction "Class", inherits Span only has `setName`
  */
-interface Transaction extends TransactionContext, Omit<Span$1, 'setName' | 'name'> {
+interface Transaction extends TransactionContext, Omit<Span, 'setName' | 'name'> {
     /**
      * @inheritDoc
      */
@@ -1017,6 +1027,10 @@ interface Transaction extends TransactionContext, Omit<Span$1, 'setName' | 'name
         [key: string]: any;
     };
     /**
+     * @inheritDoc
+     */
+    attributes: SpanAttributes;
+    /**
      * Metadata about the transaction
      */
     metadata: TransactionMetadata;
@@ -1040,9 +1054,15 @@ interface Transaction extends TransactionContext, Omit<Span$1, 'setName' | 'name
      * @param unit Unit of the measurement. (Defaults to an empty string)
      */
     setMeasurement(name: string, value: number, unit: MeasurementUnit): void;
-    /** Returns the current transaction properties as a `TransactionContext` */
+    /**
+     * Returns the current transaction properties as a `TransactionContext`.
+     * @deprecated Use `toJSON()` or access the fields directly instead.
+     */
     toContext(): TransactionContext;
-    /** Updates the current transaction with a new `TransactionContext` */
+    /**
+     * Updates the current transaction with a new `TransactionContext`.
+     * @deprecated Update the fields directly instead.
+     */
     updateWithContext(transactionContext: TransactionContext): this;
     /**
      * Set metadata for this transaction.
@@ -1134,6 +1154,8 @@ type SpanOriginCategory = string;
 type SpanOriginIntegrationName = string;
 type SpanOriginIntegrationPart = string;
 type SpanOrigin = SpanOriginType | `${SpanOriginType}.${SpanOriginCategory}` | `${SpanOriginType}.${SpanOriginCategory}.${SpanOriginIntegrationName}` | `${SpanOriginType}.${SpanOriginCategory}.${SpanOriginIntegrationName}.${SpanOriginIntegrationPart}`;
+type SpanAttributeValue = string | number | boolean | Array<null | undefined | string> | Array<null | undefined | number> | Array<null | undefined | boolean>;
+type SpanAttributes = Record<string, SpanAttributeValue | undefined>;
 /** Interface holding all properties that can be set on a Span on creation. */
 interface SpanContext {
     /**
@@ -1182,6 +1204,10 @@ interface SpanContext {
         [key: string]: any;
     };
     /**
+     * Attributes of the Span.
+     */
+    attributes?: SpanAttributes;
+    /**
      * Timestamp in seconds (epoch time) indicating when the span started.
      */
     startTimestamp?: number;
@@ -1199,7 +1225,7 @@ interface SpanContext {
     origin?: SpanOrigin;
 }
 /** Span holding trace_id, span_id */
-interface Span$1 extends SpanContext {
+interface Span extends SpanContext {
     /**
      * Human-readable identifier for the span. Identical to span.description.
      */
@@ -1228,6 +1254,10 @@ interface Span$1 extends SpanContext {
     data: {
         [key: string]: any;
     };
+    /**
+     * @inheritDoc
+     */
+    attributes: SpanAttributes;
     /**
      * The transaction containing this span
      */
@@ -1261,6 +1291,16 @@ interface Span$1 extends SpanContext {
      */
     setData(key: string, value: any): this;
     /**
+     * Set a single attribute on the span.
+     * Set it to `undefined` to remove the attribute.
+     */
+    setAttribute(key: string, value: SpanAttributeValue | undefined): void;
+    /**
+     * Set multiple attributes on the span.
+     * Any attribute set to `undefined` will be removed.
+     */
+    setAttributes(attributes: SpanAttributes): void;
+    /**
      * Sets the status attribute on the current span
      * See: {@sentry/tracing SpanStatus} for possible values
      * @param status http code used to set the status
@@ -1273,38 +1313,43 @@ interface Span$1 extends SpanContext {
     setHttpStatus(httpStatus: number): this;
     /**
      * Set the name of the span.
+     *
+     * @deprecated Use `updateName()` instead.
      */
     setName(name: string): void;
+    /**
+     * Update the name of the span.
+     */
+    updateName(name: string): this;
     /**
      * Creates a new `Span` while setting the current `Span.id` as `parentSpanId`.
      * Also the `sampled` decision will be inherited.
      */
-    startChild(spanContext?: Pick<SpanContext, Exclude<keyof SpanContext, 'sampled' | 'traceId' | 'parentSpanId'>>): Span$1;
+    startChild(spanContext?: Pick<SpanContext, Exclude<keyof SpanContext, 'sampled' | 'traceId' | 'parentSpanId'>>): Span;
     /**
      * Determines whether span was successful (HTTP200)
      */
     isSuccess(): boolean;
-    /** Return a traceparent compatible header string */
+    /**
+     * Return a traceparent compatible header string.
+     * @deprecated Use `spanToTraceHeader()` instead.
+     */
     toTraceparent(): string;
-    /** Returns the current span properties as a `SpanContext` */
+    /**
+     * Returns the current span properties as a `SpanContext`.
+     * @deprecated Use `toJSON()` or access the fields directly instead.
+     */
     toContext(): SpanContext;
-    /** Updates the current span with a new `SpanContext` */
+    /**
+     * Updates the current span with a new `SpanContext`.
+     * @deprecated Update the fields directly instead.
+     */
     updateWithContext(spanContext: SpanContext): this;
-    /** Convert the object to JSON for w. spans array info only */
-    getTraceContext(): {
-        data?: {
-            [key: string]: any;
-        };
-        description?: string;
-        op?: string;
-        parent_span_id?: string;
-        span_id: string;
-        status?: string;
-        tags?: {
-            [key: string]: Primitive;
-        };
-        trace_id: string;
-    };
+    /**
+     * Convert the object to JSON for w. spans array info only.
+     * @deprecated Use `spanToTraceContext()` util function instead.
+     */
+    getTraceContext(): TraceContext;
     /** Convert the object to JSON */
     toJSON(): {
         data?: {
@@ -1321,6 +1366,7 @@ interface Span$1 extends SpanContext {
         };
         timestamp?: number;
         trace_id: string;
+        origin?: SpanOrigin;
     };
 }
 
@@ -1770,11 +1816,11 @@ interface Integration {
  * An abstract definition of the minimum required API
  * for a metric instance.
  */
-declare abstract class MetricInstance {
+interface MetricInstance {
     /**
      * Returns the weight of the metric.
      */
-    get weight(): number;
+    weight: number;
     /**
      * Adds a value to a metric.
      */
@@ -2532,11 +2578,13 @@ declare class Scope implements Scope$1 {
     /** Transaction Name */
     protected _transactionName?: string;
     /** Span */
-    protected _span?: Span$1;
+    protected _span?: Span;
     /** Session */
     protected _session?: Session;
     /** Request Mode Session Status */
     protected _requestSession?: RequestSession;
+    /** The client on this scope */
+    protected _client?: Client;
     constructor();
     /**
      * Inherit values from the parent scope.
@@ -2547,6 +2595,14 @@ declare class Scope implements Scope$1 {
      * Clone this scope instance.
      */
     clone(): Scope;
+    /** Update the client on the scope. */
+    setClient(client: Client | undefined): void;
+    /**
+     * Get the client assigned to this scope.
+     *
+     * It is generally recommended to use the global function `Sentry.getClient()` instead, unless you know what you are doing.
+     */
+    getClient(): Client | undefined;
     /**
      * Add internal on change listener. Used for sub SDKs that need to store the scope.
      * @hidden
@@ -2609,11 +2665,11 @@ declare class Scope implements Scope$1 {
     /**
      * @inheritDoc
      */
-    setSpan(span?: Span$1): this;
+    setSpan(span?: Span): this;
     /**
      * @inheritDoc
      */
-    getSpan(): Span$1 | undefined;
+    getSpan(): Span | undefined;
     /**
      * @inheritDoc
      */
@@ -3307,177 +3363,6 @@ declare class ServerRuntimeClient<O extends ClientOptions & ServerRuntimeClientO
     private _getTraceInfoFromScope;
 }
 
-/**
- * Keeps track of finished spans for a given transaction
- * @internal
- * @hideconstructor
- * @hidden
- */
-declare class SpanRecorder {
-    spans: Span[];
-    private readonly _maxlen;
-    constructor(maxlen?: number);
-    /**
-     * This is just so that we don't run out of memory while recording a lot
-     * of spans. At some point we just stop and flush out the start of the
-     * trace tree (i.e.the first n spans with the smallest
-     * start_timestamp).
-     */
-    add(span: Span): void;
-}
-/**
- * Span contains all data about a span
- */
-declare class Span implements Span$1 {
-    /**
-     * @inheritDoc
-     */
-    traceId: string;
-    /**
-     * @inheritDoc
-     */
-    spanId: string;
-    /**
-     * @inheritDoc
-     */
-    parentSpanId?: string;
-    /**
-     * Internal keeper of the status
-     */
-    status?: SpanStatusType | string;
-    /**
-     * @inheritDoc
-     */
-    sampled?: boolean;
-    /**
-     * Timestamp in seconds when the span was created.
-     */
-    startTimestamp: number;
-    /**
-     * Timestamp in seconds when the span ended.
-     */
-    endTimestamp?: number;
-    /**
-     * @inheritDoc
-     */
-    op?: string;
-    /**
-     * @inheritDoc
-     */
-    description?: string;
-    /**
-     * @inheritDoc
-     */
-    tags: {
-        [key: string]: Primitive;
-    };
-    /**
-     * @inheritDoc
-     */
-    data: {
-        [key: string]: any;
-    };
-    /**
-     * List of spans that were finalized
-     */
-    spanRecorder?: SpanRecorder;
-    /**
-     * @inheritDoc
-     */
-    transaction?: Transaction;
-    /**
-     * The instrumenter that created this span.
-     */
-    instrumenter: Instrumenter;
-    /**
-     * The origin of the span, giving context about what created the span.
-     */
-    origin?: SpanOrigin;
-    /**
-     * You should never call the constructor manually, always use `Sentry.startTransaction()`
-     * or call `startChild()` on an existing span.
-     * @internal
-     * @hideconstructor
-     * @hidden
-     */
-    constructor(spanContext?: SpanContext);
-    /** An alias for `description` of the Span. */
-    get name(): string;
-    /** Update the name of the span. */
-    set name(name: string);
-    /**
-     * @inheritDoc
-     */
-    startChild(spanContext?: Pick<SpanContext, Exclude<keyof SpanContext, 'sampled' | 'traceId' | 'parentSpanId'>>): Span;
-    /**
-     * @inheritDoc
-     */
-    setTag(key: string, value: Primitive): this;
-    /**
-     * @inheritDoc
-     */
-    setData(key: string, value: any): this;
-    /**
-     * @inheritDoc
-     */
-    setStatus(value: SpanStatusType): this;
-    /**
-     * @inheritDoc
-     */
-    setHttpStatus(httpStatus: number): this;
-    /**
-     * @inheritDoc
-     */
-    setName(name: string): void;
-    /**
-     * @inheritDoc
-     */
-    isSuccess(): boolean;
-    /**
-     * @inheritDoc
-     *
-     * @deprecated Use `.end()` instead.
-     */
-    finish(endTimestamp?: number): void;
-    /** @inheritdoc */
-    end(endTimestamp?: number): void;
-    /**
-     * @inheritDoc
-     */
-    toTraceparent(): string;
-    /**
-     * @inheritDoc
-     */
-    toContext(): SpanContext;
-    /**
-     * @inheritDoc
-     */
-    updateWithContext(spanContext: SpanContext): this;
-    /**
-     * @inheritDoc
-     */
-    getTraceContext(): TraceContext;
-    /**
-     * @inheritDoc
-     */
-    toJSON(): {
-        data?: {
-            [key: string]: any;
-        };
-        description?: string;
-        op?: string;
-        parent_span_id?: string;
-        span_id: string;
-        start_timestamp: number;
-        status?: string;
-        tags?: {
-            [key: string]: Primitive;
-        };
-        timestamp?: number;
-        trace_id: string;
-        origin?: SpanOrigin;
-    };
-}
 type SpanStatusType = 
 /** The operation completed successfully. */
 'ok'
@@ -3549,6 +3434,8 @@ declare const extractTraceparentData: typeof extractTraceparentData$1;
  *
  * @internal
  * @private
+ *
+ * @deprecated Use `startSpan` instead.
  */
 declare function trace<T>(context: TransactionContext, callback: (span?: Span) => T, onError?: (error: unknown, span?: Span) => void, afterFinish?: () => void): T;
 /**
@@ -3565,7 +3452,7 @@ declare function trace<T>(context: TransactionContext, callback: (span?: Span) =
 declare function startSpan<T>(context: TransactionContext, callback: (span: Span | undefined) => T): T;
 /**
  * Similar to `Sentry.startSpan`. Wraps a function with a transaction/span, but does not finish the span
- * after the function is done automatically.
+ * after the function is done automatically. You'll have to call `span.end()` manually.
  *
  * The created span is the active span and will be used as parent by other spans created inside the function
  * and can be accessed via `Sentry.getActiveSpan()`, as long as the function is executed while the scope is active.
@@ -3766,6 +3653,7 @@ declare function close(timeout?: number): Promise<boolean>;
  * This is the getter for lastEventId.
  *
  * @returns The last event id of a captured event.
+ * @deprecated This function will be removed in the next major version of the Sentry SDK.
  */
 declare function lastEventId(): string | undefined;
 /**
@@ -3791,7 +3679,7 @@ declare function addGlobalEventProcessor(callback: EventProcessor): void;
  */
 declare function createTransport(options: InternalBaseTransportOptions, makeRequest: TransportRequestExecutor, buffer?: PromiseBuffer<void | TransportMakeRequestResponse>): Transport;
 
-declare const SDK_VERSION = "7.91.0";
+declare const SDK_VERSION = "7.92.0";
 
 interface MetricData {
     unit?: MeasurementUnit;
@@ -3827,7 +3715,7 @@ declare const metrics: {
     distribution: typeof distribution;
     set: typeof set;
     gauge: typeof gauge;
-    MetricsAggregator: {
+    MetricsAggregator: Integration & {
         new (...args: any[]): Integration & IntegrationFnResult & {
             setupOnce: (addGlobalEventProcessor?: ((callback: EventProcessor) => void) | undefined, getCurrentHub?: (() => Hub$1) | undefined) => void;
         };
@@ -3910,31 +3798,31 @@ declare const defaultIntegrations: (Integration & IntegrationFnResult & {
 declare function init(options?: DenoOptions): void;
 
 declare const INTEGRATIONS: {
-    DenoContext: {
+    DenoContext: Integration & {
         new (...args: any[]): Integration & IntegrationFnResult & {
             setupOnce: (addGlobalEventProcessor?: ((callback: EventProcessor) => void) | undefined, getCurrentHub?: (() => Hub$1) | undefined) => void;
         };
         id: string;
     };
-    GlobalHandlers: {
+    GlobalHandlers: Integration & {
         new (...args: any[]): Integration & IntegrationFnResult & {
             setupOnce: (addGlobalEventProcessor?: ((callback: EventProcessor) => void) | undefined, getCurrentHub?: (() => Hub$1) | undefined) => void;
         };
         id: string;
     };
-    NormalizePaths: {
+    NormalizePaths: Integration & {
         new (...args: any[]): Integration & IntegrationFnResult & {
             setupOnce: (addGlobalEventProcessor?: ((callback: EventProcessor) => void) | undefined, getCurrentHub?: (() => Hub$1) | undefined) => void;
         };
         id: string;
     };
-    ContextLines: {
+    ContextLines: Integration & {
         new (...args: any[]): Integration & IntegrationFnResult & {
             setupOnce: (addGlobalEventProcessor?: ((callback: EventProcessor) => void) | undefined, getCurrentHub?: (() => Hub$1) | undefined) => void;
         };
         id: string;
     };
-    DenoCron: {
+    DenoCron: Integration & {
         new (): Integration & {
             name: string;
             setupOnce(): void;
@@ -3944,19 +3832,19 @@ declare const INTEGRATIONS: {
         };
         id: string;
     };
-    FunctionToString: {
+    FunctionToString: Integration & {
         new (...args: any[]): Integration & IntegrationFnResult & {
             setupOnce: (addGlobalEventProcessor?: ((callback: EventProcessor) => void) | undefined, getCurrentHub?: (() => Hub$1) | undefined) => void;
         };
         id: string;
     };
-    InboundFilters: {
+    InboundFilters: Integration & {
         new (...args: any[]): Integration & IntegrationFnResult & {
             setupOnce: (addGlobalEventProcessor?: ((callback: EventProcessor) => void) | undefined, getCurrentHub?: (() => Hub$1) | undefined) => void;
         };
         id: string;
     };
-    LinkedErrors: {
+    LinkedErrors: Integration & {
         new (...args: any[]): Integration & IntegrationFnResult & {
             setupOnce: (addGlobalEventProcessor?: ((callback: EventProcessor) => void) | undefined, getCurrentHub?: (() => Hub$1) | undefined) => void;
         };
@@ -3964,4 +3852,4 @@ declare const INTEGRATIONS: {
     };
 };
 
-export { type AddRequestDataToEventOptions, type Breadcrumb, type BreadcrumbHint, DenoClient, type DenoOptions, type Event, type EventHint, type Exception, Hub, INTEGRATIONS as Integrations, type PolymorphicRequest, type Request, SDK_VERSION, Scope, type SdkInfo, type Session, Severity, type SeverityLevel, type Span$1 as Span, type SpanStatusType, type StackFrame, type Stacktrace, type Thread, type Transaction, type User, addBreadcrumb, addEventProcessor, addGlobalEventProcessor, captureCheckIn, captureEvent, captureException, captureMessage, close, configureScope, continueTrace, createTransport, defaultIntegrations, extractTraceparentData, flush, getActiveSpan, getActiveTransaction, getClient, getCurrentHub, getCurrentScope, getGlobalScope, getHubFromCarrier, getIsolationScope, init, lastEventId, makeMain, metrics, runWithAsyncContext, setContext, setExtra, setExtras, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSpan, startSpanManual, startTransaction, trace, withMonitor, withScope };
+export { type AddRequestDataToEventOptions, type Breadcrumb, type BreadcrumbHint, DenoClient, type DenoOptions, type Event, type EventHint, type Exception, Hub, INTEGRATIONS as Integrations, type PolymorphicRequest, type Request, SDK_VERSION, Scope, type SdkInfo, type Session, Severity, type SeverityLevel, type Span, type SpanStatusType, type StackFrame, type Stacktrace, type Thread, type Transaction, type User, addBreadcrumb, addEventProcessor, addGlobalEventProcessor, captureCheckIn, captureEvent, captureException, captureMessage, close, configureScope, continueTrace, createTransport, defaultIntegrations, extractTraceparentData, flush, getActiveSpan, getActiveTransaction, getClient, getCurrentHub, getCurrentScope, getGlobalScope, getHubFromCarrier, getIsolationScope, init, lastEventId, makeMain, metrics, runWithAsyncContext, setContext, setExtra, setExtras, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSpan, startSpanManual, startTransaction, trace, withMonitor, withScope };
