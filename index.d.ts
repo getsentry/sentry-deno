@@ -115,6 +115,20 @@ type Primitive = number | string | boolean | bigint | symbol | null | undefined;
 
 type Instrumenter = 'sentry' | 'otel';
 
+/**
+ * Defines High-Resolution Time.
+ *
+ * The first number, HrTime[0], is UNIX Epoch time in seconds since 00:00:00 UTC on 1 January 1970.
+ * The second number, HrTime[1], represents the partial second elapsed since Unix Epoch time represented by first number in nanoseconds.
+ * For example, 2021-01-01T12:30:10.150Z in UNIX Epoch time in milliseconds is represented as 1609504210150.
+ * The first number is calculated by converting and truncating the Epoch time in milliseconds to seconds:
+ * HrTime[0] = Math.trunc(1609504210150 / 1000) = 1609504210.
+ * The second number is calculated by converting the digits after the decimal point of the subtraction, (1609504210150 / 1000) - HrTime[0], to nanoseconds:
+ * HrTime[1] = Number((1609504210.150 - HrTime[0]).toFixed(9)) * 1e9 = 150000000.
+ * This is represented in HrTime format as [1609504210, 150000000].
+ */
+type HrTime = [number, number];
+
 type DataCategory = 'default' | 'error' | 'transaction' | 'replay' | 'security' | 'attachment' | 'session' | 'internal' | 'profile' | 'monitor' | 'feedback' | 'unknown';
 
 type EventDropReason = 'before_send' | 'event_processor' | 'network_error' | 'queue_overflow' | 'ratelimit_backoff' | 'sample_rate' | 'send_error' | 'internal_sdk_error';
@@ -434,6 +448,7 @@ interface ScopeData {
     };
     fingerprint: string[];
     level?: SeverityLevel;
+    /** @deprecated This will be removed in v8. */
     transactionName?: string;
     span?: Span;
 }
@@ -504,6 +519,7 @@ interface Scope$1 {
     setLevel(level: Severity | SeverityLevel): this;
     /**
      * Sets the transaction name on the scope for future events.
+     * @deprecated Use extra or tags instead.
      */
     setTransactionName(name?: string): this;
     /**
@@ -515,14 +531,17 @@ interface Scope$1 {
     /**
      * Sets the Span on the scope.
      * @param span Span
+     * @deprecated Instead of setting a span on a scope, use `startSpan()`/`startSpanManual()` instead.
      */
     setSpan(span?: Span): this;
     /**
-     * Returns the `Span` if there is one
+     * Returns the `Span` if there is one.
+     * @deprecated Use `getActiveSpan()` instead.
      */
     getSpan(): Span | undefined;
     /**
-     * Returns the `Transaction` attached to the scope (if there is one)
+     * Returns the `Transaction` attached to the scope (if there is one).
+     * @deprecated You should not rely on the transaction, but just use `startSpan()` APIs instead.
      */
     getTransaction(): Transaction | undefined;
     /**
@@ -592,6 +611,31 @@ interface Scope$1 {
      * Get propagation context from the scope, used for distributed tracing
      */
     getPropagationContext(): PropagationContext;
+    /**
+     * Capture an exception for this scope.
+     *
+     * @param exception The exception to capture.
+     * @param hint Optinal additional data to attach to the Sentry event.
+     * @returns the id of the captured Sentry event.
+     */
+    captureException(exception: unknown, hint?: EventHint): string;
+    /**
+     * Capture a message for this scope.
+     *
+     * @param exception The exception to capture.
+     * @param level An optional severity level to report the message with.
+     * @param hint Optional additional data to attach to the Sentry event.
+     * @returns the id of the captured message.
+     */
+    captureMessage(message: string, level?: SeverityLevel, hint?: EventHint): string;
+    /**
+     * Capture a Sentry event for this scope.
+     *
+     * @param exception The event to capture.
+     * @param hint Optional additional data to attach to the Sentry event.
+     * @returns the id of the captured event.
+     */
+    captureEvent(event: Event, hint?: EventHint): string;
 }
 
 /** JSDoc */
@@ -622,6 +666,10 @@ interface Thread {
 interface Event {
     event_id?: string;
     message?: string;
+    logentry?: {
+        message?: string;
+        params?: string[];
+    };
     timestamp?: number;
     start_timestamp?: number;
     level?: Severity | SeverityLevel;
@@ -991,6 +1039,7 @@ interface TransactionContext extends SpanContext {
     parentSampled?: boolean;
     /**
      * Metadata associated with the transaction, for internal SDK use.
+     * @deprecated Use attributes or store data on the scope instead.
      */
     metadata?: Partial<TransactionMetadata>;
 }
@@ -1003,35 +1052,51 @@ type TraceparentData = Pick<TransactionContext, 'traceId' | 'parentSpanId' | 'pa
  */
 interface Transaction extends TransactionContext, Omit<Span, 'setName' | 'name'> {
     /**
-     * @inheritDoc
+     * Human-readable identifier for the transaction.
+     * @deprecated Use `spanToJSON(span).description` instead.
+     */
+    name: string;
+    /**
+     * The ID of the transaction.
+     * @deprecated Use `spanContext().spanId` instead.
      */
     spanId: string;
     /**
-     * @inheritDoc
+     * The ID of the trace.
+     * @deprecated Use `spanContext().traceId` instead.
      */
     traceId: string;
+    /**
+     * Was this transaction chosen to be sent as part of the sample?
+     * @deprecated Use `spanIsSampled(transaction)` instead.
+     */
+    sampled?: boolean;
     /**
      * @inheritDoc
      */
     startTimestamp: number;
     /**
-     * @inheritDoc
+     * Tags for the transaction.
+     * @deprecated Use `getSpanAttributes(transaction)` instead.
      */
     tags: {
         [key: string]: Primitive;
     };
     /**
-     * @inheritDoc
+     * Data for the transaction.
+     * @deprecated Use `getSpanAttributes(transaction)` instead.
      */
     data: {
         [key: string]: any;
     };
     /**
-     * @inheritDoc
+     * Attributes for the transaction.
+     * @deprecated Use `getSpanAttributes(transaction)` instead.
      */
     attributes: SpanAttributes;
     /**
-     * Metadata about the transaction
+     * Metadata about the transaction.
+     * @deprecated Use attributes or store data on the scope instead.
      */
     metadata: TransactionMetadata;
     /**
@@ -1043,7 +1108,8 @@ interface Transaction extends TransactionContext, Omit<Span, 'setName' | 'name'>
      */
     setName(name: string, source?: TransactionMetadata['source']): void;
     /**
-     * Set the context of a transaction event
+     * Set the context of a transaction event.
+     * @deprecated Use either `.setAttribute()`, or set the context on the scope before creating the transaction.
      */
     setContext(key: string, context: Context): void;
     /**
@@ -1066,10 +1132,14 @@ interface Transaction extends TransactionContext, Omit<Span, 'setName' | 'name'>
     updateWithContext(transactionContext: TransactionContext): this;
     /**
      * Set metadata for this transaction.
-     * @hidden
+     * @deprecated Use attributes or store data on the scope instead.
      */
     setMetadata(newMetadata: Partial<TransactionMetadata>): void;
-    /** Return the current Dynamic Sampling Context of this transaction */
+    /**
+     * Return the current Dynamic Sampling Context of this transaction
+     *
+     * @deprecated Use top-level `getDynamicSamplingContextFromSpan` instead.
+     */
     getDynamicSamplingContext(): Partial<DynamicSamplingContext>;
 }
 /**
@@ -1103,7 +1173,10 @@ interface SamplingContext extends CustomSamplingContext {
     request?: ExtractedNodeRequestData;
 }
 interface TransactionMetadata {
-    /** The sample rate used when sampling this transaction */
+    /**
+     * The sample rate used when sampling this transaction.
+     * @deprecated Use `SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE` attribute instead.
+     */
     sampleRate?: number;
     /**
      * The Dynamic Sampling Context of a transaction. If provided during transaction creation, its Dynamic Sampling
@@ -1122,9 +1195,15 @@ interface TransactionMetadata {
     /** For transactions tracing server-side request handling, the path of the request being tracked. */
     /** TODO: If we rm -rf `instrumentServer`, this can go, too */
     requestPath?: string;
-    /** Information on how a transaction name was generated. */
+    /**
+     * Information on how a transaction name was generated.
+     * @deprecated Use `SEMANTIC_ATTRIBUTE_SENTRY_SOURCE` attribute instead.
+     */
     source: TransactionSource;
-    /** Metadata for the transaction's spans, keyed by spanId */
+    /**
+     * Metadata for the transaction's spans, keyed by spanId.
+     * @deprecated This will be removed in v8.
+     */
     spanMetadata: {
         [spanId: string]: {
             [key: string]: unknown;
@@ -1156,10 +1235,63 @@ type SpanOriginIntegrationPart = string;
 type SpanOrigin = SpanOriginType | `${SpanOriginType}.${SpanOriginCategory}` | `${SpanOriginType}.${SpanOriginCategory}.${SpanOriginIntegrationName}` | `${SpanOriginType}.${SpanOriginCategory}.${SpanOriginIntegrationName}.${SpanOriginIntegrationPart}`;
 type SpanAttributeValue = string | number | boolean | Array<null | undefined | string> | Array<null | undefined | number> | Array<null | undefined | boolean>;
 type SpanAttributes = Record<string, SpanAttributeValue | undefined>;
+/** This type is aligned with the OpenTelemetry TimeInput type. */
+type SpanTimeInput = HrTime | number | Date;
+/** A JSON representation of a span. */
+interface SpanJSON {
+    data?: {
+        [key: string]: any;
+    };
+    description?: string;
+    op?: string;
+    parent_span_id?: string;
+    span_id: string;
+    start_timestamp: number;
+    status?: string;
+    tags?: {
+        [key: string]: Primitive;
+    };
+    timestamp?: number;
+    trace_id: string;
+    origin?: SpanOrigin;
+}
+type TraceFlagNone = 0x0;
+type TraceFlagSampled = 0x1;
+type TraceFlag = TraceFlagNone | TraceFlagSampled;
+interface SpanContextData {
+    /**
+     * The ID of the trace that this span belongs to. It is worldwide unique
+     * with practically sufficient probability by being made as 16 randomly
+     * generated bytes, encoded as a 32 lowercase hex characters corresponding to
+     * 128 bits.
+     */
+    traceId: string;
+    /**
+     * The ID of the Span. It is globally unique with practically sufficient
+     * probability by being made as 8 randomly generated bytes, encoded as a 16
+     * lowercase hex characters corresponding to 64 bits.
+     */
+    spanId: string;
+    /**
+     * Only true if the SpanContext was propagated from a remote parent.
+     */
+    isRemote?: boolean;
+    /**
+     * Trace flags to propagate.
+     *
+     * It is represented as 1 byte (bitmap). Bit to represent whether trace is
+     * sampled or not. When set, the least significant bit documents that the
+     * caller may have recorded trace data. A caller who does not record trace
+     * data out-of-band leaves this flag unset.
+     */
+    traceFlags: TraceFlag;
+}
 /** Interface holding all properties that can be set on a Span on creation. */
 interface SpanContext {
     /**
      * Description of the Span.
+     *
+     * @deprecated Use `name` instead.
      */
     description?: string;
     /**
@@ -1193,12 +1325,14 @@ interface SpanContext {
     traceId?: string;
     /**
      * Tags of the Span.
+     * @deprecated Pass `attributes` instead.
      */
     tags?: {
         [key: string]: Primitive;
     };
     /**
      * Data of the Span.
+     * @deprecated Pass `attributes` instead.
      */
     data?: {
         [key: string]: any;
@@ -1228,34 +1362,45 @@ interface SpanContext {
 interface Span extends SpanContext {
     /**
      * Human-readable identifier for the span. Identical to span.description.
+     * @deprecated Use `spanToJSON(span).description` instead.
      */
     name: string;
     /**
-     * @inheritDoc
+     * The ID of the span.
+     * @deprecated Use `spanContext().spanId` instead.
      */
     spanId: string;
     /**
-     * @inheritDoc
+     * The ID of the trace.
+     * @deprecated Use `spanContext().traceId` instead.
      */
     traceId: string;
+    /**
+     * Was this span chosen to be sent as part of the sample?
+     * @deprecated Use `isRecording()` instead.
+     */
+    sampled?: boolean;
     /**
      * @inheritDoc
      */
     startTimestamp: number;
     /**
-     * @inheritDoc
+     * Tags for the span.
+     * @deprecated Use `getSpanAttributes(span)` instead.
      */
     tags: {
         [key: string]: Primitive;
     };
     /**
-     * @inheritDoc
+     * Data for the span.
+     * @deprecated Use `getSpanAttributes(span)` instead.
      */
     data: {
         [key: string]: any;
     };
     /**
-     * @inheritDoc
+     * Attributes for the span.
+     * @deprecated Use `getSpanAttributes(span)` instead.
      */
     attributes: SpanAttributes;
     /**
@@ -1267,6 +1412,11 @@ interface Span extends SpanContext {
      */
     instrumenter: Instrumenter;
     /**
+     * Get context data for this span.
+     * This includes the spanId & the traceId.
+     */
+    spanContext(): SpanContextData;
+    /**
      * Sets the finish timestamp on the current span.
      * @param endTimestamp Takes an endTimestamp if the end should not be the time when you call this function.
      */
@@ -1274,7 +1424,7 @@ interface Span extends SpanContext {
     /**
      * End the current span.
      */
-    end(endTimestamp?: number): void;
+    end(endTimestamp?: SpanTimeInput): void;
     /**
      * Sets the tag attribute on the current span.
      *
@@ -1282,12 +1432,14 @@ interface Span extends SpanContext {
      *
      * @param key Tag key
      * @param value Tag value
+     * @deprecated Use `setAttribute()` instead.
      */
     setTag(key: string, value: Primitive): this;
     /**
      * Sets the data attribute on the current span
      * @param key Data key
      * @param value Data value
+     * @deprecated Use `setAttribute()` instead.
      */
     setData(key: string, value: any): this;
     /**
@@ -1324,6 +1476,8 @@ interface Span extends SpanContext {
     /**
      * Creates a new `Span` while setting the current `Span.id` as `parentSpanId`.
      * Also the `sampled` decision will be inherited.
+     *
+     * @deprecated Use `startSpan()`, `startSpanManual()` or `startInactiveSpan()` instead.
      */
     startChild(spanContext?: Pick<SpanContext, Exclude<keyof SpanContext, 'sampled' | 'traceId' | 'parentSpanId'>>): Span;
     /**
@@ -1350,24 +1504,16 @@ interface Span extends SpanContext {
      * @deprecated Use `spanToTraceContext()` util function instead.
      */
     getTraceContext(): TraceContext;
-    /** Convert the object to JSON */
-    toJSON(): {
-        data?: {
-            [key: string]: any;
-        };
-        description?: string;
-        op?: string;
-        parent_span_id?: string;
-        span_id: string;
-        start_timestamp: number;
-        status?: string;
-        tags?: {
-            [key: string]: Primitive;
-        };
-        timestamp?: number;
-        trace_id: string;
-        origin?: SpanOrigin;
-    };
+    /**
+     * Convert the object to JSON.
+     * @deprecated Use `spanToJSON(span)` instead.
+     */
+    toJSON(): SpanJSON;
+    /**
+     * If this is span is actually recording data.
+     * This will return false if tracing is disabled, this span was not sampled or if the span is already finished.
+     */
+    isRecording(): boolean;
 }
 
 type Context = Record<string, unknown>;
@@ -1458,7 +1604,6 @@ interface TraceContext extends Record<string, unknown> {
     data?: {
         [key: string]: any;
     };
-    description?: string;
     op?: string;
     parent_span_id?: string;
     span_id: string;
@@ -1711,6 +1856,8 @@ interface Hub$1 {
      * default values). See {@link Options.tracesSampler}.
      *
      * @returns The transaction which was just started
+     *
+     * @deprecated Use `startSpan()`, `startSpanManual()` or `startInactiveSpan()` instead.
      */
     startTransaction(context: TransactionContext, customSamplingContext?: CustomSamplingContext): Transaction;
     /**
@@ -1724,20 +1871,30 @@ interface Hub$1 {
      * @param context Optional properties of the new `Session`.
      *
      * @returns The session which was just started
+     *
+     * @deprecated Use top-level `startSession` instead.
      */
     startSession(context?: Session): Session;
     /**
      * Ends the session that lives on the current scope and sends it to Sentry
+     *
+     * @deprecated Use top-level `endSession` instead.
      */
     endSession(): void;
     /**
      * Sends the current session on the scope to Sentry
+     *
      * @param endSession If set the session will be marked as exited and removed from the scope
+     *
+     * @deprecated Use top-level `captureSession` instead.
      */
     captureSession(endSession?: boolean): void;
     /**
-     * Returns if default PII should be sent to Sentry and propagated in ourgoing requests
+     * Returns if default PII should be sent to Sentry and propagated in outgoing requests
      * when Tracing is used.
+     *
+     * @deprecated Use top-level `getClient().getOptions().sendDefaultPii` instead. This function
+     * only unnecessarily increased API surface but only wrapped accessing the option.
      */
     shouldSendDefaultPii(): boolean;
 }
@@ -2181,6 +2338,11 @@ interface Options<TO extends BaseTransportOptions = BaseTransportOptions> extend
     stackParser?: StackParser | StackLineParser[];
 }
 
+type ParameterizedString = string & {
+    __sentry_template_string__?: string;
+    __sentry_template_values__?: string[];
+};
+
 /**
  * User-Facing Sentry SDK Client.
  *
@@ -2298,7 +2460,7 @@ interface Client<O extends ClientOptions = ClientOptions> {
     /** Creates an {@link Event} from all inputs to `captureException` and non-primitive inputs to `captureMessage`. */
     eventFromException(exception: any, hint?: EventHint): PromiseLike<Event>;
     /** Creates an {@link Event} from primitive inputs to `captureMessage`. */
-    eventFromMessage(message: string, level?: Severity | SeverityLevel, hint?: EventHint): PromiseLike<Event>;
+    eventFromMessage(message: ParameterizedString, level?: Severity | SeverityLevel, hint?: EventHint): PromiseLike<Event>;
     /** Submits the event to Sentry */
     sendEvent(event: Event, hint?: EventHint): void;
     /** Submits the session to Sentry */
@@ -2575,7 +2737,9 @@ declare class Scope implements Scope$1 {
     protected _fingerprint?: string[];
     /** Severity */
     protected _level?: Severity | SeverityLevel;
-    /** Transaction Name */
+    /**
+     * Transaction Name
+     */
     protected _transactionName?: string;
     /** Span */
     protected _span?: Span;
@@ -2655,7 +2819,8 @@ declare class Scope implements Scope$1 {
      */
     setLevel(level: Severity | SeverityLevel): this;
     /**
-     * @inheritDoc
+     * Sets the transaction name on the scope for future events.
+     * @deprecated Use extra or tags instead.
      */
     setTransactionName(name?: string): this;
     /**
@@ -2663,15 +2828,19 @@ declare class Scope implements Scope$1 {
      */
     setContext(key: string, context: Context | null): this;
     /**
-     * @inheritDoc
+     * Sets the Span on the scope.
+     * @param span Span
+     * @deprecated Instead of setting a span on a scope, use `startSpan()`/`startSpanManual()` instead.
      */
     setSpan(span?: Span): this;
     /**
-     * @inheritDoc
+     * Returns the `Span` if there is one.
+     * @deprecated Use `getActiveSpan()` instead.
      */
     getSpan(): Span | undefined;
     /**
-     * @inheritDoc
+     * Returns the `Transaction` attached to the scope (if there is one).
+     * @deprecated You should not rely on the transaction, but just use `startSpan()` APIs instead.
      */
     getTransaction(): Transaction | undefined;
     /**
@@ -2740,6 +2909,31 @@ declare class Scope implements Scope$1 {
      * @inheritDoc
      */
     getPropagationContext(): PropagationContext;
+    /**
+     * Capture an exception for this scope.
+     *
+     * @param exception The exception to capture.
+     * @param hint Optinal additional data to attach to the Sentry event.
+     * @returns the id of the captured Sentry event.
+     */
+    captureException(exception: unknown, hint?: EventHint): string;
+    /**
+     * Capture a message for this scope.
+     *
+     * @param message The message to capture.
+     * @param level An optional severity level to report the message with.
+     * @param hint Optional additional data to attach to the Sentry event.
+     * @returns the id of the captured message.
+     */
+    captureMessage(message: string, level?: SeverityLevel, hint?: EventHint): string;
+    /**
+     * Captures a manually created event for this scope and sends it to Sentry.
+     *
+     * @param exception The event to capture.
+     * @param hint Optional additional data to attach to the Sentry event.
+     * @returns the id of the captured event.
+     */
+    captureEvent(event: Event, hint?: EventHint): string;
     /**
      * This will be called on every set call.
      */
@@ -2853,14 +3047,20 @@ declare class Hub implements Hub$1 {
     getStackTop(): Layer;
     /**
      * @inheritDoc
+     *
+     * @deprecated Use `Sentry.captureException()` instead.
      */
     captureException(exception: unknown, hint?: EventHint): string;
     /**
      * @inheritDoc
+     *
+     * @deprecated Use  `Sentry.captureMessage()` instead.
      */
     captureMessage(message: string, level?: Severity | SeverityLevel, hint?: EventHint): string;
     /**
      * @inheritDoc
+     *
+     * @deprecated Use `Sentry.captureEvent()` instead.
      */
     captureEvent(event: Event, hint?: EventHint): string;
     /**
@@ -2914,7 +3114,23 @@ declare class Hub implements Hub$1 {
      */
     getIntegration<T extends Integration>(integration: IntegrationClass<T>): T | null;
     /**
-     * @inheritDoc
+     * Starts a new `Transaction` and returns it. This is the entry point to manual tracing instrumentation.
+     *
+     * A tree structure can be built by adding child spans to the transaction, and child spans to other spans. To start a
+     * new child span within the transaction or any span, call the respective `.startChild()` method.
+     *
+     * Every child span must be finished before the transaction is finished, otherwise the unfinished spans are discarded.
+     *
+     * The transaction must be finished with a call to its `.end()` method, at which point the transaction with all its
+     * finished child spans will be sent to Sentry.
+     *
+     * @param context Properties of the new `Transaction`.
+     * @param customSamplingContext Information given to the transaction sampling function (along with context-dependent
+     * default values). See {@link Options.tracesSampler}.
+     *
+     * @returns The transaction which was just started
+     *
+     * @deprecated Use `startSpan()`, `startSpanManual()` or `startInactiveSpan()` instead.
      */
     startTransaction(context: TransactionContext, customSamplingContext?: CustomSamplingContext): Transaction;
     /**
@@ -2925,19 +3141,26 @@ declare class Hub implements Hub$1 {
     };
     /**
      * @inheritDoc
+     *
+     * @deprecated Use top level `captureSession` instead.
      */
     captureSession(endSession?: boolean): void;
     /**
      * @inheritDoc
+     * @deprecated Use top level `endSession` instead.
      */
     endSession(): void;
     /**
      * @inheritDoc
+     * @deprecated Use top level `startSession` instead.
      */
     startSession(context?: SessionContext): Session;
     /**
      * Returns if default PII should be sent to Sentry and propagated in ourgoing requests
      * when Tracing is used.
+     *
+     * @deprecated Use top-level `getClient().getOptions().sendDefaultPii` instead. This function
+     * only unnecessarily increased API surface but only wrapped accessing the option.
      */
     shouldSendDefaultPii(): boolean;
     /**
@@ -3068,7 +3291,7 @@ declare abstract class BaseClient<O extends ClientOptions> implements Client<O> 
     /**
      * @inheritDoc
      */
-    captureMessage(message: string, level?: Severity | SeverityLevel, hint?: EventHint, scope?: Scope): string | undefined;
+    captureMessage(message: ParameterizedString, level?: Severity | SeverityLevel, hint?: EventHint, scope?: Scope): string | undefined;
     /**
      * @inheritDoc
      */
@@ -3259,7 +3482,7 @@ declare abstract class BaseClient<O extends ClientOptions> implements Client<O> 
     /**
      * @inheritDoc
      */
-    abstract eventFromMessage(_message: string, _level?: Severity | SeverityLevel, _hint?: EventHint): PromiseLike<Event>;
+    abstract eventFromMessage(_message: ParameterizedString, _level?: Severity | SeverityLevel, _hint?: EventHint): PromiseLike<Event>;
 }
 /**
  * Add an event processor to the current client.
@@ -3326,7 +3549,7 @@ declare class ServerRuntimeClient<O extends ClientOptions & ServerRuntimeClientO
     /**
      * @inheritDoc
      */
-    eventFromMessage(message: string, level?: Severity | SeverityLevel, hint?: EventHint): PromiseLike<Event>;
+    eventFromMessage(message: ParameterizedString, level?: Severity | SeverityLevel, hint?: EventHint): PromiseLike<Event>;
     /**
      * @inheritDoc
      */
@@ -3406,7 +3629,11 @@ type SpanStatusType =
  */
 declare function spanStatusfromHttpCode(httpStatus: number): SpanStatusType;
 
-/** Grabs active transaction off scope, if any */
+/**
+ * Grabs active transaction off scope.
+ *
+ * @deprecated You should not rely on the transaction, but just use `startSpan()` APIs instead.
+ */
 declare function getActiveTransaction<T extends Transaction>(maybeHub?: Hub): T | undefined;
 
 /**
@@ -3423,6 +3650,85 @@ declare function getActiveTransaction<T extends Transaction>(maybeHub?: Hub): T 
  */
 declare const extractTraceparentData: typeof extractTraceparentData$1;
 
+interface StartSpanOptions extends TransactionContext {
+    /** A manually specified start time for the created `Span` object. */
+    startTime?: SpanTimeInput;
+    /** If defined, start this span off this scope instead off the current scope. */
+    scope?: Scope$1;
+    /** The name of the span. */
+    name: string;
+    /** An op for the span. This is a categorization for spans. */
+    op?: string;
+    /** The origin of the span - if it comes from auto instrumenation or manual instrumentation. */
+    origin?: SpanOrigin;
+    /** Attributes for the span. */
+    attributes?: SpanAttributes;
+    /**
+     * @deprecated Manually set the end timestamp instead.
+     */
+    trimEnd?: boolean;
+    /**
+     * @deprecated This cannot be set manually anymore.
+     */
+    parentSampled?: boolean;
+    /**
+     * @deprecated Use attributes or set data on scopes instead.
+     */
+    metadata?: Partial<TransactionMetadata>;
+    /**
+     * The name thingy.
+     * @deprecated Use `name` instead.
+     */
+    description?: string;
+    /**
+     * @deprecated Use `span.setStatus()` instead.
+     */
+    status?: string;
+    /**
+     * @deprecated Use `scope` instead.
+     */
+    parentSpanId?: string;
+    /**
+     * @deprecated You cannot manually set the span to sampled anymore.
+     */
+    sampled?: boolean;
+    /**
+     * @deprecated You cannot manually set the spanId anymore.
+     */
+    spanId?: string;
+    /**
+     * @deprecated You cannot manually set the traceId anymore.
+     */
+    traceId?: string;
+    /**
+     * @deprecated Use an attribute instead.
+     */
+    source?: TransactionSource;
+    /**
+     * @deprecated Use attributes or set tags on the scope instead.
+     */
+    tags?: {
+        [key: string]: Primitive;
+    };
+    /**
+     * @deprecated Use attributes instead.
+     */
+    data?: {
+        [key: string]: any;
+    };
+    /**
+     * @deprecated Use `startTime` instead.
+     */
+    startTimestamp?: number;
+    /**
+     * @deprecated Use `span.end()` instead.
+     */
+    endTimestamp?: number;
+    /**
+     * @deprecated You cannot set the instrumenter manually anymore.
+     */
+    instrumenter?: Instrumenter;
+}
 /**
  * Wraps a function with a transaction/span and finishes the span after the function is done.
  *
@@ -3449,7 +3755,7 @@ declare function trace<T>(context: TransactionContext, callback: (span?: Span) =
  * or you didn't set `tracesSampleRate`, this function will not generate spans
  * and the `span` returned from the callback will be undefined.
  */
-declare function startSpan<T>(context: TransactionContext, callback: (span: Span | undefined) => T): T;
+declare function startSpan<T>(context: StartSpanOptions, callback: (span: Span | undefined) => T): T;
 /**
  * Similar to `Sentry.startSpan`. Wraps a function with a transaction/span, but does not finish the span
  * after the function is done automatically. You'll have to call `span.end()` manually.
@@ -3461,7 +3767,7 @@ declare function startSpan<T>(context: TransactionContext, callback: (span: Span
  * or you didn't set `tracesSampleRate`, this function will not generate spans
  * and the `span` returned from the callback will be undefined.
  */
-declare function startSpanManual<T>(context: TransactionContext, callback: (span: Span | undefined, finish: () => void) => T): T;
+declare function startSpanManual<T>(context: StartSpanOptions, callback: (span: Span | undefined, finish: () => void) => T): T;
 /**
  * Creates a span. This span is not set as active, so will not get automatic instrumentation spans
  * as children or be able to be accessed via `Sentry.getSpan()`.
@@ -3472,7 +3778,7 @@ declare function startSpanManual<T>(context: TransactionContext, callback: (span
  * or you didn't set `tracesSampleRate` or `tracesSampler`, this function will not generate spans
  * and the `span` returned from the callback will be undefined.
  */
-declare function startInactiveSpan(context: TransactionContext): Span | undefined;
+declare function startInactiveSpan(context: StartSpanOptions): Span | undefined;
 /**
  * Returns the currently active span.
  */
@@ -3504,25 +3810,28 @@ type ExclusiveEventHintOrCaptureContext = (CaptureContext & Partial<{
 
 /**
  * Captures an exception event and sends it to Sentry.
- * This accepts an event hint as optional second parameter.
- * Alternatively, you can also pass a CaptureContext directly as second parameter.
+ *
+ * @param exception The exception to capture.
+ * @param hint Optinal additional data to attach to the Sentry event.
+ * @returns the id of the captured Sentry event.
  */
-declare function captureException(exception: any, hint?: ExclusiveEventHintOrCaptureContext): ReturnType<Hub['captureException']>;
+declare function captureException(exception: any, hint?: ExclusiveEventHintOrCaptureContext): string;
 /**
  * Captures a message event and sends it to Sentry.
  *
- * @param message The message to send to Sentry.
- * @param Severity Define the level of the message.
- * @returns The generated eventId.
+ * @param exception The exception to capture.
+ * @param captureContext Define the level of the message or pass in additional data to attach to the message.
+ * @returns the id of the captured message.
  */
-declare function captureMessage(message: string, captureContext?: CaptureContext | Severity | SeverityLevel): ReturnType<Hub['captureMessage']>;
+declare function captureMessage(message: string, captureContext?: CaptureContext | Severity | SeverityLevel): string;
 /**
  * Captures a manually created event and sends it to Sentry.
  *
- * @param event The event to send to Sentry.
- * @returns The generated eventId.
+ * @param exception The event to send to Sentry.
+ * @param hint Optional additional data to attach to the Sentry event.
+ * @returns the id of the captured event.
  */
-declare function captureEvent(event: Event, hint?: EventHint): ReturnType<Hub['captureEvent']>;
+declare function captureEvent(event: Event, hint?: EventHint): string;
 /**
  * Callback to set context information onto the scope.
  * @param callback Callback function that receives Scope.
@@ -3590,10 +3899,12 @@ declare function setUser(user: User | null): ReturnType<Hub['setUser']>;
  *     pushScope();
  *     callback();
  *     popScope();
- *
- * @param callback that will be enclosed into push/popScope.
  */
 declare function withScope<T>(callback: (scope: Scope) => T): T;
+/**
+ * Set the given scope as the active scope in the callback.
+ */
+declare function withScope<T>(scope: Scope$1 | undefined, callback: (scope: Scope) => T): T;
 /**
  * Starts a new `Transaction` and returns it. This is the entry point to manual tracing instrumentation.
  *
@@ -3613,6 +3924,8 @@ declare function withScope<T>(callback: (scope: Scope) => T): T;
  * default values). See {@link Options.tracesSampler}.
  *
  * @returns The transaction which was just started
+ *
+ * @deprecated Use `startSpan()`, `startSpanManual()` or `startInactiveSpan()` instead.
  */
 declare function startTransaction(context: TransactionContext, customSamplingContext?: CustomSamplingContext): ReturnType<Hub['startTransaction']>;
 /**
@@ -3679,7 +3992,7 @@ declare function addGlobalEventProcessor(callback: EventProcessor): void;
  */
 declare function createTransport(options: InternalBaseTransportOptions, makeRequest: TransportRequestExecutor, buffer?: PromiseBuffer<void | TransportMakeRequestResponse>): Transport;
 
-declare const SDK_VERSION = "7.92.0";
+declare const SDK_VERSION = "7.93.0";
 
 interface MetricData {
     unit?: MeasurementUnit;
