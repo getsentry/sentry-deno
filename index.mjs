@@ -5254,6 +5254,13 @@ function getClient() {
 }
 
 /**
+ * Returns true if Sentry has been properly initialized.
+ */
+function isInitialized() {
+  return !!getClient();
+}
+
+/**
  * Get the currently active scope.
  */
 function getCurrentScope() {
@@ -6222,7 +6229,7 @@ function generatePropagationContext() {
   };
 }
 
-const SDK_VERSION = '7.94.1';
+const SDK_VERSION = '7.95.0';
 
 /**
  * API compatibility version of this hub.
@@ -7017,6 +7024,11 @@ const SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE = 'sentry.sample_rate';
 const SEMANTIC_ATTRIBUTE_SENTRY_OP = 'sentry.op';
 
 /**
+ * Use this attribute to represent the origin of a span.
+ */
+const SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN = 'sentry.origin';
+
+/**
  * Keeps track of finished spans for a given transaction
  * @internal
  * @hideconstructor
@@ -7050,10 +7062,6 @@ class SpanRecorder {
  */
 class Span  {
   /**
-   * @inheritDoc
-   */
-
-  /**
    * Tags for the span.
    * @deprecated Use `getSpanAttributes(span)` instead.
    */
@@ -7085,10 +7093,6 @@ class Span  {
    * @deprecated This field will be removed.
    */
 
-  /**
-   * The origin of the span, giving context about what created the span.
-   */
-
   /** Epoch timestamp in seconds when the span started. */
 
   /** Epoch timestamp in seconds when the span ended. */
@@ -7113,12 +7117,14 @@ class Span  {
     this._attributes = spanContext.attributes ? { ...spanContext.attributes } : {};
     // eslint-disable-next-line deprecation/deprecation
     this.instrumenter = spanContext.instrumenter || 'sentry';
-    this.origin = spanContext.origin || 'manual';
+
+    this.setAttribute(SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, spanContext.origin || 'manual');
+
     // eslint-disable-next-line deprecation/deprecation
     this._name = spanContext.name || spanContext.description;
 
     if (spanContext.parentSpanId) {
-      this.parentSpanId = spanContext.parentSpanId;
+      this._parentSpanId = spanContext.parentSpanId;
     }
     // We want to include booleans as well here
     if ('sampled' in spanContext) {
@@ -7200,6 +7206,24 @@ class Span  {
    */
    set spanId(spanId) {
     this._spanId = spanId;
+  }
+
+  /**
+   * @inheritDoc
+   *
+   * @deprecated Use `startSpan` functions instead.
+   */
+   set parentSpanId(string) {
+    this._parentSpanId = string;
+  }
+
+  /**
+   * @inheritDoc
+   *
+   * @deprecated Use `spanToJSON(span).parent_span_id` instead.
+   */
+   get parentSpanId() {
+    return this._parentSpanId;
   }
 
   /**
@@ -7301,6 +7325,24 @@ class Span  {
    */
    set op(op) {
     this.setAttribute(SEMANTIC_ATTRIBUTE_SENTRY_OP, op);
+  }
+
+  /**
+   * The origin of the span, giving context about what created the span.
+   *
+   * @deprecated Use `spanToJSON().origin` to read the origin instead.
+   */
+   get origin() {
+    return this._attributes[SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN] ;
+  }
+
+  /**
+   * The origin of the span, giving context about what created the span.
+   *
+   * @deprecated Use `startSpan()` functions to set the origin instead.
+   */
+   set origin(origin) {
+    this.setAttribute(SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, origin);
   }
 
   /* eslint-enable @typescript-eslint/member-ordering */
@@ -7502,7 +7544,7 @@ class Span  {
       endTimestamp: this._endTime,
       // eslint-disable-next-line deprecation/deprecation
       op: this.op,
-      parentSpanId: this.parentSpanId,
+      parentSpanId: this._parentSpanId,
       sampled: this._sampled,
       spanId: this._spanId,
       startTimestamp: this._startTime,
@@ -7526,7 +7568,7 @@ class Span  {
     this._endTime = spanContext.endTimestamp;
     // eslint-disable-next-line deprecation/deprecation
     this.op = spanContext.op;
-    this.parentSpanId = spanContext.parentSpanId;
+    this._parentSpanId = spanContext.parentSpanId;
     this._sampled = spanContext.sampled;
     this._spanId = spanContext.spanId || this._spanId;
     this._startTime = spanContext.startTimestamp || this._startTime;
@@ -7560,7 +7602,7 @@ class Span  {
       data: this._getData(),
       description: this._name,
       op: this._attributes[SEMANTIC_ATTRIBUTE_SENTRY_OP] ,
-      parent_span_id: this.parentSpanId,
+      parent_span_id: this._parentSpanId,
       span_id: this._spanId,
       start_timestamp: this._startTime,
       status: this._status,
@@ -7568,7 +7610,7 @@ class Span  {
       tags: Object.keys(this.tags).length > 0 ? this.tags : undefined,
       timestamp: this._endTime,
       trace_id: this._traceId,
-      origin: this.origin,
+      origin: this._attributes[SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN] ,
     });
   }
 
@@ -12351,12 +12393,14 @@ function makeFetchTransport(options) {
   return createTransport(options, makeRequest);
 }
 
-/* eslint-disable deprecation/deprecation */
+/** @deprecated Use `getDefaultIntegrations(options)` instead. */
 const defaultIntegrations = [
+  /* eslint-disable deprecation/deprecation */
   // Common
   new InboundFilters(),
   new FunctionToString(),
   new LinkedErrors(),
+  /* eslint-enable deprecation/deprecation */
   // From Browser
   new Dedupe(),
   new Breadcrumbs({
@@ -12370,7 +12414,15 @@ const defaultIntegrations = [
   new NormalizePaths(),
   new GlobalHandlers(),
 ];
-/* eslint-enable deprecation/deprecation */
+
+/** Get the default integrations for the Deno SDK. */
+function getDefaultIntegrations(_options) {
+  // We return a copy of the defaultIntegrations here to avoid mutating this
+  return [
+    // eslint-disable-next-line deprecation/deprecation
+    ...defaultIntegrations,
+  ];
+}
 
 const defaultStackParser = createStackParser(nodeStackLineParser());
 
@@ -12430,10 +12482,9 @@ const defaultStackParser = createStackParser(nodeStackLineParser());
  * @see {@link DenoOptions} for documentation on configuration options.
  */
 function init(options = {}) {
-  options.defaultIntegrations =
-    options.defaultIntegrations === false
-      ? []
-      : [...(Array.isArray(options.defaultIntegrations) ? options.defaultIntegrations : defaultIntegrations)];
+  if (options.defaultIntegrations === undefined) {
+    options.defaultIntegrations = getDefaultIntegrations();
+  }
 
   const clientOptions = {
     ...options,
@@ -12451,5 +12502,5 @@ const INTEGRATIONS = {
   ...DenoIntegrations,
 };
 
-export { DenoClient, Hub, INTEGRATIONS as Integrations, SDK_VERSION, Scope, addBreadcrumb, addEventProcessor, addGlobalEventProcessor, captureCheckIn, captureEvent, captureException, captureMessage, close, configureScope, continueTrace, createTransport, defaultIntegrations, extractTraceparentData, flush, functionToStringIntegration, getActiveSpan, getActiveTransaction, getClient, getCurrentHub, getCurrentScope, getGlobalScope, getHubFromCarrier, getIsolationScope, inboundFiltersIntegration, init, lastEventId, linkedErrorsIntegration, makeMain, metrics, requestDataIntegration, runWithAsyncContext, setContext, setCurrentClient, setExtra, setExtras, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSpan, startSpanManual, startTransaction, trace, withIsolationScope, withMonitor, withScope };
+export { DenoClient, Hub, INTEGRATIONS as Integrations, SDK_VERSION, Scope, addBreadcrumb, addEventProcessor, addGlobalEventProcessor, captureCheckIn, captureEvent, captureException, captureMessage, close, configureScope, continueTrace, createTransport, defaultIntegrations, extractTraceparentData, flush, functionToStringIntegration, getActiveSpan, getActiveTransaction, getClient, getCurrentHub, getCurrentScope, getDefaultIntegrations, getGlobalScope, getHubFromCarrier, getIsolationScope, inboundFiltersIntegration, init, isInitialized, lastEventId, linkedErrorsIntegration, makeMain, metrics, requestDataIntegration, runWithAsyncContext, setContext, setCurrentClient, setExtra, setExtras, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSpan, startSpanManual, startTransaction, trace, withIsolationScope, withMonitor, withScope };
 //# sourceMappingURL=index.mjs.map

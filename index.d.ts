@@ -1373,7 +1373,7 @@ interface SpanContext {
     origin?: SpanOrigin;
 }
 /** Span holding trace_id, span_id */
-interface Span extends Omit<SpanContext, 'op' | 'status'> {
+interface Span extends Omit<SpanContext, 'op' | 'status' | 'origin'> {
     /**
      * Human-readable identifier for the span. Identical to span.description.
      * @deprecated Use `spanToJSON(span).description` instead.
@@ -1391,6 +1391,12 @@ interface Span extends Omit<SpanContext, 'op' | 'status'> {
      * @deprecated Use `spanContext().spanId` instead.
      */
     spanId: string;
+    /**
+     * Parent Span ID
+     *
+     * @deprecated Use `spanToJSON(span).parent_span_id` instead.
+     */
+    parentSpanId?: string;
     /**
      * The ID of the trace.
      * @deprecated Use `spanContext().traceId` instead.
@@ -1449,6 +1455,12 @@ interface Span extends Omit<SpanContext, 'op' | 'status'> {
      * @deprecated Use `.setStatus` to set or update and `spanToJSON()` to read the status.
      */
     status?: string;
+    /**
+     * The origin of the span, giving context about what created the span.
+     *
+     * @deprecated Use `startSpan` function to set and `spanToJSON(span).origin` to read the origin instead.
+     */
+    origin?: SpanOrigin;
     /**
      * Get context data for this span.
      * This includes the spanId & the traceId.
@@ -4170,6 +4182,10 @@ declare function lastEventId(): string | undefined;
  */
 declare function getClient<C extends Client>(): C | undefined;
 /**
+ * Returns true if Sentry has been properly initialized.
+ */
+declare function isInitialized(): boolean;
+/**
  * Get the currently active scope.
  */
 declare function getCurrentScope(): Scope;
@@ -4188,7 +4204,7 @@ declare function addGlobalEventProcessor(callback: EventProcessor): void;
  */
 declare function createTransport(options: InternalBaseTransportOptions, makeRequest: TransportRequestExecutor, buffer?: PromiseBuffer<void | TransportMakeRequestResponse>): Transport;
 
-declare const SDK_VERSION = "7.94.1";
+declare const SDK_VERSION = "7.95.0";
 
 /** Options for the InboundFilters integration */
 interface InboundFiltersOptions {
@@ -4265,6 +4281,7 @@ declare class DenoClient extends ServerRuntimeClient<DenoClientOptions> {
     constructor(options: DenoClientOptions);
 }
 
+/** @deprecated Use `getDefaultIntegrations(options)` instead. */
 declare const defaultIntegrations: ((Integration & {
     processEvent: (event: Event) => Promise<Event>;
 }) | (Integration & {
@@ -4276,6 +4293,8 @@ declare const defaultIntegrations: ((Integration & {
 }) | (Integration & {
     setupOnce: () => void;
 }))[];
+/** Get the default integrations for the Deno SDK. */
+declare function getDefaultIntegrations(_options: Options): Integration[];
 /**
  * The Sentry Deno SDK Client.
  *
@@ -4371,4 +4390,4 @@ declare const INTEGRATIONS: {
     } | undefined) => Integration);
 };
 
-export { type AddRequestDataToEventOptions, type Breadcrumb, type BreadcrumbHint, DenoClient, type DenoOptions, type Event, type EventHint, type Exception, Hub, INTEGRATIONS as Integrations, type PolymorphicRequest, type Request, SDK_VERSION, Scope, type SdkInfo, type Session, Severity, type SeverityLevel, type Span, type SpanStatusType, type StackFrame, type Stacktrace, type Thread, type Transaction, type User, addBreadcrumb, addEventProcessor, addGlobalEventProcessor, captureCheckIn, captureEvent, captureException, captureMessage, close, configureScope, continueTrace, createTransport, defaultIntegrations, extractTraceparentData, flush, functionToStringIntegration, getActiveSpan, getActiveTransaction, getClient, getCurrentHub, getCurrentScope, getGlobalScope, getHubFromCarrier, getIsolationScope, inboundFiltersIntegration, init, lastEventId, linkedErrorsIntegration, makeMain, metrics, requestDataIntegration, runWithAsyncContext, setContext, setCurrentClient, setExtra, setExtras, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSpan, startSpanManual, startTransaction, trace, withIsolationScope, withMonitor, withScope };
+export { type AddRequestDataToEventOptions, type Breadcrumb, type BreadcrumbHint, DenoClient, type DenoOptions, type Event, type EventHint, type Exception, Hub, INTEGRATIONS as Integrations, type PolymorphicRequest, type Request, SDK_VERSION, Scope, type SdkInfo, type Session, Severity, type SeverityLevel, type Span, type SpanStatusType, type StackFrame, type Stacktrace, type Thread, type Transaction, type User, addBreadcrumb, addEventProcessor, addGlobalEventProcessor, captureCheckIn, captureEvent, captureException, captureMessage, close, configureScope, continueTrace, createTransport, defaultIntegrations, extractTraceparentData, flush, functionToStringIntegration, getActiveSpan, getActiveTransaction, getClient, getCurrentHub, getCurrentScope, getDefaultIntegrations, getGlobalScope, getHubFromCarrier, getIsolationScope, inboundFiltersIntegration, init, isInitialized, lastEventId, linkedErrorsIntegration, makeMain, metrics, requestDataIntegration, runWithAsyncContext, setContext, setCurrentClient, setExtra, setExtras, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSpan, startSpanManual, startTransaction, trace, withIsolationScope, withMonitor, withScope };
