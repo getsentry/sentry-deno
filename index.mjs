@@ -6229,7 +6229,7 @@ function generatePropagationContext() {
   };
 }
 
-const SDK_VERSION = '7.95.0';
+const SDK_VERSION = '7.97.0';
 
 /**
  * API compatibility version of this hub.
@@ -11277,7 +11277,7 @@ const MAX_ALLOWED_STRING_LENGTH = 1024;
 
 const INTEGRATION_NAME$6 = 'Breadcrumbs';
 
-const breadcrumbsIntegration = ((options = {}) => {
+const _breadcrumbsIntegration = ((options = {}) => {
   const _options = {
     console: true,
     dom: true,
@@ -11315,11 +11315,15 @@ const breadcrumbsIntegration = ((options = {}) => {
   };
 }) ;
 
+const breadcrumbsIntegration = defineIntegration(_breadcrumbsIntegration);
+
 /**
  * Default Breadcrumbs instrumentations
+ *
+ * @deprecated Use `breadcrumbsIntegration()` instead.
  */
 // eslint-disable-next-line deprecation/deprecation
-const Breadcrumbs = convertIntegrationFnToClass(INTEGRATION_NAME$6, breadcrumbsIntegration)
+convertIntegrationFnToClass(INTEGRATION_NAME$6, breadcrumbsIntegration)
 
 ;
 
@@ -11597,7 +11601,7 @@ function _isEvent(event) {
 
 const INTEGRATION_NAME$5 = 'Dedupe';
 
-const dedupeIntegration = (() => {
+const _dedupeIntegration = (() => {
   let previousEvent;
 
   return {
@@ -11624,9 +11628,14 @@ const dedupeIntegration = (() => {
   };
 }) ;
 
-/** Deduplication filter */
+const dedupeIntegration = defineIntegration(_dedupeIntegration);
+
+/**
+ * Deduplication filter.
+ * @deprecated Use `dedupeIntegration()` instead.
+ */
 // eslint-disable-next-line deprecation/deprecation
-const Dedupe = convertIntegrationFnToClass(INTEGRATION_NAME$5, dedupeIntegration)
+convertIntegrationFnToClass(INTEGRATION_NAME$5, dedupeIntegration)
 
 ;
 
@@ -12395,15 +12404,13 @@ function makeFetchTransport(options) {
 
 /** @deprecated Use `getDefaultIntegrations(options)` instead. */
 const defaultIntegrations = [
-  /* eslint-disable deprecation/deprecation */
   // Common
-  new InboundFilters(),
-  new FunctionToString(),
-  new LinkedErrors(),
-  /* eslint-enable deprecation/deprecation */
+  inboundFiltersIntegration(),
+  functionToStringIntegration(),
+  linkedErrorsIntegration(),
   // From Browser
-  new Dedupe(),
-  new Breadcrumbs({
+  dedupeIntegration(),
+  breadcrumbsIntegration({
     dom: false,
     history: false,
     xhr: false,
@@ -12502,5 +12509,5 @@ const INTEGRATIONS = {
   ...DenoIntegrations,
 };
 
-export { DenoClient, Hub, INTEGRATIONS as Integrations, SDK_VERSION, Scope, addBreadcrumb, addEventProcessor, addGlobalEventProcessor, captureCheckIn, captureEvent, captureException, captureMessage, close, configureScope, continueTrace, createTransport, defaultIntegrations, extractTraceparentData, flush, functionToStringIntegration, getActiveSpan, getActiveTransaction, getClient, getCurrentHub, getCurrentScope, getDefaultIntegrations, getGlobalScope, getHubFromCarrier, getIsolationScope, inboundFiltersIntegration, init, isInitialized, lastEventId, linkedErrorsIntegration, makeMain, metrics, requestDataIntegration, runWithAsyncContext, setContext, setCurrentClient, setExtra, setExtras, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSpan, startSpanManual, startTransaction, trace, withIsolationScope, withMonitor, withScope };
+export { DenoClient, Hub, INTEGRATIONS as Integrations, SDK_VERSION, Scope, addBreadcrumb, addEventProcessor, addGlobalEventProcessor, breadcrumbsIntegration, captureCheckIn, captureEvent, captureException, captureMessage, close, configureScope, continueTrace, createTransport, dedupeIntegration, defaultIntegrations, extractTraceparentData, flush, functionToStringIntegration, getActiveSpan, getActiveTransaction, getClient, getCurrentHub, getCurrentScope, getDefaultIntegrations, getGlobalScope, getHubFromCarrier, getIsolationScope, inboundFiltersIntegration, init, isInitialized, lastEventId, linkedErrorsIntegration, makeMain, metrics, requestDataIntegration, runWithAsyncContext, setContext, setCurrentClient, setExtra, setExtras, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSpan, startSpanManual, startTransaction, trace, withIsolationScope, withMonitor, withScope };
 //# sourceMappingURL=index.mjs.map

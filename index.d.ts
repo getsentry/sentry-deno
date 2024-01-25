@@ -4204,7 +4204,7 @@ declare function addGlobalEventProcessor(callback: EventProcessor): void;
  */
 declare function createTransport(options: InternalBaseTransportOptions, makeRequest: TransportRequestExecutor, buffer?: PromiseBuffer<void | TransportMakeRequestResponse>): Transport;
 
-declare const SDK_VERSION = "7.95.0";
+declare const SDK_VERSION = "7.97.0";
 
 /** Options for the InboundFilters integration */
 interface InboundFiltersOptions {
@@ -4281,17 +4281,28 @@ declare class DenoClient extends ServerRuntimeClient<DenoClientOptions> {
     constructor(options: DenoClientOptions);
 }
 
+interface BreadcrumbsOptions {
+    console: boolean;
+    dom: boolean | {
+        serializeAttribute?: string | string[];
+        maxStringLength?: number;
+    };
+    fetch: boolean;
+    history: boolean;
+    sentry: boolean;
+    xhr: boolean;
+}
+declare const breadcrumbsIntegration: (options?: Partial<BreadcrumbsOptions> | undefined) => IntegrationFnResult;
+
+declare const dedupeIntegration: () => IntegrationFnResult;
+
 /** @deprecated Use `getDefaultIntegrations(options)` instead. */
-declare const defaultIntegrations: ((Integration & {
+declare const defaultIntegrations: (IntegrationFnResult | (Integration & {
     processEvent: (event: Event) => Promise<Event>;
 }) | (Integration & {
     setup: (client: Client<ClientOptions<BaseTransportOptions>>) => void;
 }) | (Integration & {
     processEvent: (event: Event) => Event;
-}) | (Integration & {
-    preprocessEvent: (event: Event, hint: EventHint, client: Client<ClientOptions<BaseTransportOptions>>) => void;
-}) | (Integration & {
-    setupOnce: () => void;
 }))[];
 /** Get the default integrations for the Deno SDK. */
 declare function getDefaultIntegrations(_options: Options): Integration[];
@@ -4390,4 +4401,4 @@ declare const INTEGRATIONS: {
     } | undefined) => Integration);
 };
 
-export { type AddRequestDataToEventOptions, type Breadcrumb, type BreadcrumbHint, DenoClient, type DenoOptions, type Event, type EventHint, type Exception, Hub, INTEGRATIONS as Integrations, type PolymorphicRequest, type Request, SDK_VERSION, Scope, type SdkInfo, type Session, Severity, type SeverityLevel, type Span, type SpanStatusType, type StackFrame, type Stacktrace, type Thread, type Transaction, type User, addBreadcrumb, addEventProcessor, addGlobalEventProcessor, captureCheckIn, captureEvent, captureException, captureMessage, close, configureScope, continueTrace, createTransport, defaultIntegrations, extractTraceparentData, flush, functionToStringIntegration, getActiveSpan, getActiveTransaction, getClient, getCurrentHub, getCurrentScope, getDefaultIntegrations, getGlobalScope, getHubFromCarrier, getIsolationScope, inboundFiltersIntegration, init, isInitialized, lastEventId, linkedErrorsIntegration, makeMain, metrics, requestDataIntegration, runWithAsyncContext, setContext, setCurrentClient, setExtra, setExtras, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSpan, startSpanManual, startTransaction, trace, withIsolationScope, withMonitor, withScope };
+export { type AddRequestDataToEventOptions, type Breadcrumb, type BreadcrumbHint, DenoClient, type DenoOptions, type Event, type EventHint, type Exception, Hub, INTEGRATIONS as Integrations, type PolymorphicRequest, type Request, SDK_VERSION, Scope, type SdkInfo, type Session, Severity, type SeverityLevel, type Span, type SpanStatusType, type StackFrame, type Stacktrace, type Thread, type Transaction, type User, addBreadcrumb, addEventProcessor, addGlobalEventProcessor, breadcrumbsIntegration, captureCheckIn, captureEvent, captureException, captureMessage, close, configureScope, continueTrace, createTransport, dedupeIntegration, defaultIntegrations, extractTraceparentData, flush, functionToStringIntegration, getActiveSpan, getActiveTransaction, getClient, getCurrentHub, getCurrentScope, getDefaultIntegrations, getGlobalScope, getHubFromCarrier, getIsolationScope, inboundFiltersIntegration, init, isInitialized, lastEventId, linkedErrorsIntegration, makeMain, metrics, requestDataIntegration, runWithAsyncContext, setContext, setCurrentClient, setExtra, setExtras, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSpan, startSpanManual, startTransaction, trace, withIsolationScope, withMonitor, withScope };
