@@ -3689,25 +3689,28 @@ function tracingContextFromHeaders(
 
   const { traceId, parentSpanId, parentSampled } = traceparentData || {};
 
-  const propagationContext = {
-    traceId: traceId || uuid4(),
-    spanId: uuid4().substring(16),
-    sampled: parentSampled,
-  };
-
-  if (parentSpanId) {
-    propagationContext.parentSpanId = parentSpanId;
+  if (!traceparentData) {
+    return {
+      traceparentData,
+      dynamicSamplingContext: undefined,
+      propagationContext: {
+        traceId: traceId || uuid4(),
+        spanId: uuid4().substring(16),
+      },
+    };
+  } else {
+    return {
+      traceparentData,
+      dynamicSamplingContext: dynamicSamplingContext || {}, // If we have traceparent data but no DSC it means we are not head of trace and we must freeze it
+      propagationContext: {
+        traceId: traceId || uuid4(),
+        parentSpanId: parentSpanId || uuid4().substring(16),
+        spanId: uuid4().substring(16),
+        sampled: parentSampled,
+        dsc: dynamicSamplingContext || {}, // If we have traceparent data but no DSC it means we are not head of trace and we must freeze it
+      },
+    };
   }
-
-  if (dynamicSamplingContext) {
-    propagationContext.dsc = dynamicSamplingContext ;
-  }
-
-  return {
-    traceparentData,
-    dynamicSamplingContext,
-    propagationContext,
-  };
 }
 
 /**
@@ -5373,7 +5376,7 @@ function getDynamicSamplingContextFromSpan(span) {
  * Applies data from the scope to the event and runs all event processors on it.
  */
 function applyScopeDataToEvent(event, data) {
-  const { fingerprint, span, breadcrumbs, sdkProcessingMetadata, propagationContext } = data;
+  const { fingerprint, span, breadcrumbs, sdkProcessingMetadata } = data;
 
   // Apply general data
   applyDataToEvent(event, data);
@@ -5387,7 +5390,7 @@ function applyScopeDataToEvent(event, data) {
 
   applyFingerprintToEvent(event, fingerprint);
   applyBreadcrumbsToEvent(event, breadcrumbs);
-  applySdkMetadataToEvent(event, sdkProcessingMetadata, propagationContext);
+  applySdkMetadataToEvent(event, sdkProcessingMetadata);
 }
 
 /** Merge data of two scopes together. */
@@ -5510,15 +5513,10 @@ function applyBreadcrumbsToEvent(event, breadcrumbs) {
   event.breadcrumbs = mergedBreadcrumbs.length ? mergedBreadcrumbs : undefined;
 }
 
-function applySdkMetadataToEvent(
-  event,
-  sdkProcessingMetadata,
-  propagationContext,
-) {
+function applySdkMetadataToEvent(event, sdkProcessingMetadata) {
   event.sdkProcessingMetadata = {
     ...event.sdkProcessingMetadata,
     ...sdkProcessingMetadata,
-    propagationContext: propagationContext,
   };
 }
 
@@ -6229,7 +6227,7 @@ function generatePropagationContext() {
   };
 }
 
-const SDK_VERSION = '7.98.0';
+const SDK_VERSION = '7.99.0';
 
 /**
  * API compatibility version of this hub.
@@ -7028,6 +7026,127 @@ const SEMANTIC_ATTRIBUTE_SENTRY_OP = 'sentry.op';
  */
 const SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN = 'sentry.origin';
 
+/** The status of an Span.
+ *
+ * @deprecated Use string literals - if you require type casting, cast to SpanStatusType type
+ */
+var SpanStatus; (function (SpanStatus) {
+  /** The operation completed successfully. */
+  const Ok = 'ok'; SpanStatus["Ok"] = Ok;
+  /** Deadline expired before operation could complete. */
+  const DeadlineExceeded = 'deadline_exceeded'; SpanStatus["DeadlineExceeded"] = DeadlineExceeded;
+  /** 401 Unauthorized (actually does mean unauthenticated according to RFC 7235) */
+  const Unauthenticated = 'unauthenticated'; SpanStatus["Unauthenticated"] = Unauthenticated;
+  /** 403 Forbidden */
+  const PermissionDenied = 'permission_denied'; SpanStatus["PermissionDenied"] = PermissionDenied;
+  /** 404 Not Found. Some requested entity (file or directory) was not found. */
+  const NotFound = 'not_found'; SpanStatus["NotFound"] = NotFound;
+  /** 429 Too Many Requests */
+  const ResourceExhausted = 'resource_exhausted'; SpanStatus["ResourceExhausted"] = ResourceExhausted;
+  /** Client specified an invalid argument. 4xx. */
+  const InvalidArgument = 'invalid_argument'; SpanStatus["InvalidArgument"] = InvalidArgument;
+  /** 501 Not Implemented */
+  const Unimplemented = 'unimplemented'; SpanStatus["Unimplemented"] = Unimplemented;
+  /** 503 Service Unavailable */
+  const Unavailable = 'unavailable'; SpanStatus["Unavailable"] = Unavailable;
+  /** Other/generic 5xx. */
+  const InternalError = 'internal_error'; SpanStatus["InternalError"] = InternalError;
+  /** Unknown. Any non-standard HTTP status code. */
+  const UnknownError = 'unknown_error'; SpanStatus["UnknownError"] = UnknownError;
+  /** The operation was cancelled (typically by the user). */
+  const Cancelled = 'cancelled'; SpanStatus["Cancelled"] = Cancelled;
+  /** Already exists (409) */
+  const AlreadyExists = 'already_exists'; SpanStatus["AlreadyExists"] = AlreadyExists;
+  /** Operation was rejected because the system is not in a state required for the operation's */
+  const FailedPrecondition = 'failed_precondition'; SpanStatus["FailedPrecondition"] = FailedPrecondition;
+  /** The operation was aborted, typically due to a concurrency issue. */
+  const Aborted = 'aborted'; SpanStatus["Aborted"] = Aborted;
+  /** Operation was attempted past the valid range. */
+  const OutOfRange = 'out_of_range'; SpanStatus["OutOfRange"] = OutOfRange;
+  /** Unrecoverable data loss or corruption */
+  const DataLoss = 'data_loss'; SpanStatus["DataLoss"] = DataLoss;
+})(SpanStatus || (SpanStatus = {}));
+
+/**
+ * Converts a HTTP status code into a {@link SpanStatusType}.
+ *
+ * @param httpStatus The HTTP response status code.
+ * @returns The span status or unknown_error.
+ */
+function getSpanStatusFromHttpCode(httpStatus) {
+  if (httpStatus < 400 && httpStatus >= 100) {
+    return 'ok';
+  }
+
+  if (httpStatus >= 400 && httpStatus < 500) {
+    switch (httpStatus) {
+      case 401:
+        return 'unauthenticated';
+      case 403:
+        return 'permission_denied';
+      case 404:
+        return 'not_found';
+      case 409:
+        return 'already_exists';
+      case 413:
+        return 'failed_precondition';
+      case 429:
+        return 'resource_exhausted';
+      default:
+        return 'invalid_argument';
+    }
+  }
+
+  if (httpStatus >= 500 && httpStatus < 600) {
+    switch (httpStatus) {
+      case 501:
+        return 'unimplemented';
+      case 503:
+        return 'unavailable';
+      case 504:
+        return 'deadline_exceeded';
+      default:
+        return 'internal_error';
+    }
+  }
+
+  return 'unknown_error';
+}
+
+/**
+ * Converts a HTTP status code into a {@link SpanStatusType}.
+ *
+ * @deprecated Use {@link spanStatusFromHttpCode} instead.
+ * This export will be removed in v8 as the signature contains a typo.
+ *
+ * @param httpStatus The HTTP response status code.
+ * @returns The span status or unknown_error.
+ */
+const spanStatusfromHttpCode = getSpanStatusFromHttpCode;
+
+/**
+ * Sets the Http status attributes on the current span based on the http code.
+ * Additionally, the span's status is updated, depending on the http code.
+ */
+function setHttpStatus(span, httpStatus) {
+  // TODO (v8): Remove these calls
+  // Relay does not require us to send the status code as a tag
+  // For now, just because users might expect it to land as a tag we keep sending it.
+  // Same with data.
+  // In v8, we replace both, simply with
+  // span.setAttribute('http.response.status_code', httpStatus);
+
+  // eslint-disable-next-line deprecation/deprecation
+  span.setTag('http.status_code', String(httpStatus));
+  // eslint-disable-next-line deprecation/deprecation
+  span.setData('http.response.status_code', httpStatus);
+
+  const spanStatus = getSpanStatusFromHttpCode(httpStatus);
+  if (spanStatus !== 'unknown_error') {
+    span.setStatus(spanStatus);
+  }
+}
+
 /**
  * Keeps track of finished spans for a given transaction
  * @internal
@@ -7114,11 +7233,15 @@ class Span  {
     this.tags = spanContext.tags ? { ...spanContext.tags } : {};
     // eslint-disable-next-line deprecation/deprecation
     this.data = spanContext.data ? { ...spanContext.data } : {};
-    this._attributes = spanContext.attributes ? { ...spanContext.attributes } : {};
     // eslint-disable-next-line deprecation/deprecation
     this.instrumenter = spanContext.instrumenter || 'sentry';
 
-    this.setAttribute(SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, spanContext.origin || 'manual');
+    this._attributes = {};
+    this.setAttributes({
+      [SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN]: spanContext.origin || 'manual',
+      [SEMANTIC_ATTRIBUTE_SENTRY_OP]: spanContext.op,
+      ...spanContext.attributes,
+    });
 
     // eslint-disable-next-line deprecation/deprecation
     this._name = spanContext.name || spanContext.description;
@@ -7129,9 +7252,6 @@ class Span  {
     // We want to include booleans as well here
     if ('sampled' in spanContext) {
       this._sampled = spanContext.sampled;
-    }
-    if (spanContext.op) {
-      this.setAttribute(SEMANTIC_ATTRIBUTE_SENTRY_OP, spanContext.op);
     }
     if (spanContext.status) {
       this._status = spanContext.status;
@@ -7453,16 +7573,10 @@ class Span  {
 
   /**
    * @inheritDoc
+   * @deprecated Use top-level `setHttpStatus()` instead.
    */
    setHttpStatus(httpStatus) {
-    // eslint-disable-next-line deprecation/deprecation
-    this.setTag('http.status_code', String(httpStatus));
-    // eslint-disable-next-line deprecation/deprecation
-    this.setData('http.response.status_code', httpStatus);
-    const spanStatus = spanStatusfromHttpCode(httpStatus);
-    if (spanStatus !== 'unknown_error') {
-      this.setStatus(spanStatus);
-    }
+    setHttpStatus(this, httpStatus);
     return this;
   }
 
@@ -7654,52 +7768,6 @@ class Span  {
 
     return hasData ? data : attributes;
   }
-}
-
-/**
- * Converts a HTTP status code into a {@link SpanStatusType}.
- *
- * @param httpStatus The HTTP response status code.
- * @returns The span status or unknown_error.
- */
-function spanStatusfromHttpCode(httpStatus) {
-  if (httpStatus < 400 && httpStatus >= 100) {
-    return 'ok';
-  }
-
-  if (httpStatus >= 400 && httpStatus < 500) {
-    switch (httpStatus) {
-      case 401:
-        return 'unauthenticated';
-      case 403:
-        return 'permission_denied';
-      case 404:
-        return 'not_found';
-      case 409:
-        return 'already_exists';
-      case 413:
-        return 'failed_precondition';
-      case 429:
-        return 'resource_exhausted';
-      default:
-        return 'invalid_argument';
-    }
-  }
-
-  if (httpStatus >= 500 && httpStatus < 600) {
-    switch (httpStatus) {
-      case 501:
-        return 'unimplemented';
-      case 503:
-        return 'unavailable';
-      case 504:
-        return 'deadline_exceeded';
-      default:
-        return 'internal_error';
-    }
-  }
-
-  return 'unknown_error';
 }
 
 /** JSDoc */
@@ -8369,29 +8437,33 @@ function trace(
 function startSpan(context, callback) {
   const ctx = normalizeContext(context);
 
-  return withScope(context.scope, scope => {
-    // eslint-disable-next-line deprecation/deprecation
-    const hub = getCurrentHub();
-    // eslint-disable-next-line deprecation/deprecation
-    const parentSpan = scope.getSpan();
+  return runWithAsyncContext(() => {
+    return withScope(context.scope, scope => {
+      // eslint-disable-next-line deprecation/deprecation
+      const hub = getCurrentHub();
+      // eslint-disable-next-line deprecation/deprecation
+      const parentSpan = scope.getSpan();
 
-    const activeSpan = createChildSpanOrTransaction(hub, parentSpan, ctx);
-    // eslint-disable-next-line deprecation/deprecation
-    scope.setSpan(activeSpan);
+      const shouldSkipSpan = context.onlyIfParent && !parentSpan;
+      const activeSpan = shouldSkipSpan ? undefined : createChildSpanOrTransaction(hub, parentSpan, ctx);
 
-    return handleCallbackErrors(
-      () => callback(activeSpan),
-      () => {
-        // Only update the span status if it hasn't been changed yet
-        if (activeSpan) {
-          const { status } = spanToJSON(activeSpan);
-          if (!status || status === 'ok') {
-            activeSpan.setStatus('internal_error');
+      // eslint-disable-next-line deprecation/deprecation
+      scope.setSpan(activeSpan);
+
+      return handleCallbackErrors(
+        () => callback(activeSpan),
+        () => {
+          // Only update the span status if it hasn't been changed yet
+          if (activeSpan) {
+            const { status } = spanToJSON(activeSpan);
+            if (!status || status === 'ok') {
+              activeSpan.setStatus('internal_error');
+            }
           }
-        }
-      },
-      () => activeSpan && activeSpan.end(),
-    );
+        },
+        () => activeSpan && activeSpan.end(),
+      );
+    });
   });
 }
 
@@ -8412,32 +8484,36 @@ function startSpanManual(
 ) {
   const ctx = normalizeContext(context);
 
-  return withScope(context.scope, scope => {
-    // eslint-disable-next-line deprecation/deprecation
-    const hub = getCurrentHub();
-    // eslint-disable-next-line deprecation/deprecation
-    const parentSpan = scope.getSpan();
+  return runWithAsyncContext(() => {
+    return withScope(context.scope, scope => {
+      // eslint-disable-next-line deprecation/deprecation
+      const hub = getCurrentHub();
+      // eslint-disable-next-line deprecation/deprecation
+      const parentSpan = scope.getSpan();
 
-    const activeSpan = createChildSpanOrTransaction(hub, parentSpan, ctx);
-    // eslint-disable-next-line deprecation/deprecation
-    scope.setSpan(activeSpan);
+      const shouldSkipSpan = context.onlyIfParent && !parentSpan;
+      const activeSpan = shouldSkipSpan ? undefined : createChildSpanOrTransaction(hub, parentSpan, ctx);
 
-    function finishAndSetSpan() {
-      activeSpan && activeSpan.end();
-    }
+      // eslint-disable-next-line deprecation/deprecation
+      scope.setSpan(activeSpan);
 
-    return handleCallbackErrors(
-      () => callback(activeSpan, finishAndSetSpan),
-      () => {
-        // Only update the span status if it hasn't been changed yet, and the span is not yet finished
-        if (activeSpan && activeSpan.isRecording()) {
-          const { status } = spanToJSON(activeSpan);
-          if (!status || status === 'ok') {
-            activeSpan.setStatus('internal_error');
+      function finishAndSetSpan() {
+        activeSpan && activeSpan.end();
+      }
+
+      return handleCallbackErrors(
+        () => callback(activeSpan, finishAndSetSpan),
+        () => {
+          // Only update the span status if it hasn't been changed yet, and the span is not yet finished
+          if (activeSpan && activeSpan.isRecording()) {
+            const { status } = spanToJSON(activeSpan);
+            if (!status || status === 'ok') {
+              activeSpan.setStatus('internal_error');
+            }
           }
-        }
-      },
-    );
+        },
+      );
+    });
   });
 }
 
@@ -8463,11 +8539,38 @@ function startInactiveSpan(context) {
     ? // eslint-disable-next-line deprecation/deprecation
       context.scope.getSpan()
     : getActiveSpan();
-  return parentSpan
-    ? // eslint-disable-next-line deprecation/deprecation
-      parentSpan.startChild(ctx)
-    : // eslint-disable-next-line deprecation/deprecation
-      hub.startTransaction(ctx);
+
+  const shouldSkipSpan = context.onlyIfParent && !parentSpan;
+
+  if (shouldSkipSpan) {
+    return undefined;
+  }
+
+  if (parentSpan) {
+    // eslint-disable-next-line deprecation/deprecation
+    return parentSpan.startChild(ctx);
+  } else {
+    const isolationScope = getIsolationScope();
+    const scope = getCurrentScope();
+
+    const { traceId, dsc, parentSpanId, sampled } = {
+      ...isolationScope.getPropagationContext(),
+      ...scope.getPropagationContext(),
+    };
+
+    // eslint-disable-next-line deprecation/deprecation
+    return hub.startTransaction({
+      traceId,
+      parentSpanId,
+      parentSampled: sampled,
+      ...ctx,
+      metadata: {
+        dynamicSamplingContext: dsc,
+        // eslint-disable-next-line deprecation/deprecation
+        ...ctx.metadata,
+      },
+    });
+  }
 }
 
 /**
@@ -8510,7 +8613,7 @@ function continueTrace(
   const transactionContext = {
     ...traceparentData,
     metadata: dropUndefinedKeys({
-      dynamicSamplingContext: traceparentData && !dynamicSamplingContext ? {} : dynamicSamplingContext,
+      dynamicSamplingContext,
     }),
   };
 
@@ -8529,11 +8632,32 @@ function createChildSpanOrTransaction(
   if (!hasTracingEnabled()) {
     return undefined;
   }
-  return parentSpan
-    ? // eslint-disable-next-line deprecation/deprecation
-      parentSpan.startChild(ctx)
-    : // eslint-disable-next-line deprecation/deprecation
-      hub.startTransaction(ctx);
+
+  if (parentSpan) {
+    // eslint-disable-next-line deprecation/deprecation
+    return parentSpan.startChild(ctx);
+  } else {
+    const isolationScope = getIsolationScope();
+    const scope = getCurrentScope();
+
+    const { traceId, dsc, parentSpanId, sampled } = {
+      ...isolationScope.getPropagationContext(),
+      ...scope.getPropagationContext(),
+    };
+
+    // eslint-disable-next-line deprecation/deprecation
+    return hub.startTransaction({
+      traceId,
+      parentSpanId,
+      parentSampled: sampled,
+      ...ctx,
+      metadata: {
+        dynamicSamplingContext: dsc,
+        // eslint-disable-next-line deprecation/deprecation
+        ...ctx.metadata,
+      },
+    });
+  }
 }
 
 /**
@@ -8862,6 +8986,18 @@ function setupIntegrations(client, integrations) {
   });
 
   return integrationIndex;
+}
+
+/**
+ * Execute the `afterAllSetup` hooks of the given integrations.
+ */
+function afterSetupIntegrations(client, integrations) {
+  for (const integration of integrations) {
+    // guard against empty provided integrations
+    if (integration && integration.afterAllSetup) {
+      integration.afterAllSetup(client);
+    }
+  }
 }
 
 /** Setup a single integration.  */
@@ -9377,7 +9513,14 @@ class BaseClient {
    * @inheritDoc
    */
    addIntegration(integration) {
+    const isAlreadyInstalled = this._integrations[integration.name];
+
+    // This hook takes care of only installing if not already installed
     setupIntegration(this, integration, this._integrations);
+    // Here we need to check manually to make sure to not run this multiple times
+    if (!isAlreadyInstalled) {
+      afterSetupIntegrations(this, [integration]);
+    }
   }
 
   /**
@@ -9481,7 +9624,10 @@ class BaseClient {
 
   /** Setup integrations for this client. */
    _setupIntegrations() {
-    this._integrations = setupIntegrations(this, this._options.integrations);
+    const { integrations } = this._options;
+    this._integrations = setupIntegrations(this, integrations);
+    afterSetupIntegrations(this, integrations);
+
     // TODO v8: We don't need this flag anymore
     this._integrationsInitialized = true;
   }
@@ -9587,13 +9733,14 @@ class BaseClient {
         return evt;
       }
 
-      // If a trace context is not set on the event, we use the propagationContext set on the event to
-      // generate a trace context. If the propagationContext does not have a dynamic sampling context, we
-      // also generate one for it.
-      const { propagationContext } = evt.sdkProcessingMetadata || {};
+      const propagationContext = {
+        ...isolationScope.getPropagationContext(),
+        ...(scope ? scope.getPropagationContext() : undefined),
+      };
+
       const trace = evt.contexts && evt.contexts.trace;
       if (!trace && propagationContext) {
-        const { traceId: trace_id, spanId, parentSpanId, dsc } = propagationContext ;
+        const { traceId: trace_id, spanId, parentSpanId, dsc } = propagationContext;
         evt.contexts = {
           trace: {
             trace_id,
@@ -10950,6 +11097,8 @@ let originalFunctionToString;
 
 const INTEGRATION_NAME$9 = 'FunctionToString';
 
+const SETUP_CLIENTS$1 = new WeakMap();
+
 const _functionToStringIntegration = (() => {
   return {
     name: INTEGRATION_NAME$9,
@@ -10962,20 +11111,37 @@ const _functionToStringIntegration = (() => {
       try {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         Function.prototype.toString = function ( ...args) {
-          const context = getOriginalFunction(this) || this;
+          const originalFunction = getOriginalFunction(this);
+          const context =
+            SETUP_CLIENTS$1.has(getClient() ) && originalFunction !== undefined ? originalFunction : this;
           return originalFunctionToString.apply(context, args);
         };
       } catch (e) {
         // ignore errors here, just don't patch this
       }
     },
+    setup(client) {
+      SETUP_CLIENTS$1.set(client, true);
+    },
   };
 }) ;
 
+/**
+ * Patch toString calls to return proper name for wrapped functions.
+ *
+ * ```js
+ * Sentry.init({
+ *   integrations: [
+ *     functionToStringIntegration(),
+ *   ],
+ * });
+ * ```
+ */
 const functionToStringIntegration = defineIntegration(_functionToStringIntegration);
 
 /**
  * Patch toString calls to return proper name for wrapped functions.
+ *
  * @deprecated Use `functionToStringIntegration()` instead.
  */
 // eslint-disable-next-line deprecation/deprecation
@@ -11219,7 +11385,7 @@ const metrics = {
 };
 
 /** @deprecated Import the integration function directly, e.g. `inboundFiltersIntegration()` instead of `new Integrations.InboundFilter(). */
-const Integrations = index;
+const Integrations$1 = index;
 
 function getHostName() {
   const result = Deno.permissions.querySync({ name: 'sys', kind: 'hostname' });
@@ -11841,7 +12007,7 @@ async function addDenoRuntimeContext(event) {
   return event;
 }
 
-const denoContextIntegration = (() => {
+const _denoContextIntegration = (() => {
   return {
     name: INTEGRATION_NAME$4,
     // TODO v8: Remove this
@@ -11852,16 +12018,127 @@ const denoContextIntegration = (() => {
   };
 }) ;
 
-/** Adds Deno context to events. */
+const denoContextIntegration = defineIntegration(_denoContextIntegration);
+
+/**
+ * Adds Deno context to events.
+ * @deprecated Use `denoContextintegration()` instead.
+ */
 // eslint-disable-next-line deprecation/deprecation
 const DenoContext = convertIntegrationFnToClass(INTEGRATION_NAME$4, denoContextIntegration) 
 
 ;
 
-const INTEGRATION_NAME$3 = 'GlobalHandlers';
+// eslint-disable-next-line deprecation/deprecation
+
+const INTEGRATION_NAME$3 = 'ContextLines';
+const FILE_CONTENT_CACHE = new LRUMap(100);
+const DEFAULT_LINES_OF_CONTEXT = 7;
+
+/**
+ * Reads file contents and caches them in a global LRU cache.
+ *
+ * @param filename filepath to read content from.
+ */
+async function readSourceFile(filename) {
+  const cachedFile = FILE_CONTENT_CACHE.get(filename);
+  // We have a cache hit
+  if (cachedFile !== undefined) {
+    return cachedFile;
+  }
+
+  let content = null;
+  try {
+    content = await Deno.readTextFile(filename);
+  } catch (_) {
+    //
+  }
+
+  FILE_CONTENT_CACHE.set(filename, content);
+  return content;
+}
+
+
+
+
+
+
+
+
+
+
+
+const _contextLinesIntegration = ((options = {}) => {
+  const contextLines = options.frameContextLines !== undefined ? options.frameContextLines : DEFAULT_LINES_OF_CONTEXT;
+
+  return {
+    name: INTEGRATION_NAME$3,
+    // TODO v8: Remove this
+    setupOnce() {}, // eslint-disable-line @typescript-eslint/no-empty-function
+    processEvent(event) {
+      return addSourceContext(event, contextLines);
+    },
+  };
+}) ;
+
+const contextLinesIntegration = defineIntegration(_contextLinesIntegration);
+
+/**
+ * Add node modules / packages to the event.
+ * @deprecated Use `contextLinesIntegration()` instead.
+ */
+// eslint-disable-next-line deprecation/deprecation
+const ContextLines = convertIntegrationFnToClass(INTEGRATION_NAME$3, contextLinesIntegration) 
+
+;
+
+// eslint-disable-next-line deprecation/deprecation
+ 
+
+/** Processes an event and adds context lines */
+async function addSourceContext(event, contextLines) {
+  if (contextLines > 0 && event.exception && event.exception.values) {
+    for (const exception of event.exception.values) {
+      if (exception.stacktrace && exception.stacktrace.frames) {
+        await addSourceContextToFrames(exception.stacktrace.frames, contextLines);
+      }
+    }
+  }
+
+  return event;
+}
+
+/** Adds context lines to frames */
+async function addSourceContextToFrames(frames, contextLines) {
+  for (const frame of frames) {
+    // Only add context if we have a filename and it hasn't already been added
+    if (frame.filename && frame.in_app && frame.context_line === undefined) {
+      const permission = await Deno.permissions.query({
+        name: 'read',
+        path: frame.filename,
+      });
+
+      if (permission.state == 'granted') {
+        const sourceFile = await readSourceFile(frame.filename);
+
+        if (sourceFile) {
+          try {
+            const lines = sourceFile.split('\n');
+            addContextToFrame(lines, frame, contextLines);
+          } catch (_) {
+            // anomaly, being defensive in case
+            // unlikely to ever happen in practice but can definitely happen in theory
+          }
+        }
+      }
+    }
+  }
+}
+
+const INTEGRATION_NAME$2 = 'GlobalHandlers';
 let isExiting = false;
 
-const globalHandlersIntegration = ((options) => {
+const _globalHandlersIntegration = ((options) => {
   const _options = {
     error: true,
     unhandledrejection: true,
@@ -11869,7 +12146,7 @@ const globalHandlersIntegration = ((options) => {
   };
 
   return {
-    name: INTEGRATION_NAME$3,
+    name: INTEGRATION_NAME$2,
     // TODO v8: Remove this
     setupOnce() {}, // eslint-disable-line @typescript-eslint/no-empty-function
     setup(client) {
@@ -11883,12 +12160,20 @@ const globalHandlersIntegration = ((options) => {
   };
 }) ;
 
-/** Global handlers */
+const globalHandlersIntegration = defineIntegration(_globalHandlersIntegration);
+
+/**
+ * Global handlers.
+ * @deprecated Use `globalHandlersIntergation()` instead.
+ */
 // eslint-disable-next-line deprecation/deprecation
 const GlobalHandlers = convertIntegrationFnToClass(
-  INTEGRATION_NAME$3,
+  INTEGRATION_NAME$2,
   globalHandlersIntegration,
 ) ;
+
+// eslint-disable-next-line deprecation/deprecation
+ 
 
 function installGlobalErrorHandler(client) {
   globalThis.addEventListener('error', data => {
@@ -12009,7 +12294,7 @@ function getStackParser() {
 }
 
 function _optionalChain(ops) { let lastAccessLHS = undefined; let value = ops[0]; let i = 1; while (i < ops.length) { const op = ops[i]; const fn = ops[i + 1]; i += 2; if ((op === 'optionalAccess' || op === 'optionalCall') && value == null) { return undefined; } if (op === 'access' || op === 'optionalAccess') { lastAccessLHS = value; value = fn(value); } else if (op === 'call' || op === 'optionalCall') { value = fn((...args) => value.call(lastAccessLHS, ...args)); lastAccessLHS = undefined; } } return value; }
-const INTEGRATION_NAME$2 = 'NormalizePaths';
+const INTEGRATION_NAME$1 = 'NormalizePaths';
 
 function appRootFromErrorStack(error) {
   // We know at the other end of the stack from here is the entry point that called 'init'
@@ -12062,7 +12347,7 @@ function getCwd() {
   return undefined;
 }
 
-const normalizePathsIntegration = (() => {
+const _normalizePathsIntegration = (() => {
   // Cached here
   let appRoot;
 
@@ -12076,7 +12361,7 @@ const normalizePathsIntegration = (() => {
   }
 
   return {
-    name: INTEGRATION_NAME$2,
+    name: INTEGRATION_NAME$1,
     // TODO v8: Remove this
     setupOnce() {}, // eslint-disable-line @typescript-eslint/no-empty-function
     processEvent(event) {
@@ -12105,108 +12390,159 @@ const normalizePathsIntegration = (() => {
   };
 }) ;
 
-/** Normalises paths to the app root directory. */
+const normalizePathsIntegration = defineIntegration(_normalizePathsIntegration);
+
+/**
+ * Normalises paths to the app root directory.
+ * @deprecated Use `normalizePathsIntegration()` instead.
+ */
 // eslint-disable-next-line deprecation/deprecation
 const NormalizePaths = convertIntegrationFnToClass(
-  INTEGRATION_NAME$2,
+  INTEGRATION_NAME$1,
   normalizePathsIntegration,
 ) ;
 
-const INTEGRATION_NAME$1 = 'ContextLines';
-const FILE_CONTENT_CACHE = new LRUMap(100);
-const DEFAULT_LINES_OF_CONTEXT = 7;
+// eslint-disable-next-line deprecation/deprecation
 
 /**
- * Reads file contents and caches them in a global LRU cache.
- *
- * @param filename filepath to read content from.
+ * Creates a Transport that uses the Fetch API to send events to Sentry.
  */
-async function readSourceFile(filename) {
-  const cachedFile = FILE_CONTENT_CACHE.get(filename);
-  // We have a cache hit
-  if (cachedFile !== undefined) {
-    return cachedFile;
+function makeFetchTransport(options) {
+  const url = new URL(options.url);
+
+  if (Deno.permissions.querySync({ name: 'net', host: url.host }).state !== 'granted') {
+    consoleSandbox(() => {
+      // eslint-disable-next-line no-console
+      console.warn(`Sentry SDK requires 'net' permission to send events.
+  Run with '--allow-net=${url.host}' to grant the requires permissions.`);
+    });
   }
 
-  let content = null;
-  try {
-    content = await Deno.readTextFile(filename);
-  } catch (_) {
-    //
-  }
+  function makeRequest(request) {
+    const requestOptions = {
+      body: request.body,
+      method: 'POST',
+      referrerPolicy: 'origin',
+      headers: options.headers,
+    };
 
-  FILE_CONTENT_CACHE.set(filename, content);
-  return content;
-}
-
-
-
-
-
-
-
-
-
-
-
-const denoContextLinesIntegration = ((options = {}) => {
-  const contextLines = options.frameContextLines !== undefined ? options.frameContextLines : DEFAULT_LINES_OF_CONTEXT;
-
-  return {
-    name: INTEGRATION_NAME$1,
-    // TODO v8: Remove this
-    setupOnce() {}, // eslint-disable-line @typescript-eslint/no-empty-function
-    processEvent(event) {
-      return addSourceContext(event, contextLines);
-    },
-  };
-}) ;
-
-/** Add node modules / packages to the event */
-// eslint-disable-next-line deprecation/deprecation
-const ContextLines = convertIntegrationFnToClass(
-  INTEGRATION_NAME$1,
-  denoContextLinesIntegration,
-) ;
-
-/** Processes an event and adds context lines */
-async function addSourceContext(event, contextLines) {
-  if (contextLines > 0 && event.exception && event.exception.values) {
-    for (const exception of event.exception.values) {
-      if (exception.stacktrace && exception.stacktrace.frames) {
-        await addSourceContextToFrames(exception.stacktrace.frames, contextLines);
-      }
-    }
-  }
-
-  return event;
-}
-
-/** Adds context lines to frames */
-async function addSourceContextToFrames(frames, contextLines) {
-  for (const frame of frames) {
-    // Only add context if we have a filename and it hasn't already been added
-    if (frame.filename && frame.in_app && frame.context_line === undefined) {
-      const permission = await Deno.permissions.query({
-        name: 'read',
-        path: frame.filename,
+    try {
+      return fetch(options.url, requestOptions).then(response => {
+        return {
+          statusCode: response.status,
+          headers: {
+            'x-sentry-rate-limits': response.headers.get('X-Sentry-Rate-Limits'),
+            'retry-after': response.headers.get('Retry-After'),
+          },
+        };
       });
-
-      if (permission.state == 'granted') {
-        const sourceFile = await readSourceFile(frame.filename);
-
-        if (sourceFile) {
-          try {
-            const lines = sourceFile.split('\n');
-            addContextToFrame(lines, frame, contextLines);
-          } catch (_) {
-            // anomaly, being defensive in case
-            // unlikely to ever happen in practice but can definitely happen in theory
-          }
-        }
-      }
+    } catch (e) {
+      return rejectedSyncPromise(e);
     }
   }
+
+  return createTransport(options, makeRequest);
+}
+
+/** @deprecated Use `getDefaultIntegrations(options)` instead. */
+const defaultIntegrations = [
+  // Common
+  inboundFiltersIntegration(),
+  functionToStringIntegration(),
+  linkedErrorsIntegration(),
+  // From Browser
+  dedupeIntegration(),
+  breadcrumbsIntegration({
+    dom: false,
+    history: false,
+    xhr: false,
+  }),
+  // Deno Specific
+  denoContextIntegration(),
+  contextLinesIntegration(),
+  normalizePathsIntegration(),
+  globalHandlersIntegration(),
+];
+
+/** Get the default integrations for the Deno SDK. */
+function getDefaultIntegrations(_options) {
+  // We return a copy of the defaultIntegrations here to avoid mutating this
+  return [
+    // eslint-disable-next-line deprecation/deprecation
+    ...defaultIntegrations,
+  ];
+}
+
+const defaultStackParser = createStackParser(nodeStackLineParser());
+
+/**
+ * The Sentry Deno SDK Client.
+ *
+ * To use this SDK, call the {@link init} function as early as possible in the
+ * main entry module. To set context information or send manual events, use the
+ * provided methods.
+ *
+ * @example
+ * ```
+ *
+ * import { init } from 'npm:@sentry/deno';
+ *
+ * init({
+ *   dsn: '__DSN__',
+ *   // ...
+ * });
+ * ```
+ *
+ * @example
+ * ```
+ *
+ * import { configureScope } from 'npm:@sentry/deno';
+ * configureScope((scope: Scope) => {
+ *   scope.setExtra({ battery: 0.7 });
+ *   scope.setTag({ user_mode: 'admin' });
+ *   scope.setUser({ id: '4711' });
+ * });
+ * ```
+ *
+ * @example
+ * ```
+ *
+ * import { addBreadcrumb } from 'npm:@sentry/deno';
+ * addBreadcrumb({
+ *   message: 'My Breadcrumb',
+ *   // ...
+ * });
+ * ```
+ *
+ * @example
+ * ```
+ *
+ * import * as Sentry from 'npm:@sentry/deno';
+ * Sentry.captureMessage('Hello, world!');
+ * Sentry.captureException(new Error('Good bye'));
+ * Sentry.captureEvent({
+ *   message: 'Manual',
+ *   stacktrace: [
+ *     // ...
+ *   ],
+ * });
+ * ```
+ *
+ * @see {@link DenoOptions} for documentation on configuration options.
+ */
+function init(options = {}) {
+  if (options.defaultIntegrations === undefined) {
+    options.defaultIntegrations = getDefaultIntegrations();
+  }
+
+  const clientOptions = {
+    ...options,
+    stackParser: stackParserFromStackParserOptions(options.stackParser || defaultStackParser),
+    integrations: getIntegrationsToSetup(options),
+    transport: options.transport || makeFetchTransport,
+  };
+
+  initAndBind(DenoClient, clientOptions);
 }
 
 /**
@@ -12298,7 +12634,7 @@ const INTEGRATION_NAME = 'DenoCron';
 
 const SETUP_CLIENTS = new WeakMap();
 
-const denoCronIntegration = (() => {
+const _denoCronIntegration = (() => {
   return {
     name: INTEGRATION_NAME,
     setupOnce() {
@@ -12324,8 +12660,8 @@ const denoCronIntegration = (() => {
           }
 
           async function cronCalled() {
-            if (SETUP_CLIENTS.has(getClient() )) {
-              return;
+            if (!SETUP_CLIENTS.has(getClient() )) {
+              return fn();
             }
 
             await withMonitor(monitorSlug, async () => fn(), {
@@ -12347,11 +12683,20 @@ const denoCronIntegration = (() => {
   };
 }) ;
 
-/** Instruments Deno.cron to automatically capture cron check-ins */
+const denoCronIntegration = defineIntegration(_denoCronIntegration);
+
+/**
+ * Instruments Deno.cron to automatically capture cron check-ins.
+ * @deprecated Use `denoCronIntegration()` instead.
+ */
 // eslint-disable-next-line deprecation/deprecation
 const DenoCron = convertIntegrationFnToClass(INTEGRATION_NAME, denoCronIntegration) 
 
 ;
+
+// eslint-disable-next-line deprecation/deprecation
+
+/* eslint-disable deprecation/deprecation */
 
 var DenoIntegrations = {
   __proto__: null,
@@ -12362,152 +12707,12 @@ var DenoIntegrations = {
   DenoCron: DenoCron
 };
 
-/**
- * Creates a Transport that uses the Fetch API to send events to Sentry.
- */
-function makeFetchTransport(options) {
-  const url = new URL(options.url);
-
-  if (Deno.permissions.querySync({ name: 'net', host: url.host }).state !== 'granted') {
-    consoleSandbox(() => {
-      // eslint-disable-next-line no-console
-      console.warn(`Sentry SDK requires 'net' permission to send events.
-  Run with '--allow-net=${url.host}' to grant the requires permissions.`);
-    });
-  }
-
-  function makeRequest(request) {
-    const requestOptions = {
-      body: request.body,
-      method: 'POST',
-      referrerPolicy: 'origin',
-      headers: options.headers,
-    };
-
-    try {
-      return fetch(options.url, requestOptions).then(response => {
-        return {
-          statusCode: response.status,
-          headers: {
-            'x-sentry-rate-limits': response.headers.get('X-Sentry-Rate-Limits'),
-            'retry-after': response.headers.get('Retry-After'),
-          },
-        };
-      });
-    } catch (e) {
-      return rejectedSyncPromise(e);
-    }
-  }
-
-  return createTransport(options, makeRequest);
-}
-
-/** @deprecated Use `getDefaultIntegrations(options)` instead. */
-const defaultIntegrations = [
-  // Common
-  inboundFiltersIntegration(),
-  functionToStringIntegration(),
-  linkedErrorsIntegration(),
-  // From Browser
-  dedupeIntegration(),
-  breadcrumbsIntegration({
-    dom: false,
-    history: false,
-    xhr: false,
-  }),
-  // Deno Specific
-  new DenoContext(),
-  new ContextLines(),
-  new NormalizePaths(),
-  new GlobalHandlers(),
-];
-
-/** Get the default integrations for the Deno SDK. */
-function getDefaultIntegrations(_options) {
-  // We return a copy of the defaultIntegrations here to avoid mutating this
-  return [
-    // eslint-disable-next-line deprecation/deprecation
-    ...defaultIntegrations,
-  ];
-}
-
-const defaultStackParser = createStackParser(nodeStackLineParser());
-
-/**
- * The Sentry Deno SDK Client.
- *
- * To use this SDK, call the {@link init} function as early as possible in the
- * main entry module. To set context information or send manual events, use the
- * provided methods.
- *
- * @example
- * ```
- *
- * import { init } from 'npm:@sentry/deno';
- *
- * init({
- *   dsn: '__DSN__',
- *   // ...
- * });
- * ```
- *
- * @example
- * ```
- *
- * import { configureScope } from 'npm:@sentry/deno';
- * configureScope((scope: Scope) => {
- *   scope.setExtra({ battery: 0.7 });
- *   scope.setTag({ user_mode: 'admin' });
- *   scope.setUser({ id: '4711' });
- * });
- * ```
- *
- * @example
- * ```
- *
- * import { addBreadcrumb } from 'npm:@sentry/deno';
- * addBreadcrumb({
- *   message: 'My Breadcrumb',
- *   // ...
- * });
- * ```
- *
- * @example
- * ```
- *
- * import * as Sentry from 'npm:@sentry/deno';
- * Sentry.captureMessage('Hello, world!');
- * Sentry.captureException(new Error('Good bye'));
- * Sentry.captureEvent({
- *   message: 'Manual',
- *   stacktrace: [
- *     // ...
- *   ],
- * });
- * ```
- *
- * @see {@link DenoOptions} for documentation on configuration options.
- */
-function init(options = {}) {
-  if (options.defaultIntegrations === undefined) {
-    options.defaultIntegrations = getDefaultIntegrations();
-  }
-
-  const clientOptions = {
-    ...options,
-    stackParser: stackParserFromStackParserOptions(options.stackParser || defaultStackParser),
-    integrations: getIntegrationsToSetup(options),
-    transport: options.transport || makeFetchTransport,
-  };
-
-  initAndBind(DenoClient, clientOptions);
-}
-
-const INTEGRATIONS = {
+/** @deprecated Import the integration function directly, e.g. `inboundFiltersIntegration()` instead of `new Integrations.InboundFilter(). */
+const Integrations = {
   // eslint-disable-next-line deprecation/deprecation
-  ...Integrations,
+  ...Integrations$1,
   ...DenoIntegrations,
 };
 
-export { DenoClient, Hub, INTEGRATIONS as Integrations, SDK_VERSION, Scope, addBreadcrumb, addEventProcessor, addGlobalEventProcessor, breadcrumbsIntegration, captureCheckIn, captureEvent, captureException, captureMessage, close, configureScope, continueTrace, createTransport, dedupeIntegration, defaultIntegrations, extractTraceparentData, flush, functionToStringIntegration, getActiveSpan, getActiveTransaction, getClient, getCurrentHub, getCurrentScope, getDefaultIntegrations, getGlobalScope, getHubFromCarrier, getIsolationScope, inboundFiltersIntegration, init, isInitialized, lastEventId, linkedErrorsIntegration, makeMain, metrics, requestDataIntegration, runWithAsyncContext, setContext, setCurrentClient, setExtra, setExtras, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSpan, startSpanManual, startTransaction, trace, withIsolationScope, withMonitor, withScope };
+export { DenoClient, Hub, Integrations, SDK_VERSION, Scope, addBreadcrumb, addEventProcessor, addGlobalEventProcessor, breadcrumbsIntegration, captureCheckIn, captureEvent, captureException, captureMessage, close, configureScope, contextLinesIntegration, continueTrace, createTransport, dedupeIntegration, defaultIntegrations, denoContextIntegration, denoCronIntegration, extractTraceparentData, flush, functionToStringIntegration, getActiveSpan, getActiveTransaction, getClient, getCurrentHub, getCurrentScope, getDefaultIntegrations, getGlobalScope, getHubFromCarrier, getIsolationScope, getSpanStatusFromHttpCode, globalHandlersIntegration, inboundFiltersIntegration, init, isInitialized, lastEventId, linkedErrorsIntegration, makeMain, metrics, normalizePathsIntegration, requestDataIntegration, runWithAsyncContext, setContext, setCurrentClient, setExtra, setExtras, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSpan, startSpanManual, startTransaction, trace, withIsolationScope, withMonitor, withScope };
 //# sourceMappingURL=index.mjs.map
