@@ -2904,6 +2904,8 @@ declare function baggageHeaderToDynamicSamplingContext(baggageHeader: string | s
 declare function extractTraceparentData$1(traceparent?: string): TraceparentData | undefined;
 /**
  * Create tracing context from incoming headers.
+ *
+ * @deprecated Use `propagationContextFromHeaders` instead.
  */
 declare function tracingContextFromHeaders(sentryTrace: Parameters<typeof extractTraceparentData$1>[0], baggage: Parameters<typeof baggageHeaderToDynamicSamplingContext>[0]): {
     traceparentData: ReturnType<typeof extractTraceparentData$1>;
@@ -3990,6 +3992,11 @@ declare function getSpanStatusFromHttpCode(httpStatus: number): SpanStatusType;
  * @returns The span status or unknown_error.
  */
 declare const spanStatusfromHttpCode: typeof getSpanStatusFromHttpCode;
+/**
+ * Sets the Http status attributes on the current span based on the http code.
+ * Additionally, the span's status is updated, depending on the http code.
+ */
+declare function setHttpStatus(span: Span, httpStatus: number): void;
 
 /**
  * Grabs active transaction off scope.
@@ -4066,14 +4073,42 @@ declare function startInactiveSpan(context: StartSpanOptions): Span | undefined;
  * Returns the currently active span.
  */
 declare function getActiveSpan(): Span | undefined;
-declare function continueTrace({ sentryTrace, baggage, }: {
-    sentryTrace: Parameters<typeof tracingContextFromHeaders>[0];
-    baggage: Parameters<typeof tracingContextFromHeaders>[1];
-}): Partial<TransactionContext>;
-declare function continueTrace<V>({ sentryTrace, baggage, }: {
-    sentryTrace: Parameters<typeof tracingContextFromHeaders>[0];
-    baggage: Parameters<typeof tracingContextFromHeaders>[1];
-}, callback: (transactionContext: Partial<TransactionContext>) => V): V;
+interface ContinueTrace {
+    /**
+     * Continue a trace from `sentry-trace` and `baggage` values.
+     * These values can be obtained from incoming request headers,
+     * or in the browser from `<meta name="sentry-trace">` and `<meta name="baggage">` HTML tags.
+     *
+     * @deprecated Use the version of this function taking a callback as second parameter instead:
+     *
+     * ```
+     * Sentry.continueTrace(sentryTrace: '...', baggage: '...' }, () => {
+     *    // ...
+     * })
+     * ```
+     *
+     */
+    ({ sentryTrace, baggage, }: {
+        sentryTrace: Parameters<typeof tracingContextFromHeaders>[0];
+        baggage: Parameters<typeof tracingContextFromHeaders>[1];
+    }): Partial<TransactionContext>;
+    /**
+     * Continue a trace from `sentry-trace` and `baggage` values.
+     * These values can be obtained from incoming request headers, or in the browser from `<meta name="sentry-trace">`
+     * and `<meta name="baggage">` HTML tags.
+     *
+     * Spans started with `startSpan`, `startSpanManual` and `startInactiveSpan`, within the callback will automatically
+     * be attached to the incoming trace.
+     *
+     * Deprecation notice: In the next major version of the SDK the provided callback will not receive a transaction
+     * context argument.
+     */
+    <V>({ sentryTrace, baggage, }: {
+        sentryTrace: Parameters<typeof tracingContextFromHeaders>[0];
+        baggage: Parameters<typeof tracingContextFromHeaders>[1];
+    }, callback: (transactionContext: Partial<TransactionContext>) => V): V;
+}
+declare const continueTrace: ContinueTrace;
 
 /**
  * Adds a measurement to the current active transaction.
@@ -4294,7 +4329,7 @@ declare function addGlobalEventProcessor(callback: EventProcessor): void;
  */
 declare function createTransport(options: InternalBaseTransportOptions, makeRequest: TransportRequestExecutor, buffer?: PromiseBuffer<void | TransportMakeRequestResponse>): Transport;
 
-declare const SDK_VERSION = "7.99.0";
+declare const SDK_VERSION = "7.100.0";
 
 /** Options for the InboundFilters integration */
 interface InboundFiltersOptions {
@@ -4518,4 +4553,4 @@ declare const Integrations: {
     } | undefined) => Integration);
 };
 
-export { type AddRequestDataToEventOptions, type Breadcrumb, type BreadcrumbHint, DenoClient, type DenoOptions, type Event, type EventHint, type Exception, Hub, Integrations, type PolymorphicRequest, type Request, SDK_VERSION, Scope, type SdkInfo, type Session, Severity, type SeverityLevel, type Span, type SpanStatusType, type StackFrame, type Stacktrace, type Thread, type Transaction, type User, addBreadcrumb, addEventProcessor, addGlobalEventProcessor, breadcrumbsIntegration, captureCheckIn, captureEvent, captureException, captureMessage, close, configureScope, contextLinesIntegration, continueTrace, createTransport, dedupeIntegration, defaultIntegrations, denoContextIntegration, denoCronIntegration, extractTraceparentData, flush, functionToStringIntegration, getActiveSpan, getActiveTransaction, getClient, getCurrentHub, getCurrentScope, getDefaultIntegrations, getGlobalScope, getHubFromCarrier, getIsolationScope, getSpanStatusFromHttpCode, globalHandlersIntegration, inboundFiltersIntegration, init, isInitialized, lastEventId, linkedErrorsIntegration, makeMain, metrics, normalizePathsIntegration, requestDataIntegration, runWithAsyncContext, setContext, setCurrentClient, setExtra, setExtras, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSpan, startSpanManual, startTransaction, trace, withIsolationScope, withMonitor, withScope };
+export { type AddRequestDataToEventOptions, type Breadcrumb, type BreadcrumbHint, DenoClient, type DenoOptions, type Event, type EventHint, type Exception, Hub, Integrations, type PolymorphicRequest, type Request, SDK_VERSION, Scope, type SdkInfo, type Session, Severity, type SeverityLevel, type Span, type SpanStatusType, type StackFrame, type Stacktrace, type Thread, type Transaction, type User, addBreadcrumb, addEventProcessor, addGlobalEventProcessor, breadcrumbsIntegration, captureCheckIn, captureEvent, captureException, captureMessage, close, configureScope, contextLinesIntegration, continueTrace, createTransport, dedupeIntegration, defaultIntegrations, denoContextIntegration, denoCronIntegration, extractTraceparentData, flush, functionToStringIntegration, getActiveSpan, getActiveTransaction, getClient, getCurrentHub, getCurrentScope, getDefaultIntegrations, getGlobalScope, getHubFromCarrier, getIsolationScope, getSpanStatusFromHttpCode, globalHandlersIntegration, inboundFiltersIntegration, init, isInitialized, lastEventId, linkedErrorsIntegration, makeMain, metrics, normalizePathsIntegration, requestDataIntegration, runWithAsyncContext, setContext, setCurrentClient, setExtra, setExtras, setHttpStatus, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSpan, startSpanManual, startTransaction, trace, withIsolationScope, withMonitor, withScope };
