@@ -4329,7 +4329,7 @@ declare function addGlobalEventProcessor(callback: EventProcessor): void;
  */
 declare function createTransport(options: InternalBaseTransportOptions, makeRequest: TransportRequestExecutor, buffer?: PromiseBuffer<void | TransportMakeRequestResponse>): Transport;
 
-declare const SDK_VERSION = "7.100.0";
+declare const SDK_VERSION = "7.100.1";
 
 /** Options for the InboundFilters integration */
 interface InboundFiltersOptions {
