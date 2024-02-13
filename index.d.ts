@@ -759,6 +759,7 @@ interface ErrorEvent extends Event {
 }
 interface TransactionEvent extends Event {
     type: 'transaction';
+    _metrics_summary?: Record<string, Array<MetricSummary>>;
 }
 /** JSDoc */
 interface EventHint {
@@ -1287,6 +1288,13 @@ type SpanAttributes = Partial<{
     'sentry.source': string;
     'sentry.sample_rate': number;
 }> & Record<string, SpanAttributeValue | undefined>;
+type MetricSummary = {
+    min: number;
+    max: number;
+    count: number;
+    sum: number;
+    tags?: Record<string, Primitive> | undefined;
+};
 /** This type is aligned with the OpenTelemetry TimeInput type. */
 type SpanTimeInput = HrTime | number | Date;
 /** A JSON representation of a span. */
@@ -1306,6 +1314,7 @@ interface SpanJSON {
     timestamp?: number;
     trace_id: string;
     origin?: SpanOrigin;
+    _metrics_summary?: Record<string, Array<MetricSummary>>;
 }
 type TraceFlagNone = 0x0;
 type TraceFlagSampled = 0x1;
@@ -1457,21 +1466,21 @@ interface Span extends Omit<SpanContext, 'op' | 'status' | 'origin'> {
     endTimestamp?: number;
     /**
      * Tags for the span.
-     * @deprecated Use `getSpanAttributes(span)` instead.
+     * @deprecated Use `spanToJSON(span).atttributes` instead.
      */
     tags: {
         [key: string]: Primitive;
     };
     /**
      * Data for the span.
-     * @deprecated Use `getSpanAttributes(span)` instead.
+     * @deprecated Use `spanToJSON(span).atttributes` instead.
      */
     data: {
         [key: string]: any;
     };
     /**
      * Attributes for the span.
-     * @deprecated Use `getSpanAttributes(span)` instead.
+     * @deprecated Use `spanToJSON(span).atttributes` instead.
      */
     attributes: SpanAttributes;
     /**
@@ -3285,6 +3294,46 @@ declare class Hub implements Hub$1 {
      * @param client bound to the hub.
      * @param scope bound to the hub.
      * @param version number, higher number means higher priority.
+     *
+     * @deprecated Instantiation of Hub objects is deprecated and the constructor will be removed in version 8 of the SDK.
+     *
+     * If you are currently using the Hub for multi-client use like so:
+     *
+     * ```
+     * // OLD
+     * const hub = new Hub();
+     * hub.bindClient(client);
+     * makeMain(hub)
+     * ```
+     *
+     * instead initialize the client as follows:
+     *
+     * ```
+     * // NEW
+     * Sentry.withIsolationScope(() => {
+     *    Sentry.setCurrentClient(client);
+     *    client.init();
+     * });
+     * ```
+     *
+     * If you are using the Hub to capture events like so:
+     *
+     * ```
+     * // OLD
+     * const client = new Client();
+     * const hub = new Hub(client);
+     * hub.captureException()
+     * ```
+     *
+     * instead capture isolated events as follows:
+     *
+     * ```
+     * // NEW
+     * const client = new Client();
+     * const scope = new Scope();
+     * scope.setClient(client);
+     * scope.captureException();
+     * ```
      */
     constructor(client?: Client, scope?: Scope, isolationScope?: Scope, _version?: number);
     /**
@@ -4116,6 +4165,25 @@ declare const continueTrace: ContinueTrace;
 declare function setMeasurement(name: string, value: number, unit: MeasurementUnit): void;
 
 /**
+ * Use this attribute to represent the source of a span.
+ * Should be one of: custom, url, route, view, component, task, unknown
+ *
+ */
+declare const SEMANTIC_ATTRIBUTE_SENTRY_SOURCE = "sentry.source";
+/**
+ * Use this attribute to represent the sample rate used for a span.
+ */
+declare const SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE = "sentry.sample_rate";
+/**
+ * Use this attribute to represent the operation of a span.
+ */
+declare const SEMANTIC_ATTRIBUTE_SENTRY_OP = "sentry.op";
+/**
+ * Use this attribute to represent the origin of a span.
+ */
+declare const SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN = "sentry.origin";
+
+/**
  * This type makes sure that we get either a CaptureContext, OR an EventHint.
  * It does not allow mixing them, which could lead to unexpected outcomes, e.g. this is disallowed:
  * { user: { id: '123' }, mechanism: { handled: false } }
@@ -4329,7 +4397,7 @@ declare function addGlobalEventProcessor(callback: EventProcessor): void;
  */
 declare function createTransport(options: InternalBaseTransportOptions, makeRequest: TransportRequestExecutor, buffer?: PromiseBuffer<void | TransportMakeRequestResponse>): Transport;
 
-declare const SDK_VERSION = "7.100.1";
+declare const SDK_VERSION = "7.101.0";
 
 /** Options for the InboundFilters integration */
 interface InboundFiltersOptions {
@@ -4553,4 +4621,4 @@ declare const Integrations: {
     } | undefined) => Integration);
 };
 
-export { type AddRequestDataToEventOptions, type Breadcrumb, type BreadcrumbHint, DenoClient, type DenoOptions, type Event, type EventHint, type Exception, Hub, Integrations, type PolymorphicRequest, type Request, SDK_VERSION, Scope, type SdkInfo, type Session, Severity, type SeverityLevel, type Span, type SpanStatusType, type StackFrame, type Stacktrace, type Thread, type Transaction, type User, addBreadcrumb, addEventProcessor, addGlobalEventProcessor, breadcrumbsIntegration, captureCheckIn, captureEvent, captureException, captureMessage, close, configureScope, contextLinesIntegration, continueTrace, createTransport, dedupeIntegration, defaultIntegrations, denoContextIntegration, denoCronIntegration, extractTraceparentData, flush, functionToStringIntegration, getActiveSpan, getActiveTransaction, getClient, getCurrentHub, getCurrentScope, getDefaultIntegrations, getGlobalScope, getHubFromCarrier, getIsolationScope, getSpanStatusFromHttpCode, globalHandlersIntegration, inboundFiltersIntegration, init, isInitialized, lastEventId, linkedErrorsIntegration, makeMain, metrics, normalizePathsIntegration, requestDataIntegration, runWithAsyncContext, setContext, setCurrentClient, setExtra, setExtras, setHttpStatus, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSpan, startSpanManual, startTransaction, trace, withIsolationScope, withMonitor, withScope };
+export { type AddRequestDataToEventOptions, type Breadcrumb, type BreadcrumbHint, DenoClient, type DenoOptions, type Event, type EventHint, type Exception, Hub, Integrations, type PolymorphicRequest, type Request, SDK_VERSION, SEMANTIC_ATTRIBUTE_SENTRY_OP, SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE, SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, Scope, type SdkInfo, type Session, Severity, type SeverityLevel, type Span, type SpanStatusType, type StackFrame, type Stacktrace, type Thread, type Transaction, type User, addBreadcrumb, addEventProcessor, addGlobalEventProcessor, breadcrumbsIntegration, captureCheckIn, captureEvent, captureException, captureMessage, close, configureScope, contextLinesIntegration, continueTrace, createTransport, dedupeIntegration, defaultIntegrations, denoContextIntegration, denoCronIntegration, extractTraceparentData, flush, functionToStringIntegration, getActiveSpan, getActiveTransaction, getClient, getCurrentHub, getCurrentScope, getDefaultIntegrations, getGlobalScope, getHubFromCarrier, getIsolationScope, getSpanStatusFromHttpCode, globalHandlersIntegration, inboundFiltersIntegration, init, isInitialized, lastEventId, linkedErrorsIntegration, makeMain, metrics, normalizePathsIntegration, requestDataIntegration, runWithAsyncContext, setContext, setCurrentClient, setExtra, setExtras, setHttpStatus, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSpan, startSpanManual, startTransaction, trace, withIsolationScope, withMonitor, withScope };
