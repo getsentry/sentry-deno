@@ -5275,6 +5275,102 @@ function getCurrentScope() {
 }
 
 /**
+ * Start a session on the current isolation scope.
+ *
+ * @param context (optional) additional properties to be applied to the returned session object
+ *
+ * @returns the new active session
+ */
+function startSession(context) {
+  const client = getClient();
+  const isolationScope = getIsolationScope();
+  const currentScope = getCurrentScope();
+
+  const { release, environment = DEFAULT_ENVIRONMENT } = (client && client.getOptions()) || {};
+
+  // Will fetch userAgent if called from browser sdk
+  const { userAgent } = GLOBAL_OBJ.navigator || {};
+
+  const session = makeSession({
+    release,
+    environment,
+    user: currentScope.getUser() || isolationScope.getUser(),
+    ...(userAgent && { userAgent }),
+    ...context,
+  });
+
+  // End existing session if there's one
+  const currentSession = isolationScope.getSession();
+  if (currentSession && currentSession.status === 'ok') {
+    updateSession(currentSession, { status: 'exited' });
+  }
+
+  endSession();
+
+  // Afterwards we set the new session on the scope
+  isolationScope.setSession(session);
+
+  // TODO (v8): Remove this and only use the isolation scope(?).
+  // For v7 though, we can't "soft-break" people using getCurrentHub().getScope().setSession()
+  currentScope.setSession(session);
+
+  return session;
+}
+
+/**
+ * End the session on the current isolation scope.
+ */
+function endSession() {
+  const isolationScope = getIsolationScope();
+  const currentScope = getCurrentScope();
+
+  const session = currentScope.getSession() || isolationScope.getSession();
+  if (session) {
+    closeSession(session);
+  }
+  _sendSessionUpdate();
+
+  // the session is over; take it off of the scope
+  isolationScope.setSession();
+
+  // TODO (v8): Remove this and only use the isolation scope(?).
+  // For v7 though, we can't "soft-break" people using getCurrentHub().getScope().setSession()
+  currentScope.setSession();
+}
+
+/**
+ * Sends the current Session on the scope
+ */
+function _sendSessionUpdate() {
+  const isolationScope = getIsolationScope();
+  const currentScope = getCurrentScope();
+  const client = getClient();
+  // TODO (v8): Remove currentScope and only use the isolation scope(?).
+  // For v7 though, we can't "soft-break" people using getCurrentHub().getScope().setSession()
+  const session = currentScope.getSession() || isolationScope.getSession();
+  if (session && client && client.captureSession) {
+    client.captureSession(session);
+  }
+}
+
+/**
+ * Sends the current session on the scope to Sentry
+ *
+ * @param end If set the session will be marked as exited and removed from the scope.
+ *            Defaults to `false`.
+ */
+function captureSession(end = false) {
+  // both send the update and pull the session from the scope
+  if (end) {
+    endSession();
+    return;
+  }
+
+  // only send the update
+  _sendSessionUpdate();
+}
+
+/**
  * Returns the root span of a given span.
  *
  * As long as we use `Transaction`s internally, the returned root span
@@ -5887,50 +5983,48 @@ class Scope  {
       return this;
     }
 
-    if (typeof captureContext === 'function') {
-      const updatedScope = (captureContext )(this);
-      return updatedScope instanceof Scope ? updatedScope : this;
-    }
+    const scopeToMerge = typeof captureContext === 'function' ? captureContext(this) : captureContext;
 
-    if (captureContext instanceof Scope) {
-      this._tags = { ...this._tags, ...captureContext._tags };
-      this._extra = { ...this._extra, ...captureContext._extra };
-      this._contexts = { ...this._contexts, ...captureContext._contexts };
-      if (captureContext._user && Object.keys(captureContext._user).length) {
-        this._user = captureContext._user;
+    if (scopeToMerge instanceof Scope) {
+      const scopeData = scopeToMerge.getScopeData();
+
+      this._tags = { ...this._tags, ...scopeData.tags };
+      this._extra = { ...this._extra, ...scopeData.extra };
+      this._contexts = { ...this._contexts, ...scopeData.contexts };
+      if (scopeData.user && Object.keys(scopeData.user).length) {
+        this._user = scopeData.user;
       }
-      if (captureContext._level) {
-        this._level = captureContext._level;
+      if (scopeData.level) {
+        this._level = scopeData.level;
       }
-      if (captureContext._fingerprint) {
-        this._fingerprint = captureContext._fingerprint;
+      if (scopeData.fingerprint.length) {
+        this._fingerprint = scopeData.fingerprint;
       }
-      if (captureContext._requestSession) {
-        this._requestSession = captureContext._requestSession;
+      if (scopeToMerge.getRequestSession()) {
+        this._requestSession = scopeToMerge.getRequestSession();
       }
-      if (captureContext._propagationContext) {
-        this._propagationContext = captureContext._propagationContext;
+      if (scopeData.propagationContext) {
+        this._propagationContext = scopeData.propagationContext;
       }
-    } else if (isPlainObject(captureContext)) {
-      // eslint-disable-next-line no-param-reassign
-      captureContext = captureContext ;
-      this._tags = { ...this._tags, ...captureContext.tags };
-      this._extra = { ...this._extra, ...captureContext.extra };
-      this._contexts = { ...this._contexts, ...captureContext.contexts };
-      if (captureContext.user) {
-        this._user = captureContext.user;
+    } else if (isPlainObject(scopeToMerge)) {
+      const scopeContext = captureContext ;
+      this._tags = { ...this._tags, ...scopeContext.tags };
+      this._extra = { ...this._extra, ...scopeContext.extra };
+      this._contexts = { ...this._contexts, ...scopeContext.contexts };
+      if (scopeContext.user) {
+        this._user = scopeContext.user;
       }
-      if (captureContext.level) {
-        this._level = captureContext.level;
+      if (scopeContext.level) {
+        this._level = scopeContext.level;
       }
-      if (captureContext.fingerprint) {
-        this._fingerprint = captureContext.fingerprint;
+      if (scopeContext.fingerprint) {
+        this._fingerprint = scopeContext.fingerprint;
       }
-      if (captureContext.requestSession) {
-        this._requestSession = captureContext.requestSession;
+      if (scopeContext.requestSession) {
+        this._requestSession = scopeContext.requestSession;
       }
-      if (captureContext.propagationContext) {
-        this._propagationContext = captureContext.propagationContext;
+      if (scopeContext.propagationContext) {
+        this._propagationContext = scopeContext.propagationContext;
       }
     }
 
@@ -6230,7 +6324,7 @@ function generatePropagationContext() {
   };
 }
 
-const SDK_VERSION = '7.101.1';
+const SDK_VERSION = '7.102.0';
 
 /**
  * API compatibility version of this hub.
@@ -12914,5 +13008,5 @@ const Integrations = {
   ...DenoIntegrations,
 };
 
-export { DenoClient, Hub, Integrations, SDK_VERSION, SEMANTIC_ATTRIBUTE_SENTRY_OP, SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE, SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, Scope, addBreadcrumb, addEventProcessor, addGlobalEventProcessor, breadcrumbsIntegration, captureCheckIn, captureEvent, captureException, captureMessage, close, configureScope, contextLinesIntegration, continueTrace, createTransport, dedupeIntegration, defaultIntegrations, denoContextIntegration, denoCronIntegration, extractTraceparentData, flush, functionToStringIntegration, getActiveSpan, getActiveTransaction, getClient, getCurrentHub, getCurrentScope, getDefaultIntegrations, getGlobalScope, getHubFromCarrier, getIsolationScope, getSpanStatusFromHttpCode, globalHandlersIntegration, inboundFiltersIntegration, init, isInitialized, lastEventId, linkedErrorsIntegration, makeMain, metrics, normalizePathsIntegration, requestDataIntegration, runWithAsyncContext, setContext, setCurrentClient, setExtra, setExtras, setHttpStatus, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSpan, startSpanManual, startTransaction, trace, withIsolationScope, withMonitor, withScope };
+export { DenoClient, Hub, Integrations, SDK_VERSION, SEMANTIC_ATTRIBUTE_SENTRY_OP, SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE, SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, Scope, addBreadcrumb, addEventProcessor, addGlobalEventProcessor, breadcrumbsIntegration, captureCheckIn, captureEvent, captureException, captureMessage, captureSession, close, configureScope, contextLinesIntegration, continueTrace, createTransport, dedupeIntegration, defaultIntegrations, denoContextIntegration, denoCronIntegration, endSession, extractTraceparentData, flush, functionToStringIntegration, getActiveSpan, getActiveTransaction, getClient, getCurrentHub, getCurrentScope, getDefaultIntegrations, getGlobalScope, getHubFromCarrier, getIsolationScope, getSpanStatusFromHttpCode, globalHandlersIntegration, inboundFiltersIntegration, init, isInitialized, lastEventId, linkedErrorsIntegration, makeMain, metrics, normalizePathsIntegration, requestDataIntegration, runWithAsyncContext, setContext, setCurrentClient, setExtra, setExtras, setHttpStatus, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSession, startSpan, startSpanManual, startTransaction, trace, withIsolationScope, withMonitor, withScope };
 //# sourceMappingURL=index.mjs.map

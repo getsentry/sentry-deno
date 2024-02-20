@@ -4382,6 +4382,25 @@ declare function isInitialized(): boolean;
  * Get the currently active scope.
  */
 declare function getCurrentScope(): Scope;
+/**
+ * Start a session on the current isolation scope.
+ *
+ * @param context (optional) additional properties to be applied to the returned session object
+ *
+ * @returns the new active session
+ */
+declare function startSession(context?: SessionContext): Session;
+/**
+ * End the session on the current isolation scope.
+ */
+declare function endSession(): void;
+/**
+ * Sends the current session on the scope to Sentry
+ *
+ * @param end If set the session will be marked as exited and removed from the scope.
+ *            Defaults to `false`.
+ */
+declare function captureSession(end?: boolean): void;
 
 /**
  * Add a EventProcessor to be kept globally.
@@ -4397,7 +4416,7 @@ declare function addGlobalEventProcessor(callback: EventProcessor): void;
  */
 declare function createTransport(options: InternalBaseTransportOptions, makeRequest: TransportRequestExecutor, buffer?: PromiseBuffer<void | TransportMakeRequestResponse>): Transport;
 
-declare const SDK_VERSION = "7.101.1";
+declare const SDK_VERSION = "7.102.0";
 
 /** Options for the InboundFilters integration */
 interface InboundFiltersOptions {
@@ -4621,4 +4640,4 @@ declare const Integrations: {
     } | undefined) => Integration);
 };
 
-export { type AddRequestDataToEventOptions, type Breadcrumb, type BreadcrumbHint, DenoClient, type DenoOptions, type Event, type EventHint, type Exception, Hub, Integrations, type PolymorphicRequest, type Request, SDK_VERSION, SEMANTIC_ATTRIBUTE_SENTRY_OP, SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE, SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, Scope, type SdkInfo, type Session, Severity, type SeverityLevel, type Span, type SpanStatusType, type StackFrame, type Stacktrace, type Thread, type Transaction, type User, addBreadcrumb, addEventProcessor, addGlobalEventProcessor, breadcrumbsIntegration, captureCheckIn, captureEvent, captureException, captureMessage, close, configureScope, contextLinesIntegration, continueTrace, createTransport, dedupeIntegration, defaultIntegrations, denoContextIntegration, denoCronIntegration, extractTraceparentData, flush, functionToStringIntegration, getActiveSpan, getActiveTransaction, getClient, getCurrentHub, getCurrentScope, getDefaultIntegrations, getGlobalScope, getHubFromCarrier, getIsolationScope, getSpanStatusFromHttpCode, globalHandlersIntegration, inboundFiltersIntegration, init, isInitialized, lastEventId, linkedErrorsIntegration, makeMain, metrics, normalizePathsIntegration, requestDataIntegration, runWithAsyncContext, setContext, setCurrentClient, setExtra, setExtras, setHttpStatus, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSpan, startSpanManual, startTransaction, trace, withIsolationScope, withMonitor, withScope };
+export { type AddRequestDataToEventOptions, type Breadcrumb, type BreadcrumbHint, DenoClient, type DenoOptions, type Event, type EventHint, type Exception, Hub, Integrations, type PolymorphicRequest, type Request, SDK_VERSION, SEMANTIC_ATTRIBUTE_SENTRY_OP, SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE, SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, Scope, type SdkInfo, type Session, Severity, type SeverityLevel, type Span, type SpanStatusType, type StackFrame, type Stacktrace, type Thread, type Transaction, type User, addBreadcrumb, addEventProcessor, addGlobalEventProcessor, breadcrumbsIntegration, captureCheckIn, captureEvent, captureException, captureMessage, captureSession, close, configureScope, contextLinesIntegration, continueTrace, createTransport, dedupeIntegration, defaultIntegrations, denoContextIntegration, denoCronIntegration, endSession, extractTraceparentData, flush, functionToStringIntegration, getActiveSpan, getActiveTransaction, getClient, getCurrentHub, getCurrentScope, getDefaultIntegrations, getGlobalScope, getHubFromCarrier, getIsolationScope, getSpanStatusFromHttpCode, globalHandlersIntegration, inboundFiltersIntegration, init, isInitialized, lastEventId, linkedErrorsIntegration, makeMain, metrics, normalizePathsIntegration, requestDataIntegration, runWithAsyncContext, setContext, setCurrentClient, setExtra, setExtras, setHttpStatus, setMeasurement, setTag, setTags, setUser, spanStatusfromHttpCode, startInactiveSpan, startSession, startSpan, startSpanManual, startTransaction, trace, withIsolationScope, withMonitor, withScope };
