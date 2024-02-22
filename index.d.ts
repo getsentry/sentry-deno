@@ -1074,11 +1074,11 @@ interface TransactionContext extends SpanContext {
      * accounted for in child spans, like what happens in the idle transaction Tracing integration, where we finish the
      * transaction after a given "idle time" and we don't want this "idle time" to be part of the transaction.
      */
-    trimEnd?: boolean;
+    trimEnd?: boolean | undefined;
     /**
      * If this transaction has a parent, the parent's sampling decision
      */
-    parentSampled?: boolean;
+    parentSampled?: boolean | undefined;
     /**
      * Metadata associated with the transaction, for internal SDK use.
      * @deprecated Use attributes or store data on the scope instead.
@@ -1354,36 +1354,36 @@ interface SpanContext {
      *
      * @deprecated Use `name` instead.
      */
-    description?: string;
+    description?: string | undefined;
     /**
      * Human-readable identifier for the span. Alias for span.description.
      */
-    name?: string;
+    name?: string | undefined;
     /**
      * Operation of the Span.
      */
-    op?: string;
+    op?: string | undefined;
     /**
      * Completion status of the Span.
      * See: {@sentry/tracing SpanStatus} for possible values
      */
-    status?: string;
+    status?: string | undefined;
     /**
      * Parent Span ID
      */
-    parentSpanId?: string;
+    parentSpanId?: string | undefined;
     /**
      * Was this span chosen to be sent as part of the sample?
      */
-    sampled?: boolean;
+    sampled?: boolean | undefined;
     /**
      * Span ID
      */
-    spanId?: string;
+    spanId?: string | undefined;
     /**
      * Trace ID
      */
-    traceId?: string;
+    traceId?: string | undefined;
     /**
      * Tags of the Span.
      * @deprecated Pass `attributes` instead.
@@ -1405,19 +1405,19 @@ interface SpanContext {
     /**
      * Timestamp in seconds (epoch time) indicating when the span started.
      */
-    startTimestamp?: number;
+    startTimestamp?: number | undefined;
     /**
      * Timestamp in seconds (epoch time) indicating when the span ended.
      */
-    endTimestamp?: number;
+    endTimestamp?: number | undefined;
     /**
      * The instrumenter that created this span.
      */
-    instrumenter?: Instrumenter;
+    instrumenter?: Instrumenter | undefined;
     /**
      * The origin of the span, giving context about what created the span.
      */
-    origin?: SpanOrigin;
+    origin?: SpanOrigin | undefined;
 }
 /** Span holding trace_id, span_id */
 interface Span extends Omit<SpanContext, 'op' | 'status' | 'origin'> {
@@ -1432,7 +1432,7 @@ interface Span extends Omit<SpanContext, 'op' | 'status' | 'origin'> {
      * @deprecated Use `startSpan()` functions to set, `span.setAttribute(SEMANTIC_ATTRIBUTE_SENTRY_OP, 'op')
      * to update and `spanToJSON().op` to read the op instead
      */
-    op?: string;
+    op?: string | undefined;
     /**
      * The ID of the span.
      * @deprecated Use `spanContext().spanId` instead.
@@ -1443,7 +1443,7 @@ interface Span extends Omit<SpanContext, 'op' | 'status' | 'origin'> {
      *
      * @deprecated Use `spanToJSON(span).parent_span_id` instead.
      */
-    parentSpanId?: string;
+    parentSpanId?: string | undefined;
     /**
      * The ID of the trace.
      * @deprecated Use `spanContext().traceId` instead.
@@ -1453,7 +1453,7 @@ interface Span extends Omit<SpanContext, 'op' | 'status' | 'origin'> {
      * Was this span chosen to be sent as part of the sample?
      * @deprecated Use `isRecording()` instead.
      */
-    sampled?: boolean;
+    sampled?: boolean | undefined;
     /**
      * Timestamp in seconds (epoch time) indicating when the span started.
      * @deprecated Use `spanToJSON()` instead.
@@ -1463,7 +1463,7 @@ interface Span extends Omit<SpanContext, 'op' | 'status' | 'origin'> {
      * Timestamp in seconds (epoch time) indicating when the span ended.
      * @deprecated Use `spanToJSON()` instead.
      */
-    endTimestamp?: number;
+    endTimestamp?: number | undefined;
     /**
      * Tags for the span.
      * @deprecated Use `spanToJSON(span).atttributes` instead.
@@ -1501,13 +1501,13 @@ interface Span extends Omit<SpanContext, 'op' | 'status' | 'origin'> {
      *
      * @deprecated Use `.setStatus` to set or update and `spanToJSON()` to read the status.
      */
-    status?: string;
+    status?: string | undefined;
     /**
      * The origin of the span, giving context about what created the span.
      *
      * @deprecated Use `startSpan` function to set and `spanToJSON(span).origin` to read the origin instead.
      */
-    origin?: SpanOrigin;
+    origin?: SpanOrigin | undefined;
     /**
      * Get context data for this span.
      * This includes the spanId & the traceId.
@@ -4416,7 +4416,7 @@ declare function addGlobalEventProcessor(callback: EventProcessor): void;
  */
 declare function createTransport(options: InternalBaseTransportOptions, makeRequest: TransportRequestExecutor, buffer?: PromiseBuffer<void | TransportMakeRequestResponse>): Transport;
 
-declare const SDK_VERSION = "7.102.0";
+declare const SDK_VERSION = "7.102.1";
 
 /** Options for the InboundFilters integration */
 interface InboundFiltersOptions {
