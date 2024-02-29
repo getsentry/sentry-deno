@@ -116,6 +116,29 @@ type Primitive = number | string | boolean | bigint | symbol | null | undefined;
 type Instrumenter = 'sentry' | 'otel';
 
 /**
+ * A time duration.
+ */
+type DurationUnit = 'nanosecond' | 'microsecond' | 'millisecond' | 'second' | 'minute' | 'hour' | 'day' | 'week';
+/**
+ * Size of information derived from bytes.
+ */
+type InformationUnit = 'bit' | 'byte' | 'kilobyte' | 'kibibyte' | 'megabyte' | 'mebibyte' | 'gigabyte' | 'terabyte' | 'tebibyte' | 'petabyte' | 'exabyte' | 'exbibyte';
+/**
+ * Fractions such as percentages.
+ */
+type FractionUnit = 'ratio' | 'percent';
+/**
+ * Untyped value without a unit.
+ */
+type NoneUnit = '' | 'none';
+type LiteralUnion<T extends string> = T | Omit<T, T>;
+type MeasurementUnit = LiteralUnion<DurationUnit | InformationUnit | FractionUnit | NoneUnit>;
+type Measurements = Record<string, {
+    value: number;
+    unit: MeasurementUnit;
+}>;
+
+/**
  * Defines High-Resolution Time.
  *
  * The first number, HrTime[0], is UNIX Epoch time in seconds since 00:00:00 UTC on 1 January 1970.
@@ -129,7 +152,7 @@ type Instrumenter = 'sentry' | 'otel';
  */
 type HrTime = [number, number];
 
-type DataCategory = 'default' | 'error' | 'transaction' | 'replay' | 'security' | 'attachment' | 'session' | 'internal' | 'profile' | 'monitor' | 'feedback' | 'unknown';
+type DataCategory = 'default' | 'error' | 'transaction' | 'replay' | 'security' | 'attachment' | 'session' | 'internal' | 'profile' | 'monitor' | 'feedback' | 'unknown' | 'span';
 
 type EventDropReason = 'before_send' | 'event_processor' | 'network_error' | 'queue_overflow' | 'ratelimit_backoff' | 'sample_rate' | 'send_error' | 'internal_sdk_error';
 type Outcome = {
@@ -283,29 +306,6 @@ interface Exception {
 
 type Extra = unknown;
 type Extras = Record<string, Extra>;
-
-/**
- * A time duration.
- */
-type DurationUnit = 'nanosecond' | 'microsecond' | 'millisecond' | 'second' | 'minute' | 'hour' | 'day' | 'week';
-/**
- * Size of information derived from bytes.
- */
-type InformationUnit = 'bit' | 'byte' | 'kilobyte' | 'kibibyte' | 'megabyte' | 'mebibyte' | 'gigabyte' | 'terabyte' | 'tebibyte' | 'petabyte' | 'exabyte' | 'exbibyte';
-/**
- * Fractions such as percentages.
- */
-type FractionUnit = 'ratio' | 'percent';
-/**
- * Untyped value without a unit.
- */
-type NoneUnit = '' | 'none';
-type LiteralUnion<T extends string> = T | Omit<T, T>;
-type MeasurementUnit = LiteralUnion<DurationUnit | InformationUnit | FractionUnit | NoneUnit>;
-type Measurements = Record<string, {
-    value: number;
-    unit: MeasurementUnit;
-}>;
 
 /**
  * Event processors are used to change the event before it will be send.
@@ -912,7 +912,7 @@ type DynamicSamplingContext = {
     replay_id?: string;
     sampled?: string;
 };
-type EnvelopeItemType = 'client_report' | 'user_report' | 'feedback' | 'session' | 'sessions' | 'transaction' | 'attachment' | 'event' | 'profile' | 'replay_event' | 'replay_recording' | 'check_in' | 'statsd';
+type EnvelopeItemType = 'client_report' | 'user_report' | 'feedback' | 'session' | 'sessions' | 'transaction' | 'attachment' | 'event' | 'profile' | 'replay_event' | 'replay_recording' | 'check_in' | 'statsd' | 'span';
 type BaseEnvelopeHeaders = {
     [key: string]: unknown;
     dsn?: string;
@@ -970,6 +970,9 @@ type StatsdItemHeaders = {
 type ProfileItemHeaders = {
     type: 'profile';
 };
+type SpanItemHeaders = {
+    type: 'span';
+};
 type EventItem = BaseEnvelopeItem<EventItemHeaders, Event>;
 type AttachmentItem = BaseEnvelopeItem<AttachmentItemHeaders, string | Uint8Array>;
 type UserFeedbackItem = BaseEnvelopeItem<UserFeedbackItemHeaders, UserFeedback>;
@@ -981,6 +984,7 @@ type ReplayRecordingItem = BaseEnvelopeItem<ReplayRecordingItemHeaders, ReplayRe
 type StatsdItem = BaseEnvelopeItem<StatsdItemHeaders, string>;
 type FeedbackItem = BaseEnvelopeItem<FeedbackItemHeaders, FeedbackEvent>;
 type ProfileItem = BaseEnvelopeItem<ProfileItemHeaders, Profile>;
+type SpanItem = BaseEnvelopeItem<SpanItemHeaders, Span>;
 type EventEnvelopeHeaders = {
     event_id: string;
     sent_at: string;
@@ -995,13 +999,15 @@ type CheckInEnvelopeHeaders = {
 type ClientReportEnvelopeHeaders = BaseEnvelopeHeaders;
 type ReplayEnvelopeHeaders = BaseEnvelopeHeaders;
 type StatsdEnvelopeHeaders = BaseEnvelopeHeaders;
+type SpanEnvelopeHeaders = BaseEnvelopeHeaders;
 type EventEnvelope = BaseEnvelope<EventEnvelopeHeaders, EventItem | AttachmentItem | UserFeedbackItem | FeedbackItem | ProfileItem>;
 type SessionEnvelope = BaseEnvelope<SessionEnvelopeHeaders, SessionItem>;
 type ClientReportEnvelope = BaseEnvelope<ClientReportEnvelopeHeaders, ClientReportItem>;
 type ReplayEnvelope = [ReplayEnvelopeHeaders, [ReplayEventItem, ReplayRecordingItem]];
 type CheckInEnvelope = BaseEnvelope<CheckInEnvelopeHeaders, CheckInItem>;
 type StatsdEnvelope = BaseEnvelope<StatsdEnvelopeHeaders, StatsdItem>;
-type Envelope = EventEnvelope | SessionEnvelope | ClientReportEnvelope | ReplayEnvelope | CheckInEnvelope | StatsdEnvelope;
+type SpanEnvelope = BaseEnvelope<SpanEnvelopeHeaders, SpanItem>;
+type Envelope = EventEnvelope | SessionEnvelope | ClientReportEnvelope | ReplayEnvelope | CheckInEnvelope | StatsdEnvelope | SpanEnvelope;
 
 /** A `Request` type compatible with Node, Express, browser, etc., because everything is optional */
 type PolymorphicRequest = BaseRequest & BrowserRequest & NodeRequest & ExpressRequest & KoaRequest & NextjsRequest;
@@ -1189,6 +1195,11 @@ interface Transaction extends TransactionContext, Omit<Span, 'setName' | 'name'>
      * @deprecated Use top-level `getDynamicSamplingContextFromSpan` instead.
      */
     getDynamicSamplingContext(): Partial<DynamicSamplingContext>;
+    /**
+     * Get the profile id from the transaction
+     * @deprecated Use `toJSON()` or access the fields directly instead.
+     */
+    getProfileId(): string | undefined;
 }
 /**
  * Context data passed by the user when starting a transaction, to be used by the tracesSampler method.
@@ -1418,6 +1429,14 @@ interface SpanContext {
      * The origin of the span, giving context about what created the span.
      */
     origin?: SpanOrigin | undefined;
+    /**
+     * Exclusive time in milliseconds.
+     */
+    exclusiveTime?: number;
+    /**
+     * Measurements of the Span.
+     */
+    measurements?: Measurements;
 }
 /** Span holding trace_id, span_id */
 interface Span extends Omit<SpanContext, 'op' | 'status' | 'origin'> {
@@ -4422,7 +4441,7 @@ declare function addGlobalEventProcessor(callback: EventProcessor): void;
  */
 declare function createTransport(options: InternalBaseTransportOptions, makeRequest: TransportRequestExecutor, buffer?: PromiseBuffer<void | TransportMakeRequestResponse>): Transport;
 
-declare const SDK_VERSION = "7.103.0";
+declare const SDK_VERSION = "7.104.0";
 
 /** Options for the InboundFilters integration */
 interface InboundFiltersOptions {

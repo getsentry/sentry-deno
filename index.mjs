@@ -361,6 +361,7 @@ function aggregateExceptionsFromError(
 
   let newExceptions = [...prevExceptions];
 
+  // Recursively call this function in order to walk down a chain of errors
   if (isInstanceOf(error[key], Error)) {
     applyExceptionGroupFieldsForParentException(exception, exceptionId);
     const newException = exceptionFromErrorImplementation(parser, error[key]);
@@ -410,7 +411,7 @@ function applyExceptionGroupFieldsForParentException(exception, exceptionId) {
 
   exception.mechanism = {
     ...exception.mechanism,
-    is_exception_group: true,
+    ...(exception.type === 'AggregateError' && { is_exception_group: true }),
     exception_id: exceptionId,
   };
 }
@@ -3870,6 +3871,7 @@ const ITEM_TYPE_TO_DATA_CATEGORY_MAP = {
   replay_recording: 'replay',
   check_in: 'monitor',
   feedback: 'feedback',
+  span: 'span',
   // TODO: This is a temporary workaround until we have a proper data category for metrics
   statsd: 'unknown',
 };
@@ -6324,7 +6326,7 @@ function generatePropagationContext() {
   };
 }
 
-const SDK_VERSION = '7.103.0';
+const SDK_VERSION = '7.104.0';
 
 /**
  * API compatibility version of this hub.
@@ -7815,6 +7817,11 @@ const SEMANTIC_ATTRIBUTE_SENTRY_OP = 'sentry.op';
 const SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN = 'sentry.origin';
 
 /**
+ * The id of the profile that this span occured in.
+ */
+const SEMANTIC_ATTRIBUTE_PROFILE_ID = 'profile_id';
+
+/**
  * Keeps track of finished spans for a given transaction
  * @internal
  * @hideconstructor
@@ -7926,6 +7933,10 @@ class Span  {
     if (spanContext.endTimestamp) {
       this._endTime = spanContext.endTimestamp;
     }
+    if (spanContext.exclusiveTime) {
+      this._exclusiveTime = spanContext.exclusiveTime;
+    }
+    this._measurements = spanContext.measurements ? { ...spanContext.measurements } : {};
   }
 
   // This rule conflicts with another eslint rule :(
@@ -8393,6 +8404,9 @@ class Span  {
       trace_id: this._traceId,
       origin: this._attributes[SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN] ,
       _metrics_summary: getMetricSummaryJsonForSpan(this),
+      profile_id: this._attributes[SEMANTIC_ATTRIBUTE_PROFILE_ID] ,
+      exclusive_time: this._exclusiveTime,
+      measurements: Object.keys(this._measurements).length > 0 ? this._measurements : undefined,
     });
   }
 
@@ -8457,7 +8471,6 @@ class Transaction extends Span  {
    */
    constructor(transactionContext, hub) {
     super(transactionContext);
-    this._measurements = {};
     this._contexts = {};
 
     // eslint-disable-next-line deprecation/deprecation
@@ -8660,6 +8673,16 @@ class Transaction extends Span  {
    */
    setHub(hub) {
     this._hub = hub;
+  }
+
+  /**
+   * Get the profile id of the transaction.
+   */
+   getProfileId() {
+    if (this._contexts !== undefined && this._contexts['profile'] !== undefined) {
+      return this._contexts['profile'].profile_id ;
+    }
+    return undefined;
   }
 
   /**
