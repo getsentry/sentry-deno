@@ -628,17 +628,6 @@ interface Scope$1 {
      */
     setContext(name: string, context: Context | null): this;
     /**
-     * Sets the Span on the scope.
-     * @param span Span
-     * @deprecated Instead of setting a span on a scope, use `startSpan()`/`startSpanManual()` instead.
-     */
-    setSpan(span?: Span): this;
-    /**
-     * Returns the `Span` if there is one.
-     * @deprecated Use `getActiveSpan()` instead.
-     */
-    getSpan(): Span | undefined;
-    /**
      * Returns the `Transaction` attached to the scope (if there is one).
      * @deprecated You should not rely on the transaction, but just use `startSpan()` APIs instead.
      */
@@ -973,7 +962,7 @@ type ReplayRecordingData = string | Uint8Array;
 type ReplayRecordingMode = 'session' | 'buffer';
 
 type DynamicSamplingContext = {
-    trace_id: Transaction['traceId'];
+    trace_id: string;
     public_key: DsnComponents['publicKey'];
     sample_rate?: string;
     release?: string;
@@ -1158,22 +1147,7 @@ interface TransactionContext extends SpanContext {
 /**
  * Transaction "Class", inherits Span only has `setName`
  */
-interface Transaction extends Omit<TransactionContext, 'name' | 'op'>, Span {
-    /**
-     * The ID of the transaction.
-     * @deprecated Use `spanContext().spanId` instead.
-     */
-    spanId: string;
-    /**
-     * The ID of the trace.
-     * @deprecated Use `spanContext().traceId` instead.
-     */
-    traceId: string;
-    /**
-     * Was this transaction chosen to be sent as part of the sample?
-     * @deprecated Use `spanIsSampled(transaction)` instead.
-     */
-    sampled?: boolean | undefined;
+interface Transaction extends Omit<TransactionContext, 'name' | 'op' | 'spanId' | 'traceId'>, Span {
     /**
      * @inheritDoc
      */
@@ -1280,15 +1254,6 @@ interface TransactionMetadata {
     /** For transactions tracing server-side request handling, the path of the request being tracked. */
     /** TODO: If we rm -rf `instrumentServer`, this can go, too */
     requestPath?: string;
-    /**
-     * Metadata for the transaction's spans, keyed by spanId.
-     * @deprecated This will be removed in v8.
-     */
-    spanMetadata: {
-        [spanId: string]: {
-            [key: string]: unknown;
-        };
-    };
 }
 /**
  * Contains information about how the name of the transaction was determined. This will be used by the server to decide
@@ -1662,224 +1627,6 @@ interface MonitorConfig {
     recovery_threshold?: number;
 }
 
-/**
- * Internal class used to make sure we always have the latest internal functions
- * working in case we have a version conflict.
- */
-interface Hub$1 {
-    /**
-     * Checks if this hub's version is older than the given version.
-     *
-     * @param version A version number to compare to.
-     * @return True if the given version is newer; otherwise false.
-     *
-     * @deprecated This will be removed in v8.
-     */
-    isOlderThan(version: number): boolean;
-    /**
-     * This binds the given client to the current scope.
-     * @param client An SDK client (client) instance.
-     *
-     * @deprecated Use `initAndBind()` directly.
-     */
-    bindClient(client?: Client): void;
-    /**
-     * Create a new scope to store context information.
-     *
-     * The scope will be layered on top of the current one. It is isolated, i.e. all
-     * breadcrumbs and context information added to this scope will be removed once
-     * the scope ends. Be sure to always remove this scope with {@link this.popScope}
-     * when the operation finishes or throws.
-     *
-     * @returns Scope, the new cloned scope
-     *
-     * @deprecated Use `withScope` instead.
-     */
-    pushScope(): Scope$1;
-    /**
-     * Removes a previously pushed scope from the stack.
-     *
-     * This restores the state before the scope was pushed. All breadcrumbs and
-     * context information added since the last call to {@link this.pushScope} are
-     * discarded.
-     *
-     * @deprecated Use `withScope` instead.
-     */
-    popScope(): boolean;
-    /**
-     * Creates a new scope with and executes the given operation within.
-     * The scope is automatically removed once the operation
-     * finishes or throws.
-     *
-     * This is essentially a convenience function for:
-     *
-     *     pushScope();
-     *     callback();
-     *     popScope();
-     *
-     * @param callback that will be enclosed into push/popScope.
-     *
-     * @deprecated Use `Sentry.withScope()` instead.
-     */
-    withScope<T>(callback: (scope: Scope$1) => T): T;
-    /**
-     * Returns the client of the top stack.
-     * @deprecated Use `Sentry.getClient()` instead.
-     */
-    getClient<C extends Client>(): C | undefined;
-    /**
-     * Returns the scope of the top stack.
-     * @deprecated Use `Sentry.getCurrentScope()` instead.
-     */
-    getScope(): Scope$1;
-    /**
-     * Get the currently active isolation scope.
-     * The isolation scope is used to isolate data between different hubs.
-     *
-     * @deprecated Use `Sentry.getIsolationScope()` instead.
-     */
-    getIsolationScope(): Scope$1;
-    /**
-     * Captures an exception event and sends it to Sentry.
-     *
-     * @param exception An exception-like object.
-     * @param hint May contain additional information about the original exception.
-     * @returns The generated eventId.
-     *
-     * @deprecated Use `Sentry.captureException()` instead.
-     */
-    captureException(exception: any, hint?: EventHint): string;
-    /**
-     * Captures a message event and sends it to Sentry.
-     *
-     * @param message The message to send to Sentry.
-     * @param level Define the level of the message.
-     * @param hint May contain additional information about the original exception.
-     * @returns The generated eventId.
-     *
-     * @deprecated Use `Sentry.captureMessage()` instead.
-     */
-    captureMessage(message: string, level?: SeverityLevel, hint?: EventHint): string;
-    /**
-     * Captures a manually created event and sends it to Sentry.
-     *
-     * @param event The event to send to Sentry.
-     * @param hint May contain additional information about the original exception.
-     *
-     * @deprecated Use `Sentry.captureEvent()` instead.
-     */
-    captureEvent(event: Event, hint?: EventHint): string;
-    /**
-     * Records a new breadcrumb which will be attached to future events.
-     *
-     * Breadcrumbs will be added to subsequent events to provide more context on
-     * user's actions prior to an error or crash.
-     *
-     * @param breadcrumb The breadcrumb to record.
-     * @param hint May contain additional information about the original breadcrumb.
-     *
-     * @deprecated Use `Sentry.addBreadcrumb()` instead.
-     */
-    addBreadcrumb(breadcrumb: Breadcrumb, hint?: BreadcrumbHint): void;
-    /**
-     * Updates user context information for future events.
-     *
-     * @param user User context object to be set in the current context. Pass `null` to unset the user.
-     *
-     * @deprecated Use `Sentry.setUser()` instead.
-     */
-    setUser(user: User | null): void;
-    /**
-     * Set an object that will be merged sent as tags data with the event.
-     *
-     * @param tags Tags context object to merge into current context.
-     *
-     * @deprecated Use `Sentry.setTags()` instead.
-     */
-    setTags(tags: {
-        [key: string]: Primitive;
-    }): void;
-    /**
-     * Set key:value that will be sent as tags data with the event.
-     *
-     * Can also be used to unset a tag, by passing `undefined`.
-     *
-     * @param key String key of tag
-     * @param value Value of tag
-     *
-     * @deprecated Use `Sentry.setTag()` instead.
-     */
-    setTag(key: string, value: Primitive): void;
-    /**
-     * Set key:value that will be sent as extra data with the event.
-     * @param key String of extra
-     * @param extra Any kind of data. This data will be normalized.
-     *
-     * @deprecated Use `Sentry.setExtra()` instead.
-     */
-    setExtra(key: string, extra: Extra): void;
-    /**
-     * Set an object that will be merged sent as extra data with the event.
-     * @param extras Extras object to merge into current context.
-     *
-     * @deprecated Use `Sentry.setExtras()` instead.
-     */
-    setExtras(extras: Extras): void;
-    /**
-     * Sets context data with the given name.
-     * @param name of the context
-     * @param context Any kind of data. This data will be normalized.
-     *
-     * @deprecated Use `Sentry.setContext()` instead.
-     */
-    setContext(name: string, context: {
-        [key: string]: any;
-    } | null): void;
-    /**
-     * Returns the integration if installed on the current client.
-     *
-     * @deprecated Use `Sentry.getClient().getIntegration()` instead.
-     */
-    getIntegration<T extends Integration>(integration: IntegrationClass<T>): T | null;
-    /**
-     * Starts a new `Session`, sets on the current scope and returns it.
-     *
-     * To finish a `session`, it has to be passed directly to `client.captureSession`, which is done automatically
-     * when using `hub.endSession()` for the session currently stored on the scope.
-     *
-     * When there's already an existing session on the scope, it'll be automatically ended.
-     *
-     * @param context Optional properties of the new `Session`.
-     *
-     * @returns The session which was just started
-     *
-     * @deprecated Use top-level `startSession` instead.
-     */
-    startSession(context?: Session): Session;
-    /**
-     * Ends the session that lives on the current scope and sends it to Sentry
-     *
-     * @deprecated Use top-level `endSession` instead.
-     */
-    endSession(): void;
-    /**
-     * Sends the current session on the scope to Sentry
-     *
-     * @param endSession If set the session will be marked as exited and removed from the scope
-     *
-     * @deprecated Use top-level `captureSession` instead.
-     */
-    captureSession(endSession?: boolean): void;
-    /**
-     * Returns if default PII should be sent to Sentry and propagated in outgoing requests
-     * when Tracing is used.
-     *
-     * @deprecated Use top-level `getClient().getOptions().sendDefaultPii` instead. This function
-     * only unnecessarily increased API surface but only wrapped accessing the option.
-     */
-    shouldSendDefaultPii(): boolean;
-}
-
 /** Integration Class Interface */
 interface IntegrationClass<T> {
     /**
@@ -1887,43 +1634,6 @@ interface IntegrationClass<T> {
      */
     id: string;
     new (...args: any[]): T;
-}
-/** Integration interface.
- * This is more or less the same as `Integration`, but with a slimmer `setupOnce` siganture. */
-interface IntegrationFnResult {
-    /**
-     * The name of the integration.
-     */
-    name: string;
-    /**
-     * This hook is only called once, even if multiple clients are created.
-     * It does not receives any arguments, and should only use for e.g. global monkey patching and similar things.
-     */
-    setupOnce?(): void;
-    /**
-     * Set up an integration for the given client.
-     * Receives the client as argument.
-     *
-     * Whenever possible, prefer this over `setupOnce`, as that is only run for the first client,
-     * whereas `setup` runs for each client. Only truly global things (e.g. registering global handlers)
-     * should be done in `setupOnce`.
-     */
-    setup?(client: Client): void;
-    /**
-     * This hook is triggered after `setupOnce()` and `setup()` have been called for all integrations.
-     * You can use it if it is important that all other integrations have been run before.
-     */
-    afterAllSetup?(client: Client): void;
-    /**
-     * An optional hook that allows to preprocess an event _before_ it is passed to all other event processors.
-     */
-    preprocessEvent?(event: Event, hint: EventHint | undefined, client: Client): void;
-    /**
-     * An optional hook that allows to process an event.
-     * Return `null` to drop the event, or mutate the event & return it.
-     * This receives the client that the integration was installed for as third argument.
-     */
-    processEvent?(event: Event, hint: EventHint, client: Client): Event | null | PromiseLike<Event | null>;
 }
 /** Integration interface */
 interface Integration {
@@ -1935,7 +1645,7 @@ interface Integration {
      * This hook is only called once, even if multiple clients are created.
      * It does not receives any arguments, and should only use for e.g. global monkey patching and similar things.
      */
-    setupOnce?(addGlobalEventProcessor: (callback: EventProcessor) => void, getCurrentHub: () => Hub$1): void;
+    setupOnce?(): void;
     /**
      * Set up an integration for the given client.
      * Receives the client as argument.
@@ -2551,6 +2261,224 @@ interface Client<O extends ClientOptions = ClientOptions> {
 }
 
 /**
+ * Internal class used to make sure we always have the latest internal functions
+ * working in case we have a version conflict.
+ */
+interface Hub$1 {
+    /**
+     * Checks if this hub's version is older than the given version.
+     *
+     * @param version A version number to compare to.
+     * @return True if the given version is newer; otherwise false.
+     *
+     * @deprecated This will be removed in v8.
+     */
+    isOlderThan(version: number): boolean;
+    /**
+     * This binds the given client to the current scope.
+     * @param client An SDK client (client) instance.
+     *
+     * @deprecated Use `initAndBind()` directly.
+     */
+    bindClient(client?: Client): void;
+    /**
+     * Create a new scope to store context information.
+     *
+     * The scope will be layered on top of the current one. It is isolated, i.e. all
+     * breadcrumbs and context information added to this scope will be removed once
+     * the scope ends. Be sure to always remove this scope with {@link this.popScope}
+     * when the operation finishes or throws.
+     *
+     * @returns Scope, the new cloned scope
+     *
+     * @deprecated Use `withScope` instead.
+     */
+    pushScope(): Scope$1;
+    /**
+     * Removes a previously pushed scope from the stack.
+     *
+     * This restores the state before the scope was pushed. All breadcrumbs and
+     * context information added since the last call to {@link this.pushScope} are
+     * discarded.
+     *
+     * @deprecated Use `withScope` instead.
+     */
+    popScope(): boolean;
+    /**
+     * Creates a new scope with and executes the given operation within.
+     * The scope is automatically removed once the operation
+     * finishes or throws.
+     *
+     * This is essentially a convenience function for:
+     *
+     *     pushScope();
+     *     callback();
+     *     popScope();
+     *
+     * @param callback that will be enclosed into push/popScope.
+     *
+     * @deprecated Use `Sentry.withScope()` instead.
+     */
+    withScope<T>(callback: (scope: Scope$1) => T): T;
+    /**
+     * Returns the client of the top stack.
+     * @deprecated Use `Sentry.getClient()` instead.
+     */
+    getClient<C extends Client>(): C | undefined;
+    /**
+     * Returns the scope of the top stack.
+     * @deprecated Use `Sentry.getCurrentScope()` instead.
+     */
+    getScope(): Scope$1;
+    /**
+     * Get the currently active isolation scope.
+     * The isolation scope is used to isolate data between different hubs.
+     *
+     * @deprecated Use `Sentry.getIsolationScope()` instead.
+     */
+    getIsolationScope(): Scope$1;
+    /**
+     * Captures an exception event and sends it to Sentry.
+     *
+     * @param exception An exception-like object.
+     * @param hint May contain additional information about the original exception.
+     * @returns The generated eventId.
+     *
+     * @deprecated Use `Sentry.captureException()` instead.
+     */
+    captureException(exception: any, hint?: EventHint): string;
+    /**
+     * Captures a message event and sends it to Sentry.
+     *
+     * @param message The message to send to Sentry.
+     * @param level Define the level of the message.
+     * @param hint May contain additional information about the original exception.
+     * @returns The generated eventId.
+     *
+     * @deprecated Use `Sentry.captureMessage()` instead.
+     */
+    captureMessage(message: string, level?: SeverityLevel, hint?: EventHint): string;
+    /**
+     * Captures a manually created event and sends it to Sentry.
+     *
+     * @param event The event to send to Sentry.
+     * @param hint May contain additional information about the original exception.
+     *
+     * @deprecated Use `Sentry.captureEvent()` instead.
+     */
+    captureEvent(event: Event, hint?: EventHint): string;
+    /**
+     * Records a new breadcrumb which will be attached to future events.
+     *
+     * Breadcrumbs will be added to subsequent events to provide more context on
+     * user's actions prior to an error or crash.
+     *
+     * @param breadcrumb The breadcrumb to record.
+     * @param hint May contain additional information about the original breadcrumb.
+     *
+     * @deprecated Use `Sentry.addBreadcrumb()` instead.
+     */
+    addBreadcrumb(breadcrumb: Breadcrumb, hint?: BreadcrumbHint): void;
+    /**
+     * Updates user context information for future events.
+     *
+     * @param user User context object to be set in the current context. Pass `null` to unset the user.
+     *
+     * @deprecated Use `Sentry.setUser()` instead.
+     */
+    setUser(user: User | null): void;
+    /**
+     * Set an object that will be merged sent as tags data with the event.
+     *
+     * @param tags Tags context object to merge into current context.
+     *
+     * @deprecated Use `Sentry.setTags()` instead.
+     */
+    setTags(tags: {
+        [key: string]: Primitive;
+    }): void;
+    /**
+     * Set key:value that will be sent as tags data with the event.
+     *
+     * Can also be used to unset a tag, by passing `undefined`.
+     *
+     * @param key String key of tag
+     * @param value Value of tag
+     *
+     * @deprecated Use `Sentry.setTag()` instead.
+     */
+    setTag(key: string, value: Primitive): void;
+    /**
+     * Set key:value that will be sent as extra data with the event.
+     * @param key String of extra
+     * @param extra Any kind of data. This data will be normalized.
+     *
+     * @deprecated Use `Sentry.setExtra()` instead.
+     */
+    setExtra(key: string, extra: Extra): void;
+    /**
+     * Set an object that will be merged sent as extra data with the event.
+     * @param extras Extras object to merge into current context.
+     *
+     * @deprecated Use `Sentry.setExtras()` instead.
+     */
+    setExtras(extras: Extras): void;
+    /**
+     * Sets context data with the given name.
+     * @param name of the context
+     * @param context Any kind of data. This data will be normalized.
+     *
+     * @deprecated Use `Sentry.setContext()` instead.
+     */
+    setContext(name: string, context: {
+        [key: string]: any;
+    } | null): void;
+    /**
+     * Returns the integration if installed on the current client.
+     *
+     * @deprecated Use `Sentry.getClient().getIntegration()` instead.
+     */
+    getIntegration<T extends Integration>(integration: IntegrationClass<T>): T | null;
+    /**
+     * Starts a new `Session`, sets on the current scope and returns it.
+     *
+     * To finish a `session`, it has to be passed directly to `client.captureSession`, which is done automatically
+     * when using `hub.endSession()` for the session currently stored on the scope.
+     *
+     * When there's already an existing session on the scope, it'll be automatically ended.
+     *
+     * @param context Optional properties of the new `Session`.
+     *
+     * @returns The session which was just started
+     *
+     * @deprecated Use top-level `startSession` instead.
+     */
+    startSession(context?: Session): Session;
+    /**
+     * Ends the session that lives on the current scope and sends it to Sentry
+     *
+     * @deprecated Use top-level `endSession` instead.
+     */
+    endSession(): void;
+    /**
+     * Sends the current session on the scope to Sentry
+     *
+     * @param endSession If set the session will be marked as exited and removed from the scope
+     *
+     * @deprecated Use top-level `captureSession` instead.
+     */
+    captureSession(endSession?: boolean): void;
+    /**
+     * Returns if default PII should be sent to Sentry and propagated in outgoing requests
+     * when Tracing is used.
+     *
+     * @deprecated Use top-level `getClient().getOptions().sendDefaultPii` instead. This function
+     * only unnecessarily increased API surface but only wrapped accessing the option.
+     */
+    shouldSendDefaultPii(): boolean;
+}
+
+/**
  * A metrics aggregator that aggregates metrics in memory and flushes them periodically.
  */
 interface MetricsAggregator {
@@ -2661,13 +2589,12 @@ declare function setCurrentClient(client: Client): void;
 /**
  * Wraps a function with a transaction/span and finishes the span after the function is done.
  * The created span is the active span and will be used as parent by other spans created inside the function
- * and can be accessed via `Sentry.getSpan()`, as long as the function is executed while the scope is active.
+ * and can be accessed via `Sentry.getActiveSpan()`, as long as the function is executed while the scope is active.
  *
  * If you want to create a span that is not set as active, use {@link startInactiveSpan}.
  *
- * Note that if you have not enabled tracing extensions via `addTracingExtensions`
- * or you didn't set `tracesSampleRate`, this function will not generate spans
- * and the `span` returned from the callback will be undefined.
+ * You'll always get a span passed to the callback,
+ * it may just be a non-recording span if the span is not sampled or if tracing is disabled.
  */
 declare function startSpan<T>(context: StartSpanOptions, callback: (span: Span) => T): T;
 /**
@@ -2677,20 +2604,18 @@ declare function startSpan<T>(context: StartSpanOptions, callback: (span: Span) 
  * The created span is the active span and will be used as parent by other spans created inside the function
  * and can be accessed via `Sentry.getActiveSpan()`, as long as the function is executed while the scope is active.
  *
- * Note that if you have not enabled tracing extensions via `addTracingExtensions`
- * or you didn't set `tracesSampleRate`, this function will not generate spans
- * and the `span` returned from the callback will be undefined.
+ * You'll always get a span passed to the callback,
+ * it may just be a non-recording span if the span is not sampled or if tracing is disabled.
  */
 declare function startSpanManual<T>(context: StartSpanOptions, callback: (span: Span, finish: () => void) => T): T;
 /**
  * Creates a span. This span is not set as active, so will not get automatic instrumentation spans
- * as children or be able to be accessed via `Sentry.getSpan()`.
+ * as children or be able to be accessed via `Sentry.getActiveSpan()`.
  *
  * If you want to create a span that is set as active, use {@link startSpan}.
  *
- * Note that if you have not enabled tracing extensions via `addTracingExtensions`
- * or you didn't set `tracesSampleRate` or `tracesSampler`, this function will not generate spans
- * and the `span` returned from the callback will be undefined.
+ * This function will always return a span,
+ * it may just be a non-recording span if the span is not sampled or if tracing is disabled.
  */
 declare function startInactiveSpan(context: StartSpanOptions): Span;
 /**
@@ -2765,8 +2690,6 @@ declare class Scope implements Scope$1 {
      * It's purpose is to assign a transaction to the scope that's added to non-transaction events.
      */
     protected _transactionName?: string;
-    /** Span */
-    protected _span?: Span;
     /** Session */
     protected _session?: Session;
     /** Request Mode Session Status */
@@ -2849,17 +2772,6 @@ declare class Scope implements Scope$1 {
      * @inheritDoc
      */
     setContext(key: string, context: Context | null): this;
-    /**
-     * Sets the Span on the scope.
-     * @param span Span
-     * @deprecated Instead of setting a span on a scope, use `startSpan()`/`startSpanManual()` instead.
-     */
-    setSpan(span?: Span): this;
-    /**
-     * Returns the `Span` if there is one.
-     * @deprecated Use `getActiveSpan()` instead.
-     */
-    getSpan(): Span | undefined;
     /**
      * Returns the `Transaction` attached to the scope (if there is one).
      * @deprecated You should not rely on the transaction, but just use `startSpan()` APIs instead.
@@ -3548,7 +3460,7 @@ type RequestDataIntegrationOptions = {
  * Add data about a request to an event. Primarily for use in Node-based SDKs, but included in `@sentry/core`
  * so it can be used in cross-platform SDKs like `@sentry/nextjs`.
  */
-declare const requestDataIntegration: (options?: RequestDataIntegrationOptions | undefined) => IntegrationFnResult;
+declare const requestDataIntegration: (options?: RequestDataIntegrationOptions | undefined) => Integration;
 
 /**
  * Converts a HTTP status code into a sentry status with a message.
@@ -3779,7 +3691,7 @@ declare function getClient<C extends Client>(): C | undefined;
  */
 declare function createTransport(options: InternalBaseTransportOptions, makeRequest: TransportRequestExecutor, buffer?: PromiseBuffer<TransportMakeRequestResponse>): Transport;
 
-declare const SDK_VERSION = "8.0.0-alpha.5";
+declare const SDK_VERSION = "8.0.0-alpha.7";
 
 /**
  * Records a new breadcrumb which will be attached to future events.
@@ -3800,7 +3712,7 @@ declare function addBreadcrumb(breadcrumb: Breadcrumb, hint?: BreadcrumbHint): v
  * });
  * ```
  */
-declare const functionToStringIntegration: () => IntegrationFnResult;
+declare const functionToStringIntegration: () => Integration;
 
 /** Options for the InboundFilters integration */
 interface InboundFiltersOptions {
@@ -3811,13 +3723,13 @@ interface InboundFiltersOptions {
     ignoreInternal: boolean;
     disableErrorDefaults: boolean;
 }
-declare const inboundFiltersIntegration: (options?: Partial<InboundFiltersOptions> | undefined) => IntegrationFnResult;
+declare const inboundFiltersIntegration: (options?: Partial<InboundFiltersOptions> | undefined) => Integration;
 
 interface LinkedErrorsOptions {
     key?: string;
     limit?: number;
 }
-declare const linkedErrorsIntegration: (options?: LinkedErrorsOptions | undefined) => IntegrationFnResult;
+declare const linkedErrorsIntegration: (options?: LinkedErrorsOptions | undefined) => Integration;
 
 interface CaptureConsoleOptions {
     levels?: string[];
@@ -3825,7 +3737,7 @@ interface CaptureConsoleOptions {
 /**
  * Send Console API calls as Sentry Events.
  */
-declare const captureConsoleIntegration: (options?: CaptureConsoleOptions | undefined) => IntegrationFnResult;
+declare const captureConsoleIntegration: (options?: CaptureConsoleOptions | undefined) => Integration;
 
 interface DebugOptions {
     /** Controls whether console output created by this integration should be stringified. Default: `false` */
@@ -3833,12 +3745,12 @@ interface DebugOptions {
     /** Controls whether a debugger should be launched before an event is sent. Default: `false` */
     debugger?: boolean;
 }
-declare const debugIntegration: (options?: DebugOptions | undefined) => IntegrationFnResult;
+declare const debugIntegration: (options?: DebugOptions | undefined) => Integration;
 
 /**
  * Deduplication filter.
  */
-declare const dedupeIntegration: () => IntegrationFnResult;
+declare const dedupeIntegration: () => Integration;
 
 interface ExtraErrorDataOptions {
     /**
@@ -3852,7 +3764,7 @@ interface ExtraErrorDataOptions {
      */
     captureErrorCause: boolean;
 }
-declare const extraErrorDataIntegration: (options?: Partial<ExtraErrorDataOptions> | undefined) => IntegrationFnResult;
+declare const extraErrorDataIntegration: (options?: Partial<ExtraErrorDataOptions> | undefined) => Integration;
 
 type StackFrameIteratee = (frame: StackFrame) => StackFrame;
 interface RewriteFramesOptions {
@@ -3863,13 +3775,13 @@ interface RewriteFramesOptions {
 /**
  * Rewrite event frames paths.
  */
-declare const rewriteFramesIntegration: (options?: RewriteFramesOptions | undefined) => IntegrationFnResult;
+declare const rewriteFramesIntegration: (options?: RewriteFramesOptions | undefined) => Integration;
 
 /**
  * This function adds duration since the sessionTimingIntegration was initialized
  * till the time event was sent.
  */
-declare const sessionTimingIntegration: () => IntegrationFnResult;
+declare const sessionTimingIntegration: () => Integration;
 
 interface MetricData {
     unit?: MeasurementUnit;
@@ -3992,7 +3904,7 @@ declare function init(options?: DenoOptions): void;
  * })
  * ```
  */
-declare const denoContextIntegration: () => IntegrationFnResult;
+declare const denoContextIntegration: () => Integration;
 
 type GlobalHandlersIntegrationsOptionKeys = 'error' | 'unhandledrejection';
 type GlobalHandlersIntegrations = Record<GlobalHandlersIntegrationsOptionKeys, boolean>;
@@ -4009,7 +3921,7 @@ type GlobalHandlersIntegrations = Record<GlobalHandlersIntegrationsOptionKeys, b
  * })
  * ```
  */
-declare const globalHandlersIntegration: (options?: GlobalHandlersIntegrations | undefined) => IntegrationFnResult;
+declare const globalHandlersIntegration: (options?: GlobalHandlersIntegrations | undefined) => Integration;
 
 /**
  * Normalises paths to the app root directory.
@@ -4024,7 +3936,7 @@ declare const globalHandlersIntegration: (options?: GlobalHandlersIntegrations |
  * })
  * ```
  */
-declare const normalizePathsIntegration: () => IntegrationFnResult;
+declare const normalizePathsIntegration: () => Integration;
 
 interface ContextLinesOptions {
     /**
@@ -4048,7 +3960,7 @@ interface ContextLinesOptions {
  * })
  * ```
  */
-declare const contextLinesIntegration: (options?: ContextLinesOptions | undefined) => IntegrationFnResult;
+declare const contextLinesIntegration: (options?: ContextLinesOptions | undefined) => Integration;
 
 /**
  * Instruments Deno.cron to automatically capture cron check-ins.
@@ -4063,7 +3975,7 @@ declare const contextLinesIntegration: (options?: ContextLinesOptions | undefine
  * })
  * ```
  */
-declare const denoCronIntegration: () => IntegrationFnResult;
+declare const denoCronIntegration: () => Integration;
 
 interface BreadcrumbsOptions {
     console: boolean;
@@ -4083,6 +3995,6 @@ interface BreadcrumbsOptions {
  * })
  * ```
  */
-declare const breadcrumbsIntegration: (options?: Partial<BreadcrumbsOptions> | undefined) => IntegrationFnResult;
+declare const breadcrumbsIntegration: (options?: Partial<BreadcrumbsOptions> | undefined) => Integration;
 
 export { type AddRequestDataToEventOptions, type Breadcrumb, type BreadcrumbHint, DenoClient, type DenoOptions, type Event, type EventHint, type Exception, Hub, type PolymorphicRequest, type Request, SDK_VERSION, SEMANTIC_ATTRIBUTE_SENTRY_OP, SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE, SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, Scope, type SdkInfo, type Session, type SeverityLevel, type Span, type StackFrame, type Stacktrace, type Thread, type Transaction, type User, addBreadcrumb, addEventProcessor, breadcrumbsIntegration, captureCheckIn, captureConsoleIntegration, captureEvent, captureException, captureMessage, captureSession, close, contextLinesIntegration, continueTrace, createTransport, debugIntegration, dedupeIntegration, denoContextIntegration, denoCronIntegration, endSession, extraErrorDataIntegration, flush, functionToStringIntegration, getActiveSpan, getClient, getCurrentScope, getDefaultIntegrations, getGlobalScope, getIsolationScope, getRootSpan, getSpanStatusFromHttpCode, globalHandlersIntegration, inboundFiltersIntegration, init, isInitialized, linkedErrorsIntegration, metricsDefault as metrics, normalizePathsIntegration, requestDataIntegration, rewriteFramesIntegration, sessionTimingIntegration, setContext, setCurrentClient, setExtra, setExtras, setHttpStatus, setMeasurement, setTag, setTags, setUser, startInactiveSpan, startSession, startSpan, startSpanManual, withIsolationScope, withMonitor, withScope };

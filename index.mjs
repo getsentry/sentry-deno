@@ -3355,7 +3355,9 @@ function forEachEnvelopeItem(
  * Encode a string to UTF8 array.
  */
 function encodeUTF8(input) {
-  return new TextEncoder().encode(input);
+  return GLOBAL_OBJ.__SENTRY__ && GLOBAL_OBJ.__SENTRY__.encodePolyfill
+    ? GLOBAL_OBJ.__SENTRY__.encodePolyfill(input)
+    : new TextEncoder().encode(input);
 }
 
 /**
@@ -3977,6 +3979,29 @@ function sessionToJSON(session) {
   });
 }
 
+const SCOPE_SPAN_FIELD = '_sentrySpan';
+
+/**
+ * Set the active span for a given scope.
+ * NOTE: This should NOT be used directly, but is only used internally by the trace methods.
+ */
+function _setSpanForScope(scope, span) {
+  if (span) {
+    addNonEnumerableProperty(scope , SCOPE_SPAN_FIELD, span);
+  } else {
+    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+    delete (scope )[SCOPE_SPAN_FIELD];
+  }
+}
+
+/**
+ * Get the active span for a given scope.
+ * NOTE: This should NOT be used directly, but is only used internally by the trace methods.
+ */
+function _getSpanForScope(scope) {
+  return scope[SCOPE_SPAN_FIELD];
+}
+
 /**
  * Default value for maximum number of breadcrumbs added to an event.
  */
@@ -4022,8 +4047,6 @@ class Scope  {
    * It's purpose is to assign a transaction to the scope that's added to non-transaction events.
    */
 
-  /** Span */
-
   /** Session */
 
   /** Request Mode Session Status */
@@ -4065,7 +4088,6 @@ class Scope  {
     newScope._contexts = { ...this._contexts };
     newScope._user = this._user;
     newScope._level = this._level;
-    newScope._span = this._span;
     newScope._session = this._session;
     newScope._transactionName = this._transactionName;
     newScope._fingerprint = this._fingerprint;
@@ -4075,6 +4097,8 @@ class Scope  {
     newScope._sdkProcessingMetadata = { ...this._sdkProcessingMetadata };
     newScope._propagationContext = { ...this._propagationContext };
     newScope._client = this._client;
+
+    _setSpanForScope(newScope, _getSpanForScope(this));
 
     return newScope;
   }
@@ -4236,32 +4260,13 @@ class Scope  {
   }
 
   /**
-   * Sets the Span on the scope.
-   * @param span Span
-   * @deprecated Instead of setting a span on a scope, use `startSpan()`/`startSpanManual()` instead.
-   */
-   setSpan(span) {
-    this._span = span;
-    this._notifyScopeListeners();
-    return this;
-  }
-
-  /**
-   * Returns the `Span` if there is one.
-   * @deprecated Use `getActiveSpan()` instead.
-   */
-   getSpan() {
-    return this._span;
-  }
-
-  /**
    * Returns the `Transaction` attached to the scope (if there is one).
    * @deprecated You should not rely on the transaction, but just use `startSpan()` APIs instead.
    */
    getTransaction() {
     // Often, this span (if it exists at all) will be a transaction, but it's not guaranteed to be. Regardless, it will
     // have a pointer to the currently-active transaction.
-    const span = this._span;
+    const span = _getSpanForScope(this);
 
     // Cannot replace with getRootSpan because getRootSpan returns a span, not a transaction
     // Also, this method will be removed anyway.
@@ -4363,11 +4368,12 @@ class Scope  {
     this._transactionName = undefined;
     this._fingerprint = undefined;
     this._requestSession = undefined;
-    this._span = undefined;
     this._session = undefined;
-    this._notifyScopeListeners();
+    _setSpanForScope(this, undefined);
     this._attachments = [];
     this._propagationContext = generatePropagationContext();
+
+    this._notifyScopeListeners();
     return this;
   }
 
@@ -4453,7 +4459,6 @@ class Scope  {
       _propagationContext,
       _sdkProcessingMetadata,
       _transactionName,
-      _span,
     } = this;
 
     return {
@@ -4469,7 +4474,7 @@ class Scope  {
       propagationContext: _propagationContext,
       sdkProcessingMetadata: _sdkProcessingMetadata,
       transactionName: _transactionName,
-      span: _span,
+      span: _getSpanForScope(this),
     };
   }
 
@@ -4592,7 +4597,7 @@ function generatePropagationContext() {
   };
 }
 
-const SDK_VERSION = '8.0.0-alpha.5';
+const SDK_VERSION = '8.0.0-alpha.7';
 
 /**
  * API compatibility version of this hub.
@@ -5492,12 +5497,10 @@ function ensureTimestampInSeconds(timestamp) {
 
 /**
  * Convert a span to a JSON representation.
- * Note that all fields returned here are optional and need to be guarded against.
- *
- * Note: Because of this, we currently have a circular type dependency (which we opted out of in package.json).
- * This is not avoidable as we need `spanToJSON` in `spanUtils.ts`, which in turn is needed by `span.ts` for backwards compatibility.
- * And `spanToJSON` needs the Span class from `span.ts` to check here.
  */
+// Note: Because of this, we currently have a circular type dependency (which we opted out of in package.json).
+// This is not avoidable as we need `spanToJSON` in `spanUtils.ts`, which in turn is needed by `span.ts` for backwards compatibility.
+// And `spanToJSON` needs the Span class from `span.ts` to check here.
 function spanToJSON(span) {
   if (spanIsSentrySpan(span)) {
     return span.getSpanJSON();
@@ -5640,8 +5643,7 @@ function getActiveSpan() {
     return acs.getActiveSpan();
   }
 
-  // eslint-disable-next-line deprecation/deprecation
-  return getCurrentScope().getSpan();
+  return _getSpanForScope(getCurrentScope());
 }
 
 /**
@@ -5920,23 +5922,20 @@ function getDynamicSamplingContextFromSpan(span) {
  * It returns the same transaction, for convenience.
  */
 function sampleTransaction(
-  transaction,
+  transactionContext,
   options,
   samplingContext,
 ) {
   // nothing to do if tracing is not enabled
   if (!hasTracingEnabled(options)) {
-    // eslint-disable-next-line deprecation/deprecation
-    transaction.sampled = false;
-    return transaction;
+    return [false];
   }
 
-  // if the user has forced a sampling decision by passing a `sampled` value in their transaction context, go with that
-  // eslint-disable-next-line deprecation/deprecation
-  if (transaction.sampled !== undefined) {
-    // eslint-disable-next-line deprecation/deprecation
-    transaction.setAttribute(SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE, Number(transaction.sampled));
-    return transaction;
+  const transactionContextSampled = transactionContext.sampled;
+  // if the user has forced a sampling decision by passing a `sampled` value in
+  // their transaction context, go with that.
+  if (transactionContextSampled !== undefined) {
+    return [transactionContextSampled, Number(transactionContextSampled)];
   }
 
   // we would have bailed already if neither `tracesSampler` nor `tracesSampleRate` nor `enableTracing` were defined, so one of these should
@@ -5944,25 +5943,20 @@ function sampleTransaction(
   let sampleRate;
   if (typeof options.tracesSampler === 'function') {
     sampleRate = options.tracesSampler(samplingContext);
-    transaction.setAttribute(SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE, Number(sampleRate));
   } else if (samplingContext.parentSampled !== undefined) {
     sampleRate = samplingContext.parentSampled;
   } else if (typeof options.tracesSampleRate !== 'undefined') {
     sampleRate = options.tracesSampleRate;
-    transaction.setAttribute(SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE, Number(sampleRate));
   } else {
     // When `enableTracing === true`, we use a sample rate of 100%
     sampleRate = 1;
-    transaction.setAttribute(SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE, sampleRate);
   }
 
   // Since this is coming from the user (or from a function provided by the user), who knows what we might get. (The
   // only valid values are booleans or numbers between 0 and 1.)
   if (!isValidSampleRate(sampleRate)) {
     DEBUG_BUILD && logger.warn('[Tracing] Discarding transaction because of invalid sample rate.');
-    // eslint-disable-next-line deprecation/deprecation
-    transaction.sampled = false;
-    return transaction;
+    return [false];
   }
 
   // if the function returned 0 (or false), or if `tracesSampleRate` is 0, it's a sign the transaction should be dropped
@@ -5975,34 +5969,25 @@ function sampleTransaction(
             : 'a negative sampling decision was inherited or tracesSampleRate is set to 0'
         }`,
       );
-    // eslint-disable-next-line deprecation/deprecation
-    transaction.sampled = false;
-    return transaction;
+    return [false, Number(sampleRate)];
   }
 
   // Now we roll the dice. Math.random is inclusive of 0, but not of 1, so strict < is safe here. In case sampleRate is
   // a boolean, the < comparison will cause it to be automatically cast to 1 if it's true and 0 if it's false.
-  // eslint-disable-next-line deprecation/deprecation
-  transaction.sampled = Math.random() < (sampleRate );
+  const shouldSample = Math.random() < sampleRate;
 
   // if we're not going to keep it, we're done
-  // eslint-disable-next-line deprecation/deprecation
-  if (!transaction.sampled) {
+  if (!shouldSample) {
     DEBUG_BUILD &&
       logger.log(
         `[Tracing] Discarding transaction because it's not included in the random sample (sampling rate = ${Number(
           sampleRate,
         )})`,
       );
-    return transaction;
+    return [false, Number(sampleRate)];
   }
 
-  if (DEBUG_BUILD) {
-    const { op, description } = spanToJSON(transaction);
-    logger.log(`[Tracing] starting ${op} transaction - ${description}`);
-  }
-
-  return transaction;
+  return [true, Number(sampleRate)];
 }
 
 /**
@@ -6087,72 +6072,6 @@ class SentrySpan  {
 
   // This rule conflicts with another eslint rule :(
   /* eslint-disable @typescript-eslint/member-ordering */
-
-  /**
-   * The ID of the trace.
-   * @deprecated Use `spanContext().traceId` instead.
-   */
-   get traceId() {
-    return this._traceId;
-  }
-
-  /**
-   * The ID of the trace.
-   * @deprecated You cannot update the traceId of a span after span creation.
-   */
-   set traceId(traceId) {
-    this._traceId = traceId;
-  }
-
-  /**
-   * The ID of the span.
-   * @deprecated Use `spanContext().spanId` instead.
-   */
-   get spanId() {
-    return this._spanId;
-  }
-
-  /**
-   * The ID of the span.
-   * @deprecated You cannot update the spanId of a span after span creation.
-   */
-   set spanId(spanId) {
-    this._spanId = spanId;
-  }
-
-  /**
-   * @inheritDoc
-   *
-   * @deprecated Use `startSpan` functions instead.
-   */
-   set parentSpanId(string) {
-    this._parentSpanId = string;
-  }
-
-  /**
-   * @inheritDoc
-   *
-   * @deprecated Use `spanToJSON(span).parent_span_id` instead.
-   */
-   get parentSpanId() {
-    return this._parentSpanId;
-  }
-
-  /**
-   * Was this span chosen to be sent as part of the sample?
-   * @deprecated Use `isRecording()` instead.
-   */
-   get sampled() {
-    return this._sampled;
-  }
-
-  /**
-   * Was this span chosen to be sent as part of the sample?
-   * @deprecated You cannot update the sampling decision of a span after span creation.
-   */
-   set sampled(sampled) {
-    this._sampled = sampled;
-  }
 
   /**
    * Attributes for the span.
@@ -6528,9 +6447,6 @@ class Transaction extends SentrySpan  {
    get metadata() {
     // We merge attributes in for backwards compatibility
     return {
-      // Defaults
-      spanMetadata: {},
-
       // Legacy metadata
       ...this._metadata,
 
@@ -6737,13 +6653,12 @@ class Transaction extends SentrySpan  {
 /**
  * Wraps a function with a transaction/span and finishes the span after the function is done.
  * The created span is the active span and will be used as parent by other spans created inside the function
- * and can be accessed via `Sentry.getSpan()`, as long as the function is executed while the scope is active.
+ * and can be accessed via `Sentry.getActiveSpan()`, as long as the function is executed while the scope is active.
  *
  * If you want to create a span that is not set as active, use {@link startInactiveSpan}.
  *
- * Note that if you have not enabled tracing extensions via `addTracingExtensions`
- * or you didn't set `tracesSampleRate`, this function will not generate spans
- * and the `span` returned from the callback will be undefined.
+ * You'll always get a span passed to the callback,
+ * it may just be a non-recording span if the span is not sampled or if tracing is disabled.
  */
 function startSpan(context, callback) {
   const acs = getAcs();
@@ -6754,23 +6669,19 @@ function startSpan(context, callback) {
   const spanContext = normalizeContext(context);
 
   return withScope(context.scope, scope => {
-    // eslint-disable-next-line deprecation/deprecation
-    const hub = getCurrentHub();
-    // eslint-disable-next-line deprecation/deprecation
-    const parentSpan = scope.getSpan() ;
+    const parentSpan = _getSpanForScope(scope) ;
 
     const shouldSkipSpan = context.onlyIfParent && !parentSpan;
     const activeSpan = shouldSkipSpan
       ? new SentryNonRecordingSpan()
-      : createChildSpanOrTransaction(hub, {
+      : createChildSpanOrTransaction({
           parentSpan,
           spanContext,
           forceTransaction: context.forceTransaction,
           scope,
         });
 
-    // eslint-disable-next-line deprecation/deprecation
-    scope.setSpan(activeSpan);
+    _setSpanForScope(scope, activeSpan);
 
     return handleCallbackErrors(
       () => callback(activeSpan),
@@ -6793,9 +6704,8 @@ function startSpan(context, callback) {
  * The created span is the active span and will be used as parent by other spans created inside the function
  * and can be accessed via `Sentry.getActiveSpan()`, as long as the function is executed while the scope is active.
  *
- * Note that if you have not enabled tracing extensions via `addTracingExtensions`
- * or you didn't set `tracesSampleRate`, this function will not generate spans
- * and the `span` returned from the callback will be undefined.
+ * You'll always get a span passed to the callback,
+ * it may just be a non-recording span if the span is not sampled or if tracing is disabled.
  */
 function startSpanManual(context, callback) {
   const acs = getAcs();
@@ -6806,23 +6716,19 @@ function startSpanManual(context, callback) {
   const spanContext = normalizeContext(context);
 
   return withScope(context.scope, scope => {
-    // eslint-disable-next-line deprecation/deprecation
-    const hub = getCurrentHub();
-    // eslint-disable-next-line deprecation/deprecation
-    const parentSpan = scope.getSpan() ;
+    const parentSpan = _getSpanForScope(scope) ;
 
     const shouldSkipSpan = context.onlyIfParent && !parentSpan;
     const activeSpan = shouldSkipSpan
       ? new SentryNonRecordingSpan()
-      : createChildSpanOrTransaction(hub, {
+      : createChildSpanOrTransaction({
           parentSpan,
           spanContext,
           forceTransaction: context.forceTransaction,
           scope,
         });
 
-    // eslint-disable-next-line deprecation/deprecation
-    scope.setSpan(activeSpan);
+    _setSpanForScope(scope, activeSpan);
 
     function finishAndSetSpan() {
       activeSpan.end();
@@ -6843,13 +6749,12 @@ function startSpanManual(context, callback) {
 
 /**
  * Creates a span. This span is not set as active, so will not get automatic instrumentation spans
- * as children or be able to be accessed via `Sentry.getSpan()`.
+ * as children or be able to be accessed via `Sentry.getActiveSpan()`.
  *
  * If you want to create a span that is set as active, use {@link startSpan}.
  *
- * Note that if you have not enabled tracing extensions via `addTracingExtensions`
- * or you didn't set `tracesSampleRate` or `tracesSampler`, this function will not generate spans
- * and the `span` returned from the callback will be undefined.
+ * This function will always return a span,
+ * it may just be a non-recording span if the span is not sampled or if tracing is disabled.
  */
 function startInactiveSpan(context) {
   const acs = getAcs();
@@ -6858,11 +6763,8 @@ function startInactiveSpan(context) {
   }
 
   const spanContext = normalizeContext(context);
-  // eslint-disable-next-line deprecation/deprecation
-  const hub = getCurrentHub();
   const parentSpan = context.scope
-    ? // eslint-disable-next-line deprecation/deprecation
-      (context.scope.getSpan() )
+    ? (_getSpanForScope(context.scope) )
     : (getActiveSpan() );
 
   const shouldSkipSpan = context.onlyIfParent && !parentSpan;
@@ -6873,7 +6775,7 @@ function startInactiveSpan(context) {
 
   const scope = context.scope || getCurrentScope();
 
-  return createChildSpanOrTransaction(hub, {
+  return createChildSpanOrTransaction({
     parentSpan,
     spanContext,
     forceTransaction: context.forceTransaction,
@@ -6905,16 +6807,13 @@ const continueTrace = (
   });
 };
 
-function createChildSpanOrTransaction(
-  hub,
-  {
-    parentSpan,
-    spanContext,
-    forceTransaction,
-    scope,
-  }
+function createChildSpanOrTransaction({
+  parentSpan,
+  spanContext,
+  forceTransaction,
+  scope,
+}
 
-,
 ) {
   if (!hasTracingEnabled()) {
     return new SentryNonRecordingSpan();
@@ -7002,9 +6901,7 @@ function _startTransaction(transactionContext) {
   const client = getClient();
   const options = (client && client.getOptions()) || {};
 
-  // eslint-disable-next-line deprecation/deprecation
-  let transaction = new Transaction(transactionContext, getCurrentHub());
-  transaction = sampleTransaction(transaction, options, {
+  const [sampled, sampleRate] = sampleTransaction(transactionContext, options, {
     name: transactionContext.name,
     parentSampled: transactionContext.parentSampled,
     transactionContext,
@@ -7014,9 +6911,17 @@ function _startTransaction(transactionContext) {
       ...transactionContext.attributes,
     },
   });
+
+  // eslint-disable-next-line deprecation/deprecation
+  const transaction = new Transaction({ ...transactionContext, sampled }, getCurrentHub());
+  if (sampleRate !== undefined) {
+    transaction.setAttribute(SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE, sampleRate);
+  }
+
   if (client) {
     client.emit('spanStart', transaction);
   }
+
   return transaction;
 }
 
@@ -7106,23 +7011,6 @@ function createEventEnvelope(
 
   const eventItem = [{ type: eventType }, event];
   return createEnvelope(envelopeHeaders, [eventItem]);
-}
-
-/**
- * Returns the global event processors.
- * @deprecated Global event processors will be removed in v8.
- */
-function getGlobalEventProcessors() {
-  return getGlobalSingleton('globalEventProcessors', () => []);
-}
-
-/**
- * Add a EventProcessor to be kept globally.
- * @deprecated Use `addEventProcessor` instead. Global event processors will be removed in v8.
- */
-function addGlobalEventProcessor(callback) {
-  // eslint-disable-next-line deprecation/deprecation
-  getGlobalEventProcessors().push(callback);
 }
 
 /**
@@ -7344,8 +7232,6 @@ function applyFingerprintToEvent(event, fingerprint) {
  * Information that is already present in the event is never overwritten. For
  * nested objects, such as the context, keys are merged.
  *
- * Note: This also triggers callbacks for `addGlobalEventProcessor`, but not `beforeSend`.
- *
  * @param event The original event.
  * @param hint May contain additional information about the original exception.
  * @param scope A scope containing event metadata.
@@ -7408,11 +7294,8 @@ function prepareEvent(
 
   applyScopeDataToEvent(prepared, data);
 
-  // TODO (v8): Update this order to be: Global > Client > Scope
   const eventProcessors = [
     ...clientEventProcessors,
-    // eslint-disable-next-line deprecation/deprecation
-    ...getGlobalEventProcessors(),
     // Run scope event processors _after_ all other processors
     ...data.eventProcessors,
   ];
@@ -8251,8 +8134,7 @@ function setupIntegration(client, integration, integrationIndex) {
 
   // `setupOnce` is only called the first time
   if (installedIntegrations.indexOf(integration.name) === -1 && typeof integration.setupOnce === 'function') {
-    // eslint-disable-next-line deprecation/deprecation
-    integration.setupOnce(addGlobalEventProcessor, getCurrentHub);
+    integration.setupOnce();
     installedIntegrations.push(integration.name);
   }
 
@@ -9271,8 +9153,7 @@ class ServerRuntimeClient
       return [undefined, undefined];
     }
 
-    // eslint-disable-next-line deprecation/deprecation
-    const span = scope.getSpan();
+    const span = _getSpanForScope(scope);
     if (span) {
       const rootSpan = getRootSpan(span);
       const samplingContext = getDynamicSamplingContextFromSpan(rootSpan);
