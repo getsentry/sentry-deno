@@ -4497,7 +4497,7 @@ function generatePropagationContext() {
   };
 }
 
-const SDK_VERSION = '8.0.0-alpha.8';
+const SDK_VERSION = '8.0.0-alpha.9';
 
 /**
  * API compatibility version of this hub.
