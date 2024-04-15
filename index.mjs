@@ -6342,7 +6342,7 @@ function generatePropagationContext() {
   };
 }
 
-const SDK_VERSION = '7.110.0';
+const SDK_VERSION = '7.110.1';
 
 /**
  * API compatibility version of this hub.
