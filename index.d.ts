@@ -2345,6 +2345,16 @@ declare function getRootSpan(span: SpanWithPotentialChildren): Span;
  */
 declare function getActiveSpan(): Span | undefined;
 
+declare module '@sentry/types' {
+    interface Integration {
+        isDefaultInstance?: boolean;
+    }
+}
+/** Map of integrations assigned to a client */
+type IntegrationIndex = {
+    [key: string]: Integration;
+};
+
 /**
  * Holds additional event information.
  */
@@ -2535,16 +2545,6 @@ declare class Scope implements Scope$1 {
      */
     protected _notifyScopeListeners(): void;
 }
-
-declare module '@sentry/types' {
-    interface Integration {
-        isDefaultInstance?: boolean;
-    }
-}
-/** Map of integrations assigned to a client */
-type IntegrationIndex = {
-    [key: string]: Integration;
-};
 
 /**
  * Base implementation for all JavaScript SDK clients.
@@ -3166,7 +3166,7 @@ declare function getClient<C extends Client>(): C | undefined;
  */
 declare function createTransport(options: InternalBaseTransportOptions, makeRequest: TransportRequestExecutor, buffer?: PromiseBuffer<TransportMakeRequestResponse>): Transport;
 
-declare const SDK_VERSION = "8.0.0-beta.1";
+declare const SDK_VERSION = "8.0.0-beta.2";
 
 /**
  * Records a new breadcrumb which will be attached to future events.

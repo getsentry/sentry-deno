@@ -3841,9 +3841,8 @@ class LRUMap {
 const DEBUG_BUILD = (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__);
 
 /**
- * @private Private API with no semver guarantees!
- *
- * Strategy used to track async context.
+ * An object that contains a hub and maintains a scope stack.
+ * @hidden
  */
 
 /**
@@ -3868,8 +3867,6 @@ function getSentryCarrier(carrier) {
   }
   return carrier.__SENTRY__;
 }
-
-const DEFAULT_ENVIRONMENT = 'production';
 
 /**
  * Creates a new `Session` object by setting certain default parameters. If optional @param context
@@ -4583,469 +4580,6 @@ function generatePropagationContext() {
   };
 }
 
-const SDK_VERSION = '8.0.0-beta.1';
-
-/**
- * API compatibility version of this hub.
- *
- * WARNING: This number should only be increased when the global interface
- * changes and new methods are introduced.
- *
- * @hidden
- */
-const API_VERSION = parseFloat(SDK_VERSION);
-
-/**
- * Default maximum number of breadcrumbs added to an event. Can be overwritten
- * with {@link Options.maxBreadcrumbs}.
- */
-const DEFAULT_BREADCRUMBS$1 = 100;
-
-/**
- * A layer in the process stack.
- * @hidden
- */
-
-/**
- * @inheritDoc
- * @deprecated This class will be removed in v8 (tmp-deprecating so we're aware of where this is a problem)
- */
-// eslint-disable-next-line deprecation/deprecation
-class Hub  {
-  /** Is a {@link Layer}[] containing the client and scope */
-
-  /**
-   * Creates a new instance of the hub, will push one {@link Layer} into the
-   * internal stack on creation.
-   *
-   * @param client bound to the hub.
-   * @param scope bound to the hub.
-   * @param version number, higher number means higher priority.
-   *
-   * @deprecated Instantiation of Hub objects is deprecated and the constructor will be removed in version 8 of the SDK.
-   *
-   * If you are currently using the Hub for multi-client use like so:
-   *
-   * ```
-   * // OLD
-   * const hub = new Hub();
-   * hub.bindClient(client);
-   * makeMain(hub)
-   * ```
-   *
-   * instead initialize the client as follows:
-   *
-   * ```
-   * // NEW
-   * Sentry.withIsolationScope(() => {
-   *    Sentry.setCurrentClient(client);
-   *    client.init();
-   * });
-   * ```
-   *
-   * If you are using the Hub to capture events like so:
-   *
-   * ```
-   * // OLD
-   * const client = new Client();
-   * const hub = new Hub(client);
-   * hub.captureException()
-   * ```
-   *
-   * instead capture isolated events as follows:
-   *
-   * ```
-   * // NEW
-   * const client = new Client();
-   * const scope = new Scope();
-   * scope.setClient(client);
-   * scope.captureException();
-   * ```
-   */
-   constructor(
-    client,
-    scope,
-    isolationScope,
-      _version = API_VERSION,
-  ) {this._version = _version;
-    let assignedScope;
-    if (!scope) {
-      assignedScope = new Scope();
-      assignedScope.setClient(client);
-    } else {
-      assignedScope = scope;
-    }
-
-    let assignedIsolationScope;
-    if (!isolationScope) {
-      assignedIsolationScope = new Scope();
-      assignedIsolationScope.setClient(client);
-    } else {
-      assignedIsolationScope = isolationScope;
-    }
-
-    this._stack = [{ scope: assignedScope }];
-
-    if (client) {
-      // eslint-disable-next-line deprecation/deprecation
-      this.bindClient(client);
-    }
-
-    this._isolationScope = assignedIsolationScope;
-  }
-
-  /**
-   * This binds the given client to the current scope.
-   * @param client An SDK client (client) instance.
-   *
-   * @deprecated Use `initAndBind()` directly, or `setCurrentClient()` and/or `client.init()` instead.
-   */
-   bindClient(client) {
-    // eslint-disable-next-line deprecation/deprecation
-    const top = this.getStackTop();
-    top.client = client;
-    top.scope.setClient(client);
-    if (client) {
-      client.init();
-    }
-  }
-
-  /**
-   * @inheritDoc
-   *
-   * @deprecated Use `Sentry.withScope()` instead.
-   */
-   withScope(callback) {
-    const scope = this._pushScope();
-
-    let maybePromiseResult;
-    try {
-      maybePromiseResult = callback(scope);
-    } catch (e) {
-      this._popScope();
-      throw e;
-    }
-
-    if (isThenable(maybePromiseResult)) {
-      // @ts-expect-error - isThenable returns the wrong type
-      return maybePromiseResult.then(
-        res => {
-          this._popScope();
-          return res;
-        },
-        e => {
-          this._popScope();
-          throw e;
-        },
-      );
-    }
-
-    this._popScope();
-    return maybePromiseResult;
-  }
-
-  /**
-   * @inheritDoc
-   *
-   * @deprecated Use `Sentry.getClient()` instead.
-   */
-   getClient() {
-    // eslint-disable-next-line deprecation/deprecation
-    return this.getStackTop().client ;
-  }
-
-  /**
-   * Returns the scope of the top stack.
-   *
-   * @deprecated Use `Sentry.getCurrentScope()` instead.
-   */
-   getScope() {
-    // eslint-disable-next-line deprecation/deprecation
-    return this.getStackTop().scope;
-  }
-
-  /**
-   * @deprecated Use `Sentry.getIsolationScope()` instead.
-   */
-   getIsolationScope() {
-    return this._isolationScope;
-  }
-
-  /**
-   * Returns the scope stack for domains or the process.
-   * @deprecated This will be removed in v8.
-   */
-   getStack() {
-    return this._stack;
-  }
-
-  /**
-   * Returns the topmost scope layer in the order domain > local > process.
-   * @deprecated This will be removed in v8.
-   */
-   getStackTop() {
-    return this._stack[this._stack.length - 1];
-  }
-
-  /**
-   * @inheritDoc
-   *
-   * @deprecated Use `Sentry.captureException()` instead.
-   */
-   captureException(exception, hint) {
-    const eventId = hint && hint.event_id ? hint.event_id : uuid4();
-    const syntheticException = new Error('Sentry syntheticException');
-    // eslint-disable-next-line deprecation/deprecation
-    this.getScope().captureException(exception, {
-      originalException: exception,
-      syntheticException,
-      ...hint,
-      event_id: eventId,
-    });
-
-    return eventId;
-  }
-
-  /**
-   * @inheritDoc
-   *
-   * @deprecated Use  `Sentry.captureMessage()` instead.
-   */
-   captureMessage(message, level, hint) {
-    const eventId = hint && hint.event_id ? hint.event_id : uuid4();
-    const syntheticException = new Error(message);
-    // eslint-disable-next-line deprecation/deprecation
-    this.getScope().captureMessage(message, level, {
-      originalException: message,
-      syntheticException,
-      ...hint,
-      event_id: eventId,
-    });
-
-    return eventId;
-  }
-
-  /**
-   * @inheritDoc
-   *
-   * @deprecated Use `Sentry.captureEvent()` instead.
-   */
-   captureEvent(event, hint) {
-    const eventId = hint && hint.event_id ? hint.event_id : uuid4();
-    // eslint-disable-next-line deprecation/deprecation
-    this.getScope().captureEvent(event, { ...hint, event_id: eventId });
-    return eventId;
-  }
-
-  /**
-   * @inheritDoc
-   *
-   * @deprecated Use `Sentry.addBreadcrumb()` instead.
-   */
-   addBreadcrumb(breadcrumb, hint) {
-    // eslint-disable-next-line deprecation/deprecation
-    const { client } = this.getStackTop();
-
-    if (!client) return;
-
-    const { beforeBreadcrumb = null, maxBreadcrumbs = DEFAULT_BREADCRUMBS$1 } =
-      (client.getOptions && client.getOptions()) || {};
-
-    if (maxBreadcrumbs <= 0) return;
-
-    const timestamp = dateTimestampInSeconds();
-    const mergedBreadcrumb = { timestamp, ...breadcrumb };
-    const finalBreadcrumb = beforeBreadcrumb
-      ? (consoleSandbox(() => beforeBreadcrumb(mergedBreadcrumb, hint)) )
-      : mergedBreadcrumb;
-
-    if (finalBreadcrumb === null) return;
-
-    client.emit('beforeAddBreadcrumb', finalBreadcrumb, hint);
-
-    // eslint-disable-next-line deprecation/deprecation
-    this.getIsolationScope().addBreadcrumb(finalBreadcrumb, maxBreadcrumbs);
-  }
-
-  /**
-   * @inheritDoc
-   * @deprecated Use `Sentry.setUser()` instead.
-   */
-   setUser(user) {
-    // eslint-disable-next-line deprecation/deprecation
-    this.getIsolationScope().setUser(user);
-  }
-
-  /**
-   * @inheritDoc
-   * @deprecated Use `Sentry.setTags()` instead.
-   */
-   setTags(tags) {
-    // eslint-disable-next-line deprecation/deprecation
-    this.getIsolationScope().setTags(tags);
-  }
-
-  /**
-   * @inheritDoc
-   * @deprecated Use `Sentry.setExtras()` instead.
-   */
-   setExtras(extras) {
-    // eslint-disable-next-line deprecation/deprecation
-    this.getIsolationScope().setExtras(extras);
-  }
-
-  /**
-   * @inheritDoc
-   * @deprecated Use `Sentry.setTag()` instead.
-   */
-   setTag(key, value) {
-    // eslint-disable-next-line deprecation/deprecation
-    this.getIsolationScope().setTag(key, value);
-  }
-
-  /**
-   * @inheritDoc
-   * @deprecated Use `Sentry.setExtra()` instead.
-   */
-   setExtra(key, extra) {
-    // eslint-disable-next-line deprecation/deprecation
-    this.getIsolationScope().setExtra(key, extra);
-  }
-
-  /**
-   * @inheritDoc
-   * @deprecated Use `Sentry.setContext()` instead.
-   */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-   setContext(name, context) {
-    // eslint-disable-next-line deprecation/deprecation
-    this.getIsolationScope().setContext(name, context);
-  }
-
-  /**
-   * @inheritDoc
-   * @deprecated Use `Sentry.getClient().getIntegrationByName()` instead.
-   */
-   getIntegration(integration) {
-    // eslint-disable-next-line deprecation/deprecation
-    const client = this.getClient();
-    if (!client) return null;
-    try {
-      return client.getIntegrationByName(integration.id) || null;
-    } catch (_oO) {
-      DEBUG_BUILD && logger.warn(`Cannot retrieve integration ${integration.id} from the current Hub`);
-      return null;
-    }
-  }
-
-  /**
-   * @inheritDoc
-   *
-   * @deprecated Use top level `captureSession` instead.
-   */
-   captureSession(endSession = false) {
-    // both send the update and pull the session from the scope
-    if (endSession) {
-      // eslint-disable-next-line deprecation/deprecation
-      return this.endSession();
-    }
-
-    // only send the update
-    this._sendSessionUpdate();
-  }
-
-  /**
-   * @inheritDoc
-   * @deprecated Use top level `endSession` instead.
-   */
-   endSession() {
-    // eslint-disable-next-line deprecation/deprecation
-    const layer = this.getStackTop();
-    const scope = layer.scope;
-    const session = scope.getSession();
-    if (session) {
-      closeSession(session);
-    }
-    this._sendSessionUpdate();
-
-    // the session is over; take it off of the scope
-    scope.setSession();
-  }
-
-  /**
-   * @inheritDoc
-   * @deprecated Use top level `startSession` instead.
-   */
-   startSession(context) {
-    // eslint-disable-next-line deprecation/deprecation
-    const { scope, client } = this.getStackTop();
-    const { release, environment = DEFAULT_ENVIRONMENT } = (client && client.getOptions()) || {};
-
-    // Will fetch userAgent if called from browser sdk
-    const { userAgent } = GLOBAL_OBJ.navigator || {};
-
-    const session = makeSession({
-      release,
-      environment,
-      user: scope.getUser(),
-      ...(userAgent && { userAgent }),
-      ...context,
-    });
-
-    // End existing session if there's one
-    const currentSession = scope.getSession && scope.getSession();
-    if (currentSession && currentSession.status === 'ok') {
-      updateSession(currentSession, { status: 'exited' });
-    }
-    // eslint-disable-next-line deprecation/deprecation
-    this.endSession();
-
-    // Afterwards we set the new session on the scope
-    scope.setSession(session);
-
-    return session;
-  }
-
-  /**
-   * Sends the current Session on the scope
-   */
-   _sendSessionUpdate() {
-    // eslint-disable-next-line deprecation/deprecation
-    const { scope, client } = this.getStackTop();
-
-    const session = scope.getSession();
-    if (session && client && client.captureSession) {
-      client.captureSession(session);
-    }
-  }
-
-  /**
-   * Push a scope to the stack.
-   */
-   _pushScope() {
-    // We want to clone the content of prev scope
-    // eslint-disable-next-line deprecation/deprecation
-    const scope = this.getScope().clone();
-    // eslint-disable-next-line deprecation/deprecation
-    this.getStack().push({
-      // eslint-disable-next-line deprecation/deprecation
-      client: this.getClient(),
-      scope,
-    });
-    return scope;
-  }
-
-  /**
-   * Pop a scope from the stack.
-   */
-   _popScope() {
-    // eslint-disable-next-line deprecation/deprecation
-    if (this.getStack().length <= 1) return false;
-    // eslint-disable-next-line deprecation/deprecation
-    return !!this.getStack().pop();
-  }
-}
-
 /** Get the default current scope. */
 function getDefaultCurrentScope() {
   return getGlobalSingleton('defaultCurrentScope', () => new Scope());
@@ -5054,79 +4588,6 @@ function getDefaultCurrentScope() {
 /** Get the default isolation scope. */
 function getDefaultIsolationScope() {
   return getGlobalSingleton('defaultIsolationScope', () => new Scope());
-}
-
-/**
- * Get the global hub.
- * This will be removed during the v8 cycle and is only here to make migration easier.
- */
-// eslint-disable-next-line deprecation/deprecation
-function getGlobalHub() {
-  const registry = getMainCarrier();
-  // eslint-disable-next-line deprecation/deprecation
-  const sentry = getSentryCarrier(registry) ;
-
-  // If there's no hub, or its an old API, assign a new one
-  if (sentry.hub) {
-    return sentry.hub;
-  }
-
-  // eslint-disable-next-line deprecation/deprecation
-  sentry.hub = new Hub(undefined, getDefaultCurrentScope(), getDefaultIsolationScope());
-  return sentry.hub;
-}
-
-/**
- * Get the current async context strategy.
- * If none has been setup, the default will be used.
- */
-function getAsyncContextStrategy(carrier) {
-  const sentry = getSentryCarrier(carrier);
-
-  if (sentry.acs) {
-    return sentry.acs;
-  }
-
-  // Otherwise, use the default one
-  return getHubStackAsyncContextStrategy();
-}
-
-function withScope$1(callback) {
-  // eslint-disable-next-line deprecation/deprecation
-  return getGlobalHub().withScope(callback);
-}
-
-function withSetScope(scope, callback) {
-  // eslint-disable-next-line deprecation/deprecation
-  const hub = getGlobalHub() ;
-  // eslint-disable-next-line deprecation/deprecation
-  return hub.withScope(() => {
-    // eslint-disable-next-line deprecation/deprecation
-    hub.getStackTop().scope = scope ;
-    return callback(scope);
-  });
-}
-
-function withIsolationScope$1(callback) {
-  // eslint-disable-next-line deprecation/deprecation
-  return getGlobalHub().withScope(() => {
-    // eslint-disable-next-line deprecation/deprecation
-    return callback(getGlobalHub().getIsolationScope());
-  });
-}
-
-/* eslint-disable deprecation/deprecation */
-function getHubStackAsyncContextStrategy() {
-  return {
-    withIsolationScope: withIsolationScope$1,
-    withScope: withScope$1,
-    withSetScope,
-    withSetIsolationScope: (_isolationScope, callback) => {
-      return withIsolationScope$1(callback);
-    },
-    getCurrentScope: () => getGlobalHub().getScope(),
-    getIsolationScope: () => getGlobalHub().getIsolationScope(),
-  };
 }
 
 /**
@@ -5165,7 +4626,7 @@ function getGlobalScope() {
 /**
  * Either creates a new active scope, or sets the given scope as active scope in the given callback.
  */
-function withScope(
+function withScope$1(
   ...rest
 ) {
   const carrier = getMainCarrier();
@@ -5199,7 +4660,7 @@ function withScope(
 /**
  * Either creates a new active isolation scope, or sets the given isolation scope as active scope in the given callback.
  */
-function withIsolationScope(
+function withIsolationScope$1(
   ...rest
 
 ) {
@@ -5225,6 +4686,189 @@ function withIsolationScope(
  */
 function getClient() {
   return getCurrentScope().getClient();
+}
+
+/**
+ * This is an object that holds a stack of scopes.
+ */
+class AsyncContextStack {
+
+   constructor(scope, isolationScope) {
+    let assignedScope;
+    if (!scope) {
+      assignedScope = new Scope();
+    } else {
+      assignedScope = scope;
+    }
+
+    let assignedIsolationScope;
+    if (!isolationScope) {
+      assignedIsolationScope = new Scope();
+    } else {
+      assignedIsolationScope = isolationScope;
+    }
+
+    this._stack = [{ scope: assignedScope }];
+    this._isolationScope = assignedIsolationScope;
+  }
+
+  /**
+   * Fork a scope for the stack.
+   */
+   withScope(callback) {
+    const scope = this._pushScope();
+
+    let maybePromiseResult;
+    try {
+      maybePromiseResult = callback(scope);
+    } catch (e) {
+      this._popScope();
+      throw e;
+    }
+
+    if (isThenable(maybePromiseResult)) {
+      // @ts-expect-error - isThenable returns the wrong type
+      return maybePromiseResult.then(
+        res => {
+          this._popScope();
+          return res;
+        },
+        e => {
+          this._popScope();
+          throw e;
+        },
+      );
+    }
+
+    this._popScope();
+    return maybePromiseResult;
+  }
+
+  /**
+   * Get the client of the stack.
+   */
+   getClient() {
+    return this.getStackTop().client ;
+  }
+
+  /**
+   * Returns the scope of the top stack.
+   */
+   getScope() {
+    return this.getStackTop().scope;
+  }
+
+  /**
+   * Get the isolation scope for the stack.
+   */
+   getIsolationScope() {
+    return this._isolationScope;
+  }
+
+  /**
+   * Returns the scope stack for domains or the process.
+   */
+   getStack() {
+    return this._stack;
+  }
+
+  /**
+   * Returns the topmost scope layer in the order domain > local > process.
+   */
+   getStackTop() {
+    return this._stack[this._stack.length - 1];
+  }
+
+  /**
+   * Push a scope to the stack.
+   */
+   _pushScope() {
+    // We want to clone the content of prev scope
+    const scope = this.getScope().clone();
+    this.getStack().push({
+      client: this.getClient(),
+      scope,
+    });
+    return scope;
+  }
+
+  /**
+   * Pop a scope from the stack.
+   */
+   _popScope() {
+    if (this.getStack().length <= 1) return false;
+    return !!this.getStack().pop();
+  }
+}
+
+/**
+ * Get the global async context stack.
+ * This will be removed during the v8 cycle and is only here to make migration easier.
+ */
+function getAsyncContextStack() {
+  const registry = getMainCarrier();
+
+  // For now we continue to keep this as `hub` on the ACS,
+  // as e.g. the Loader Script relies on this.
+  // Eventually we may change this if/when we update the loader to not require this field anymore
+  // Related, we also write to `hub` in {@link ./../sdk.ts registerClientOnGlobalHub}
+  const sentry = getSentryCarrier(registry) ;
+
+  if (sentry.hub) {
+    return sentry.hub;
+  }
+
+  sentry.hub = new AsyncContextStack(getDefaultCurrentScope(), getDefaultIsolationScope());
+  return sentry.hub;
+}
+
+function withScope(callback) {
+  return getAsyncContextStack().withScope(callback);
+}
+
+function withSetScope(scope, callback) {
+  const hub = getAsyncContextStack() ;
+  return hub.withScope(() => {
+    hub.getStackTop().scope = scope;
+    return callback(scope);
+  });
+}
+
+function withIsolationScope(callback) {
+  return getAsyncContextStack().withScope(() => {
+    return callback(getAsyncContextStack().getIsolationScope());
+  });
+}
+
+/**
+ * Get the stack-based async context strategy.
+ */
+function getStackAsyncContextStrategy() {
+  return {
+    withIsolationScope,
+    withScope,
+    withSetScope,
+    withSetIsolationScope: (_isolationScope, callback) => {
+      return withIsolationScope(callback);
+    },
+    getCurrentScope: () => getAsyncContextStack().getScope(),
+    getIsolationScope: () => getAsyncContextStack().getIsolationScope(),
+  };
+}
+
+/**
+ * Get the current async context strategy.
+ * If none has been setup, the default will be used.
+ */
+function getAsyncContextStrategy(carrier) {
+  const sentry = getSentryCarrier(carrier);
+
+  if (sentry.acs) {
+    return sentry.acs;
+  }
+
+  // Otherwise, use the default one (stack)
+  return getStackAsyncContextStrategy();
 }
 
 /**
@@ -5821,6 +5465,8 @@ function maybeHandlePromiseRejection(
   return value;
 }
 
+const DEFAULT_ENVIRONMENT = 'production';
+
 /**
  * If you change this value, also update the terser plugin config to
  * avoid minification of the object property!
@@ -6381,7 +6027,7 @@ function startSpan(context, callback) {
 
   const spanContext = normalizeContext(context);
 
-  return withScope(context.scope, scope => {
+  return withScope$1(context.scope, scope => {
     const parentSpan = getParentSpan(scope);
 
     const shouldSkipSpan = context.onlyIfParent && !parentSpan;
@@ -6428,7 +6074,7 @@ function startSpanManual(context, callback) {
 
   const spanContext = normalizeContext(context);
 
-  return withScope(context.scope, scope => {
+  return withScope$1(context.scope, scope => {
     const parentSpan = getParentSpan(scope);
 
     const shouldSkipSpan = context.onlyIfParent && !parentSpan;
@@ -6511,7 +6157,7 @@ const continueTrace = (
 ,
   callback,
 ) => {
-  return withScope(scope => {
+  return withScope$1(scope => {
     const propagationContext = propagationContextFromHeaders(sentryTrace, baggage);
     scope.setPropagationContext(propagationContext);
     return callback();
@@ -8973,18 +8619,15 @@ function setCurrentClient(client) {
 }
 
 /**
- * Unfortunately, we still have to manually bind the client to the "hub" set on the global
+ * Unfortunately, we still have to manually bind the client to the "hub" property set on the global
  * Sentry carrier object. This is because certain scripts (e.g. our loader script) obtain
  * the client via `window.__SENTRY__.hub.getClient()`.
  *
- * @see {@link hub.ts getGlobalHub}
+ * @see {@link ./asyncContext/stackStrategy.ts getAsyncContextStack}
  */
 function registerClientOnGlobalHub(client) {
-  // eslint-disable-next-line deprecation/deprecation
   const sentryGlobal = getSentryCarrier(getMainCarrier()) ;
-  // eslint-disable-next-line deprecation/deprecation
   if (sentryGlobal.hub && typeof sentryGlobal.hub.getStackTop === 'function') {
-    // eslint-disable-next-line deprecation/deprecation
     sentryGlobal.hub.getStackTop().client = client;
   }
 }
@@ -9081,6 +8724,8 @@ function getEventForEnvelopeItem(item, type) {
 
   return Array.isArray(item) ? (item )[1] : undefined;
 }
+
+const SDK_VERSION = '8.0.0-beta.2';
 
 /**
  * Default maximum number of breadcrumbs added to an event. Can be overwritten
@@ -9565,7 +9210,7 @@ function consoleHandler(args, level) {
     },
   };
 
-  withScope(scope => {
+  withScope$1(scope => {
     scope.addEventProcessor(event => {
       event.logger = 'console';
 
@@ -11620,5 +11265,5 @@ const _denoCronIntegration = (() => {
  */
 const denoCronIntegration = defineIntegration(_denoCronIntegration);
 
-export { DenoClient, SDK_VERSION, SEMANTIC_ATTRIBUTE_SENTRY_OP, SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE, SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, Scope, addBreadcrumb, addEventProcessor, breadcrumbsIntegration, captureCheckIn, captureConsoleIntegration, captureEvent, captureException, captureMessage, captureSession, close, contextLinesIntegration, continueTrace, createTransport, debugIntegration, dedupeIntegration, denoContextIntegration, denoCronIntegration, endSession, extraErrorDataIntegration, flush, functionToStringIntegration, getActiveSpan, getClient, getCurrentScope, getDefaultIntegrations, getGlobalScope, getIsolationScope, getRootSpan, getSpanStatusFromHttpCode, globalHandlersIntegration, inboundFiltersIntegration, init, isInitialized, linkedErrorsIntegration, metricsDefault as metrics, normalizePathsIntegration, requestDataIntegration, rewriteFramesIntegration, sessionTimingIntegration, setContext, setCurrentClient, setExtra, setExtras, setHttpStatus, setMeasurement, setTag, setTags, setUser, spanToJSON, spanToTraceHeader, startInactiveSpan, startSession, startSpan, startSpanManual, withIsolationScope, withMonitor, withScope };
+export { DenoClient, SDK_VERSION, SEMANTIC_ATTRIBUTE_SENTRY_OP, SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE, SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, Scope, addBreadcrumb, addEventProcessor, breadcrumbsIntegration, captureCheckIn, captureConsoleIntegration, captureEvent, captureException, captureMessage, captureSession, close, contextLinesIntegration, continueTrace, createTransport, debugIntegration, dedupeIntegration, denoContextIntegration, denoCronIntegration, endSession, extraErrorDataIntegration, flush, functionToStringIntegration, getActiveSpan, getClient, getCurrentScope, getDefaultIntegrations, getGlobalScope, getIsolationScope, getRootSpan, getSpanStatusFromHttpCode, globalHandlersIntegration, inboundFiltersIntegration, init, isInitialized, linkedErrorsIntegration, metricsDefault as metrics, normalizePathsIntegration, requestDataIntegration, rewriteFramesIntegration, sessionTimingIntegration, setContext, setCurrentClient, setExtra, setExtras, setHttpStatus, setMeasurement, setTag, setTags, setUser, spanToJSON, spanToTraceHeader, startInactiveSpan, startSession, startSpan, startSpanManual, withIsolationScope$1 as withIsolationScope, withMonitor, withScope$1 as withScope };
 //# sourceMappingURL=index.mjs.map
