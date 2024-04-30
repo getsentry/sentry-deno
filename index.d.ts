@@ -358,6 +358,8 @@ interface SpanJSON {
     profile_id?: string;
     exclusive_time?: number;
     measurements?: Measurements;
+    is_segment?: boolean;
+    segment_id?: string;
 }
 type TraceFlagNone = 0;
 type TraceFlagSampled = 1;
@@ -1529,7 +1531,9 @@ type CheckInEnvelopeHeaders = {
 type ClientReportEnvelopeHeaders = BaseEnvelopeHeaders;
 type ReplayEnvelopeHeaders = BaseEnvelopeHeaders;
 type StatsdEnvelopeHeaders = BaseEnvelopeHeaders;
-type SpanEnvelopeHeaders = BaseEnvelopeHeaders;
+type SpanEnvelopeHeaders = BaseEnvelopeHeaders & {
+    trace?: DynamicSamplingContext;
+};
 type EventEnvelope = BaseEnvelope<EventEnvelopeHeaders, EventItem | AttachmentItem | UserFeedbackItem | FeedbackItem | ProfileItem>;
 type SessionEnvelope = BaseEnvelope<SessionEnvelopeHeaders, SessionItem>;
 type ClientReportEnvelope = BaseEnvelope<ClientReportEnvelopeHeaders, ClientReportItem>;
@@ -1857,6 +1861,23 @@ interface StartSpanOptions {
     forceTransaction?: boolean;
     /** Attributes for the span. */
     attributes?: SpanAttributes;
+    /**
+     * Experimental options without any stability guarantees. Use with caution!
+     */
+    experimental?: {
+        /**
+         * If set to true, always start a standalone span which will be sent as a
+         * standalone segment span envelope instead of a transaction envelope.
+         *
+         * @internal this option is currently experimental and should only be
+         * used within SDK code. It might be removed or changed in the future.
+         * The payload ("envelope") of the resulting request sending the span to
+         * Sentry might change at any time.
+         *
+         * @hidden
+         */
+        standalone?: boolean;
+    };
 }
 
 /**
@@ -1872,31 +1893,37 @@ interface Client<O extends ClientOptions = ClientOptions> {
     /**
      * Captures an exception event and sends it to Sentry.
      *
+     * Unlike `captureException` exported from every SDK, this method requires that you pass it the current scope.
+     *
      * @param exception An exception-like object.
      * @param hint May contain additional information about the original exception.
-     * @param scope An optional scope containing event metadata.
+     * @param currentScope An optional scope containing event metadata.
      * @returns The event id
      */
-    captureException(exception: any, hint?: EventHint, scope?: Scope$1): string | undefined;
+    captureException(exception: any, hint?: EventHint, currentScope?: Scope$1): string;
     /**
      * Captures a message event and sends it to Sentry.
+     *
+     * Unlike `captureMessage` exported from every SDK, this method requires that you pass it the current scope.
      *
      * @param message The message to send to Sentry.
      * @param level Define the level of the message.
      * @param hint May contain additional information about the original exception.
-     * @param scope An optional scope containing event metadata.
+     * @param currentScope An optional scope containing event metadata.
      * @returns The event id
      */
-    captureMessage(message: string, level?: SeverityLevel, hint?: EventHint, scope?: Scope$1): string | undefined;
+    captureMessage(message: string, level?: SeverityLevel, hint?: EventHint, currentScope?: Scope$1): string;
     /**
      * Captures a manually created event and sends it to Sentry.
      *
+     * Unlike `captureEvent` exported from every SDK, this method requires that you pass it the current scope.
+     *
      * @param event The event to send to Sentry.
      * @param hint May contain additional information about the original exception.
-     * @param scope An optional scope containing event metadata.
+     * @param currentScope An optional scope containing event metadata.
      * @returns The event id
      */
-    captureEvent(event: Event, hint?: EventHint, scope?: Scope$1): string | undefined;
+    captureEvent(event: Event, hint?: EventHint, currentScope?: Scope$1): string;
     /**
      * Captures a session
      *
@@ -2625,15 +2652,15 @@ declare abstract class BaseClient<O extends ClientOptions> implements Client<O> 
     /**
      * @inheritDoc
      */
-    captureException(exception: any, hint?: EventHint, scope?: Scope): string | undefined;
+    captureException(exception: any, hint?: EventHint, scope?: Scope): string;
     /**
      * @inheritDoc
      */
-    captureMessage(message: ParameterizedString, level?: SeverityLevel, hint?: EventHint, scope?: Scope): string | undefined;
+    captureMessage(message: ParameterizedString, level?: SeverityLevel, hint?: EventHint, currentScope?: Scope): string;
     /**
      * @inheritDoc
      */
-    captureEvent(event: Event, hint?: EventHint, scope?: Scope): string | undefined;
+    captureEvent(event: Event, hint?: EventHint, currentScope?: Scope): string;
     /**
      * @inheritDoc
      */
@@ -2806,10 +2833,10 @@ declare abstract class BaseClient<O extends ClientOptions> implements Client<O> 
      *
      * @param event The original event.
      * @param hint May contain additional information about the original exception.
-     * @param scope A scope containing event metadata.
+     * @param currentScope A scope containing event metadata.
      * @returns A new event with more information.
      */
-    protected _prepareEvent(event: Event, hint: EventHint, scope?: Scope, isolationScope?: Scope$1): PromiseLike<Event | null>;
+    protected _prepareEvent(event: Event, hint: EventHint, currentScope?: Scope, isolationScope?: Scope$1): PromiseLike<Event | null>;
     /**
      * Processes the event and logs an error in case of rejection
      * @param event
@@ -2827,10 +2854,10 @@ declare abstract class BaseClient<O extends ClientOptions> implements Client<O> 
      *
      * @param event The event to send to Sentry.
      * @param hint May contain additional information about the original exception.
-     * @param scope A scope containing event metadata.
+     * @param currentScope A scope containing event metadata.
      * @returns A SyncPromise that resolves with the event or rejects in case event was/will not be send.
      */
-    protected _processEvent(event: Event, hint: EventHint, scope?: Scope): PromiseLike<Event>;
+    protected _processEvent(event: Event, hint: EventHint, currentScope?: Scope): PromiseLike<Event>;
     /**
      * Occupies the client with processing and event
      */
@@ -2912,11 +2939,11 @@ declare class ServerRuntimeClient<O extends ClientOptions & ServerRuntimeClientO
     /**
      * @inheritDoc
      */
-    captureException(exception: any, hint?: EventHint, scope?: Scope): string | undefined;
+    captureException(exception: any, hint?: EventHint, scope?: Scope): string;
     /**
      * @inheritDoc
      */
-    captureEvent(event: Event, hint?: EventHint, scope?: Scope): string | undefined;
+    captureEvent(event: Event, hint?: EventHint, scope?: Scope): string;
     /**
      *
      * @inheritdoc
@@ -3209,7 +3236,7 @@ declare function getClient<C extends Client>(): C | undefined;
  */
 declare function createTransport(options: InternalBaseTransportOptions, makeRequest: TransportRequestExecutor, buffer?: PromiseBuffer<TransportMakeRequestResponse>): Transport;
 
-declare const SDK_VERSION = "8.0.0-beta.4";
+declare const SDK_VERSION = "8.0.0-beta.5";
 
 /**
  * Records a new breadcrumb which will be attached to future events.

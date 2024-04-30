@@ -3404,6 +3404,17 @@ function concatBuffers(buffers) {
 }
 
 /**
+ * Creates envelope item for a single span
+ */
+function createSpanEnvelopeItem(spanJson) {
+  const spanHeaders = {
+    type: 'span',
+  };
+
+  return [spanHeaders, spanJson];
+}
+
+/**
  * Creates attachment envelope items
  */
 function createAttachmentEnvelopeItem(attachment) {
@@ -5724,6 +5735,97 @@ function sampleSpan(
 }
 
 /**
+ * Apply SdkInfo (name, version, packages, integrations) to the corresponding event key.
+ * Merge with existing data if any.
+ **/
+function enhanceEventWithSdkInfo(event, sdkInfo) {
+  if (!sdkInfo) {
+    return event;
+  }
+  event.sdk = event.sdk || {};
+  event.sdk.name = event.sdk.name || sdkInfo.name;
+  event.sdk.version = event.sdk.version || sdkInfo.version;
+  event.sdk.integrations = [...(event.sdk.integrations || []), ...(sdkInfo.integrations || [])];
+  event.sdk.packages = [...(event.sdk.packages || []), ...(sdkInfo.packages || [])];
+  return event;
+}
+
+/** Creates an envelope from a Session */
+function createSessionEnvelope(
+  session,
+  dsn,
+  metadata,
+  tunnel,
+) {
+  const sdkInfo = getSdkMetadataForEnvelopeHeader(metadata);
+  const envelopeHeaders = {
+    sent_at: new Date().toISOString(),
+    ...(sdkInfo && { sdk: sdkInfo }),
+    ...(!!tunnel && dsn && { dsn: dsnToString(dsn) }),
+  };
+
+  const envelopeItem =
+    'aggregates' in session ? [{ type: 'sessions' }, session] : [{ type: 'session' }, session.toJSON()];
+
+  return createEnvelope(envelopeHeaders, [envelopeItem]);
+}
+
+/**
+ * Create an Envelope from an event.
+ */
+function createEventEnvelope(
+  event,
+  dsn,
+  metadata,
+  tunnel,
+) {
+  const sdkInfo = getSdkMetadataForEnvelopeHeader(metadata);
+
+  /*
+    Note: Due to TS, event.type may be `replay_event`, theoretically.
+    In practice, we never call `createEventEnvelope` with `replay_event` type,
+    and we'd have to adjut a looot of types to make this work properly.
+    We want to avoid casting this around, as that could lead to bugs (e.g. when we add another type)
+    So the safe choice is to really guard against the replay_event type here.
+  */
+  const eventType = event.type && event.type !== 'replay_event' ? event.type : 'event';
+
+  enhanceEventWithSdkInfo(event, metadata && metadata.sdk);
+
+  const envelopeHeaders = createEventEnvelopeHeaders(event, sdkInfo, tunnel, dsn);
+
+  // Prevent this data (which, if it exists, was used in earlier steps in the processing pipeline) from being sent to
+  // sentry. (Note: Our use of this property comes and goes with whatever we might be debugging, whatever hacks we may
+  // have temporarily added, etc. Even if we don't happen to be using it at some point in the future, let's not get rid
+  // of this `delete`, lest we miss putting it back in the next time the property is in use.)
+  delete event.sdkProcessingMetadata;
+
+  const eventItem = [{ type: eventType }, event];
+  return createEnvelope(envelopeHeaders, [eventItem]);
+}
+
+/**
+ * Create envelope from Span item.
+ */
+function createSpanEnvelope(spans) {
+  function dscHasRequiredProps(dsc) {
+    return !!dsc.trace_id && !!dsc.public_key;
+  }
+
+  // For the moment we'll obtain the DSC from the first span in the array
+  // This might need to be changed if we permit sending multiple spans from
+  // different segments in one envelope
+  const dsc = getDynamicSamplingContextFromSpan(spans[0]);
+
+  const headers = {
+    sent_at: new Date().toISOString(),
+    ...(dscHasRequiredProps(dsc) && { trace: dsc }),
+  };
+  const items = spans.map(span => createSpanEnvelopeItem(spanToJSON(span)));
+  return createEnvelope(headers, items);
+}
+
+/**
  * Adds a measurement to the current active transaction.
  */
 function setMeasurement(name, value, unit) {
@@ -5773,6 +5875,8 @@ class SentrySpan  {
 
   /** The timed events added to this span. */
 
+  /** if true, treat span as a standalone span (not part of a transaction) */
+
   /**
    * You should never call the constructor manually, always use `Sentry.startSpan()`
    * or other span methods.
@@ -5811,6 +5915,8 @@ class SentrySpan  {
     if (this._endTime) {
       this._onSpanEnded();
     }
+
+    this._isStandaloneSpan = spanContext.isStandalone;
   }
 
   /** @inheritdoc */
@@ -5903,6 +6009,8 @@ class SentrySpan  {
       profile_id: this._attributes[SEMANTIC_ATTRIBUTE_PROFILE_ID] ,
       exclusive_time: this._attributes[SEMANTIC_ATTRIBUTE_EXCLUSIVE_TIME] ,
       measurements: timedEventsToMeasurements(this._events),
+      is_segment: (this._isStandaloneSpan && getRootSpan(this) === this) || undefined,
+      segment_id: this._isStandaloneSpan ? getRootSpan(this).spanContext().spanId : undefined,
     });
   }
 
@@ -5935,6 +6043,18 @@ class SentrySpan  {
     return this;
   }
 
+  /**
+   * This method should generally not be used,
+   * but for now we need a way to publicly check if the `_isStandaloneSpan` flag is set.
+   * USE THIS WITH CAUTION!
+   * @internal
+   * @hidden
+   * @experimental
+   */
+   isStandaloneSpan() {
+    return !!this._isStandaloneSpan;
+  }
+
   /** Emit `spanEnd` when the span is ended. */
    _onSpanEnded() {
     const client = getClient();
@@ -5942,13 +6062,25 @@ class SentrySpan  {
       client.emit('spanEnd', this);
     }
 
-    // If this is a root span, send it when it is endedf
-    if (this === getRootSpan(this)) {
-      const transactionEvent = this._convertSpanToTransaction();
-      if (transactionEvent) {
-        const scope = getCapturedScopesOnSpan(this).scope || getCurrentScope();
-        scope.captureEvent(transactionEvent);
-      }
+    // A segment span is basically the root span of a local span tree.
+    // So for now, this is either what we previously refer to as the root span,
+    // or a standalone span.
+    const isSegmentSpan = this._isStandaloneSpan || this === getRootSpan(this);
+
+    if (!isSegmentSpan) {
+      return;
+    }
+
+    // if this is a standalone span, we send it immediately
+    if (this._isStandaloneSpan) {
+      sendSpanEnvelope(createSpanEnvelope([this]));
+      return;
+    }
+
+    const transactionEvent = this._convertSpanToTransaction();
+    if (transactionEvent) {
+      const scope = getCapturedScopesOnSpan(this).scope || getCurrentScope();
+      scope.captureEvent(transactionEvent);
     }
   }
 
@@ -5981,8 +6113,8 @@ class SentrySpan  {
       return undefined;
     }
 
-    // The transaction span itself should be filtered out
-    const finishedSpans = getSpanDescendants(this).filter(span => span !== this);
+    // The transaction span itself as well as any potential standalone spans should be filtered out
+    const finishedSpans = getSpanDescendants(this).filter(span => span !== this && !isStandaloneSpan(span));
 
     const spans = finishedSpans.map(span => spanToJSON(span)).filter(isFullFinishedSpan);
 
@@ -6034,6 +6166,25 @@ function isFullFinishedSpan(input) {
   return !!input.start_timestamp && !!input.timestamp && !!input.span_id && !!input.trace_id;
 }
 
+/** `SentrySpan`s can be sent as a standalone span rather than belonging to a transaction */
+function isStandaloneSpan(span) {
+  return span instanceof SentrySpan && span.isStandaloneSpan();
+}
+
+function sendSpanEnvelope(envelope) {
+  const client = getClient();
+  if (!client) {
+    return;
+  }
+
+  const transport = client.getTransport();
+  if (transport) {
+    transport.send(envelope).then(null, reason => {
+      DEBUG_BUILD && logger.error('Error while sending span:', reason);
+    });
+  }
+}
+
 const SUPPRESS_TRACING_KEY = '__SENTRY_SUPPRESS_TRACING__';
 
 /**
@@ -6060,7 +6211,7 @@ function startSpan(context, callback) {
     const shouldSkipSpan = context.onlyIfParent && !parentSpan;
     const activeSpan = shouldSkipSpan
       ? new SentryNonRecordingSpan()
-      : createChildSpanOrTransaction({
+      : createChildOrRootSpan({
           parentSpan,
           spanContext,
           forceTransaction: context.forceTransaction,
@@ -6107,7 +6258,7 @@ function startSpanManual(context, callback) {
     const shouldSkipSpan = context.onlyIfParent && !parentSpan;
     const activeSpan = shouldSkipSpan
       ? new SentryNonRecordingSpan()
-      : createChildSpanOrTransaction({
+      : createChildOrRootSpan({
           parentSpan,
           spanContext,
           forceTransaction: context.forceTransaction,
@@ -6159,7 +6310,7 @@ function startInactiveSpan(context) {
     return new SentryNonRecordingSpan();
   }
 
-  return createChildSpanOrTransaction({
+  return createChildOrRootSpan({
     parentSpan,
     spanContext,
     forceTransaction: context.forceTransaction,
@@ -6191,7 +6342,7 @@ const continueTrace = (
   });
 };
 
-function createChildSpanOrTransaction({
+function createChildOrRootSpan({
   parentSpan,
   spanContext,
   forceTransaction,
@@ -6267,14 +6418,20 @@ function createChildSpanOrTransaction({
  * Eventually the StartSpanOptions will be more aligned with OpenTelemetry.
  */
 function normalizeContext(context) {
+  const exp = context.experimental || {};
+  const initialCtx = {
+    isStandalone: exp.standalone,
+    ...context,
+  };
+
   if (context.startTime) {
-    const ctx = { ...context };
+    const ctx = { ...initialCtx };
     ctx.startTimestamp = spanTimeInputToSeconds(context.startTime);
     delete ctx.startTime;
     return ctx;
   }
 
-  return context;
+  return initialCtx;
 }
 
 function getAcs() {
@@ -6363,76 +6520,6 @@ function getParentSpan(scope) {
   }
 
   return span;
-}
-
-/**
- * Apply SdkInfo (name, version, packages, integrations) to the corresponding event key.
- * Merge with existing data if any.
- **/
-function enhanceEventWithSdkInfo(event, sdkInfo) {
-  if (!sdkInfo) {
-    return event;
-  }
-  event.sdk = event.sdk || {};
-  event.sdk.name = event.sdk.name || sdkInfo.name;
-  event.sdk.version = event.sdk.version || sdkInfo.version;
-  event.sdk.integrations = [...(event.sdk.integrations || []), ...(sdkInfo.integrations || [])];
-  event.sdk.packages = [...(event.sdk.packages || []), ...(sdkInfo.packages || [])];
-  return event;
-}
-
-/** Creates an envelope from a Session */
-function createSessionEnvelope(
-  session,
-  dsn,
-  metadata,
-  tunnel,
-) {
-  const sdkInfo = getSdkMetadataForEnvelopeHeader(metadata);
-  const envelopeHeaders = {
-    sent_at: new Date().toISOString(),
-    ...(sdkInfo && { sdk: sdkInfo }),
-    ...(!!tunnel && dsn && { dsn: dsnToString(dsn) }),
-  };
-
-  const envelopeItem =
-    'aggregates' in session ? [{ type: 'sessions' }, session] : [{ type: 'session' }, session.toJSON()];
-
-  return createEnvelope(envelopeHeaders, [envelopeItem]);
-}
-
-/**
- * Create an Envelope from an event.
- */
-function createEventEnvelope(
-  event,
-  dsn,
-  metadata,
-  tunnel,
-) {
-  const sdkInfo = getSdkMetadataForEnvelopeHeader(metadata);
-
-  /*
-    Note: Due to TS, event.type may be `replay_event`, theoretically.
-    In practice, we never call `createEventEnvelope` with `replay_event` type,
-    and we'd have to adjut a looot of types to make this work properly.
-    We want to avoid casting this around, as that could lead to bugs (e.g. when we add another type)
-    So the safe choice is to really guard against the replay_event type here.
-  */
-  const eventType = event.type && event.type !== 'replay_event' ? event.type : 'event';
-
-  enhanceEventWithSdkInfo(event, metadata && metadata.sdk);
-
-  const envelopeHeaders = createEventEnvelopeHeaders(event, sdkInfo, tunnel, dsn);
-
-  // Prevent this data (which, if it exists, was used in earlier steps in the processing pipeline) from being sent to
-  // sentry. (Note: Our use of this property comes and goes with whatever we might be debugging, whatever hacks we may
-  // have temporarily added, etc. Even if we don't happen to be using it at some point in the future, let's not get rid
-  // of this `delete`, lest we miss putting it back in the next time the property is in use.)
-  delete event.sdkProcessingMetadata;
-
-  const eventItem = [{ type: eventType }, event];
-  return createEnvelope(envelopeHeaders, [eventItem]);
 }
 
 /**
@@ -7152,28 +7239,30 @@ function withMonitor(
     captureCheckIn({ monitorSlug, status, checkInId, duration: timestampInSeconds() - now });
   }
 
-  let maybePromiseResult;
-  try {
-    maybePromiseResult = callback();
-  } catch (e) {
-    finishCheckIn('error');
-    throw e;
-  }
+  return withIsolationScope$1(() => {
+    let maybePromiseResult;
+    try {
+      maybePromiseResult = callback();
+    } catch (e) {
+      finishCheckIn('error');
+      throw e;
+    }
 
-  if (isThenable(maybePromiseResult)) {
-    Promise.resolve(maybePromiseResult).then(
-      () => {
-        finishCheckIn('ok');
-      },
-      () => {
-        finishCheckIn('error');
-      },
-    );
-  } else {
-    finishCheckIn('ok');
-  }
+    if (isThenable(maybePromiseResult)) {
+      Promise.resolve(maybePromiseResult).then(
+        () => {
+          finishCheckIn('ok');
+        },
+        () => {
+          finishCheckIn('error');
+        },
+      );
+    } else {
+      finishCheckIn('ok');
+    }
 
-  return maybePromiseResult;
+    return maybePromiseResult;
+  });
 }
 
 /**
@@ -7697,23 +7786,26 @@ class BaseClient {
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
    captureException(exception, hint, scope) {
+    const eventId = uuid4();
+
     // ensure we haven't captured this very object before
     if (checkOrSetAlreadyCaught(exception)) {
       DEBUG_BUILD && logger.log(ALREADY_SEEN_ERROR);
-      return;
+      return eventId;
     }
 
-    let eventId = hint && hint.event_id;
+    const hintWithEventId = {
+      event_id: eventId,
+      ...hint,
+    };
 
     this._process(
-      this.eventFromException(exception, hint)
-        .then(event => this._captureEvent(event, hint, scope))
-        .then(result => {
-          eventId = result;
-        }),
+      this.eventFromException(exception, hintWithEventId).then(event =>
+        this._captureEvent(event, hintWithEventId, scope),
+      ),
     );
 
-    return eventId;
+    return hintWithEventId.event_id;
   }
 
   /**
@@ -7723,49 +7815,47 @@ class BaseClient {
     message,
     level,
     hint,
-    scope,
+    currentScope,
   ) {
-    let eventId = hint && hint.event_id;
+    const hintWithEventId = {
+      event_id: uuid4(),
+      ...hint,
+    };
 
     const eventMessage = isParameterizedString(message) ? message : String(message);
 
     const promisedEvent = isPrimitive(message)
-      ? this.eventFromMessage(eventMessage, level, hint)
-      : this.eventFromException(message, hint);
+      ? this.eventFromMessage(eventMessage, level, hintWithEventId)
+      : this.eventFromException(message, hintWithEventId);
 
-    this._process(
-      promisedEvent
-        .then(event => this._captureEvent(event, hint, scope))
-        .then(result => {
-          eventId = result;
-        }),
-    );
+    this._process(promisedEvent.then(event => this._captureEvent(event, hintWithEventId, currentScope)));
 
-    return eventId;
+    return hintWithEventId.event_id;
   }
 
   /**
    * @inheritDoc
    */
-   captureEvent(event, hint, scope) {
+   captureEvent(event, hint, currentScope) {
+    const eventId = uuid4();
+
     // ensure we haven't captured this very object before
     if (hint && hint.originalException && checkOrSetAlreadyCaught(hint.originalException)) {
       DEBUG_BUILD && logger.log(ALREADY_SEEN_ERROR);
-      return;
+      return eventId;
     }
 
-    let eventId = hint && hint.event_id;
+    const hintWithEventId = {
+      event_id: eventId,
+      ...hint,
+    };
 
     const sdkProcessingMetadata = event.sdkProcessingMetadata || {};
     const capturedSpanScope = sdkProcessingMetadata.capturedSpanScope;
 
-    this._process(
-      this._captureEvent(event, hint, capturedSpanScope || scope).then(result => {
-        eventId = result;
-      }),
-    );
+    this._process(this._captureEvent(event, hintWithEventId, capturedSpanScope || currentScope));
 
-    return eventId;
+    return hintWithEventId.event_id;
   }
 
   /**
@@ -8057,13 +8147,13 @@ class BaseClient {
    *
    * @param event The original event.
    * @param hint May contain additional information about the original exception.
-   * @param scope A scope containing event metadata.
+   * @param currentScope A scope containing event metadata.
    * @returns A new event with more information.
    */
    _prepareEvent(
     event,
     hint,
-    scope,
+    currentScope,
     isolationScope = getIsolationScope(),
   ) {
     const options = this.getOptions();
@@ -8074,14 +8164,14 @@ class BaseClient {
 
     this.emit('preprocessEvent', event, hint);
 
-    return prepareEvent(options, event, hint, scope, this, isolationScope).then(evt => {
+    return prepareEvent(options, event, hint, currentScope, this, isolationScope).then(evt => {
       if (evt === null) {
         return evt;
       }
 
       const propagationContext = {
         ...isolationScope.getPropagationContext(),
-        ...(scope ? scope.getPropagationContext() : undefined),
+        ...(currentScope ? currentScope.getPropagationContext() : undefined),
       };
 
       const trace = evt.contexts && evt.contexts.trace;
@@ -8144,10 +8234,10 @@ class BaseClient {
    *
    * @param event The event to send to Sentry.
    * @param hint May contain additional information about the original exception.
-   * @param scope A scope containing event metadata.
+   * @param currentScope A scope containing event metadata.
    * @returns A SyncPromise that resolves with the event or rejects in case event was/will not be send.
    */
-   _processEvent(event, hint, scope) {
+   _processEvent(event, hint, currentScope) {
     const options = this.getOptions();
     const { sampleRate } = options;
 
@@ -8175,7 +8265,7 @@ class BaseClient {
     const sdkProcessingMetadata = event.sdkProcessingMetadata || {};
     const capturedSpanIsolationScope = sdkProcessingMetadata.capturedSpanIsolationScope;
 
-    return this._prepareEvent(event, hint, scope, capturedSpanIsolationScope)
+    return this._prepareEvent(event, hint, currentScope, capturedSpanIsolationScope)
       .then(prepared => {
         if (prepared === null) {
           this.recordDroppedEvent('event_processor', dataCategory, event);
@@ -8196,7 +8286,7 @@ class BaseClient {
           throw new SentryError(`${beforeSendLabel} returned \`null\`, will not send event.`, 'log');
         }
 
-        const session = scope && scope.getSession();
+        const session = currentScope && currentScope.getSession();
         if (!isTransaction && session) {
           this._updateSessionFromEvent(session, processedEvent);
         }
@@ -8755,7 +8845,7 @@ function getEventForEnvelopeItem(item, type) {
   return Array.isArray(item) ? (item )[1] : undefined;
 }
 
-const SDK_VERSION = '8.0.0-beta.4';
+const SDK_VERSION = '8.0.0-beta.5';
 
 /**
  * Default maximum number of breadcrumbs added to an event. Can be overwritten
@@ -9092,12 +9182,11 @@ const _requestDataIntegration = ((options = {}) => {
 
   return {
     name: INTEGRATION_NAME$c,
-    processEvent(event, _hint, client) {
+    processEvent(event) {
       // Note: In the long run, most of the logic here should probably move into the request data utility functions. For
       // the moment it lives here, though, until https://github.com/getsentry/sentry-javascript/issues/5718 is addressed.
-      // (TL;DR: Those functions touch many parts of the repo in many different ways, and need to be clened up. Once
+      // (TL;DR: Those functions touch many parts of the repo in many different ways, and need to be cleaned up. Once
       // that's happened, it will be easier to add this logic in without worrying about unexpected side effects.)
-      const { transactionNamingScheme } = _options;
 
       const { sdkProcessingMetadata = {} } = event;
       const req = sdkProcessingMetadata.request;
@@ -9108,38 +9197,7 @@ const _requestDataIntegration = ((options = {}) => {
 
       const addRequestDataOptions = convertReqDataIntegrationOptsToAddReqDataOpts(_options);
 
-      const processedEvent = addRequestDataToEvent(event, req, addRequestDataOptions);
-
-      // Transaction events already have the right `transaction` value
-      if (event.type === 'transaction' || transactionNamingScheme === 'handler') {
-        return processedEvent;
-      }
-
-      // In all other cases, use the request's associated transaction (if any) to overwrite the event's `transaction`
-      // value with a high-quality one
-      const reqWithTransaction = req ;
-      const transaction = reqWithTransaction._sentryTransaction;
-      if (transaction) {
-        const name = spanToJSON(transaction).description || '';
-
-        // TODO (v8): Remove the nextjs check and just base it on `transactionNamingScheme` for all SDKs. (We have to
-        // keep it the way it is for the moment, because changing the names of transactions in Sentry has the potential
-        // to break things like alert rules.)
-        const shouldIncludeMethodInTransactionName =
-          getSDKName(client) === 'sentry.javascript.nextjs'
-            ? name.startsWith('/api')
-            : transactionNamingScheme !== 'path';
-
-        const [transactionValue] = extractPathForTransaction(req, {
-          path: true,
-          method: shouldIncludeMethodInTransactionName,
-          customRoute: name,
-        });
-
-        processedEvent.transaction = transactionValue;
-      }
-
-      return processedEvent;
+      return addRequestDataToEvent(event, req, addRequestDataOptions);
     },
   };
 }) ;
@@ -9192,18 +9250,6 @@ function convertReqDataIntegrationOptsToAddReqDataOpts(
   };
 }
 
-function getSDKName(client) {
-  try {
-    // For a long chain like this, it's fewer bytes to combine a try-catch with assuming everything is there than to
-    // write out a long chain of `a && a.b && a.b.c && ...`
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-    return client.getOptions()._metadata.sdk.name;
-  } catch (err) {
-    // In theory we should never get here
-    return undefined;
-  }
-}
-
 const INTEGRATION_NAME$b = 'CaptureConsole';
 
 const _captureConsoleIntegration = ((options = {}) => {
@@ -9252,10 +9298,12 @@ function consoleHandler(args, level) {
       return event;
     });
 
-    if (level === 'assert' && args[0] === false) {
-      const message = `Assertion failed: ${safeJoin(args.slice(1), ' ') || 'console.assert'}`;
-      scope.setExtra('arguments', args.slice(1));
-      captureMessage(message, captureContext);
+    if (level === 'assert') {
+      if (!args[0]) {
+        const message = `Assertion failed: ${safeJoin(args.slice(1), ' ') || 'console.assert'}`;
+        scope.setExtra('arguments', args.slice(1));
+        captureMessage(message, captureContext);
+      }
       return;
     }
 
