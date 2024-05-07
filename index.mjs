@@ -8920,7 +8920,7 @@ function getEventForEnvelopeItem(item, type) {
   return Array.isArray(item) ? (item )[1] : undefined;
 }
 
-const SDK_VERSION = '8.0.0-rc.0';
+const SDK_VERSION = '8.0.0-rc.1';
 
 /**
  * Default maximum number of breadcrumbs added to an event. Can be overwritten
