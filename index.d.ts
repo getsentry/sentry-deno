@@ -3261,7 +3261,7 @@ declare function getClient<C extends Client>(): C | undefined;
  */
 declare function createTransport(options: InternalBaseTransportOptions, makeRequest: TransportRequestExecutor, buffer?: PromiseBuffer<TransportMakeRequestResponse>): Transport;
 
-declare const SDK_VERSION = "8.0.0-rc.2";
+declare const SDK_VERSION = "8.0.0-rc.3";
 
 /**
  * Records a new breadcrumb which will be attached to future events.
