@@ -1365,6 +1365,111 @@ function supportsNativeFetch() {
   return result;
 }
 
+const ONE_SECOND_IN_MS = 1000;
+
+/**
+ * A partial definition of the [Performance Web API]{@link https://developer.mozilla.org/en-US/docs/Web/API/Performance}
+ * for accessing a high-resolution monotonic clock.
+ */
+
+/**
+ * Returns a timestamp in seconds since the UNIX epoch using the Date API.
+ *
+ * TODO(v8): Return type should be rounded.
+ */
+function dateTimestampInSeconds() {
+  return Date.now() / ONE_SECOND_IN_MS;
+}
+
+/**
+ * Returns a wrapper around the native Performance API browser implementation, or undefined for browsers that do not
+ * support the API.
+ *
+ * Wrapping the native API works around differences in behavior from different browsers.
+ */
+function createUnixTimestampInSecondsFunc() {
+  const { performance } = GLOBAL_OBJ ;
+  if (!performance || !performance.now) {
+    return dateTimestampInSeconds;
+  }
+
+  // Some browser and environments don't have a timeOrigin, so we fallback to
+  // using Date.now() to compute the starting time.
+  const approxStartingTimeOrigin = Date.now() - performance.now();
+  const timeOrigin = performance.timeOrigin == undefined ? approxStartingTimeOrigin : performance.timeOrigin;
+
+  // performance.now() is a monotonic clock, which means it starts at 0 when the process begins. To get the current
+  // wall clock time (actual UNIX timestamp), we need to add the starting time origin and the current time elapsed.
+  //
+  // TODO: This does not account for the case where the monotonic clock that powers performance.now() drifts from the
+  // wall clock time, which causes the returned timestamp to be inaccurate. We should investigate how to detect and
+  // correct for this.
+  // See: https://github.com/getsentry/sentry-javascript/issues/2590
+  // See: https://github.com/mdn/content/issues/4713
+  // See: https://dev.to/noamr/when-a-millisecond-is-not-a-millisecond-3h6
+  return () => {
+    return (timeOrigin + performance.now()) / ONE_SECOND_IN_MS;
+  };
+}
+
+/**
+ * Returns a timestamp in seconds since the UNIX epoch using either the Performance or Date APIs, depending on the
+ * availability of the Performance API.
+ *
+ * BUG: Note that because of how browsers implement the Performance API, the clock might stop when the computer is
+ * asleep. This creates a skew between `dateTimestampInSeconds` and `timestampInSeconds`. The
+ * skew can grow to arbitrary amounts like days, weeks or months.
+ * See https://github.com/getsentry/sentry-javascript/issues/2590.
+ */
+const timestampInSeconds = createUnixTimestampInSecondsFunc();
+
+/**
+ * The number of milliseconds since the UNIX epoch. This value is only usable in a browser, and only when the
+ * performance API is available.
+ */
+(() => {
+  // Unfortunately browsers may report an inaccurate time origin data, through either performance.timeOrigin or
+  // performance.timing.navigationStart, which results in poor results in performance data. We only treat time origin
+  // data as reliable if they are within a reasonable threshold of the current time.
+
+  const { performance } = GLOBAL_OBJ ;
+  if (!performance || !performance.now) {
+    return undefined;
+  }
+
+  const threshold = 3600 * 1000;
+  const performanceNow = performance.now();
+  const dateNow = Date.now();
+
+  // if timeOrigin isn't available set delta to threshold so it isn't used
+  const timeOriginDelta = performance.timeOrigin
+    ? Math.abs(performance.timeOrigin + performanceNow - dateNow)
+    : threshold;
+  const timeOriginIsReliable = timeOriginDelta < threshold;
+
+  // While performance.timing.navigationStart is deprecated in favor of performance.timeOrigin, performance.timeOrigin
+  // is not as widely supported. Namely, performance.timeOrigin is undefined in Safari as of writing.
+  // Also as of writing, performance.timing is not available in Web Workers in mainstream browsers, so it is not always
+  // a valid fallback. In the absence of an initial time provided by the browser, fallback to the current time from the
+  // Date API.
+  // eslint-disable-next-line deprecation/deprecation
+  const navigationStart = performance.timing && performance.timing.navigationStart;
+  const hasNavigationStart = typeof navigationStart === 'number';
+  // if navigationStart isn't available set delta to threshold so it isn't used
+  const navigationStartDelta = hasNavigationStart ? Math.abs(navigationStart + performanceNow - dateNow) : threshold;
+  const navigationStartIsReliable = navigationStartDelta < threshold;
+
+  if (timeOriginIsReliable || navigationStartIsReliable) {
+    // Use the more reliable time origin
+    if (timeOriginDelta <= navigationStartDelta) {
+      return performance.timeOrigin;
+    } else {
+      return navigationStart;
+    }
+  }
+  return dateNow;
+})();
+
 /**
  * Add an instrumentation handler for when a fetch request happens.
  * The handler function is called once when the request starts and once when it ends,
@@ -1394,7 +1499,7 @@ function instrumentFetch() {
           method,
           url,
         },
-        startTimestamp: Date.now(),
+        startTimestamp: timestampInSeconds() * 1000,
       };
 
       triggerHandlers('fetch', {
@@ -1406,7 +1511,7 @@ function instrumentFetch() {
         (response) => {
           const finishedHandlerData = {
             ...handlerData,
-            endTimestamp: Date.now(),
+            endTimestamp: timestampInSeconds() * 1000,
             response,
           };
 
@@ -1416,7 +1521,7 @@ function instrumentFetch() {
         (error) => {
           const erroredHandlerData = {
             ...handlerData,
-            endTimestamp: Date.now(),
+            endTimestamp: timestampInSeconds() * 1000,
             error,
           };
 
@@ -3029,111 +3134,6 @@ function nodeStackLineParser(getModule) {
   return [90, node(getModule)];
 }
 
-const ONE_SECOND_IN_MS = 1000;
-
-/**
- * A partial definition of the [Performance Web API]{@link https://developer.mozilla.org/en-US/docs/Web/API/Performance}
- * for accessing a high-resolution monotonic clock.
- */
-
-/**
- * Returns a timestamp in seconds since the UNIX epoch using the Date API.
- *
- * TODO(v8): Return type should be rounded.
- */
-function dateTimestampInSeconds() {
-  return Date.now() / ONE_SECOND_IN_MS;
-}
-
-/**
- * Returns a wrapper around the native Performance API browser implementation, or undefined for browsers that do not
- * support the API.
- *
- * Wrapping the native API works around differences in behavior from different browsers.
- */
-function createUnixTimestampInSecondsFunc() {
-  const { performance } = GLOBAL_OBJ ;
-  if (!performance || !performance.now) {
-    return dateTimestampInSeconds;
-  }
-
-  // Some browser and environments don't have a timeOrigin, so we fallback to
-  // using Date.now() to compute the starting time.
-  const approxStartingTimeOrigin = Date.now() - performance.now();
-  const timeOrigin = performance.timeOrigin == undefined ? approxStartingTimeOrigin : performance.timeOrigin;
-
-  // performance.now() is a monotonic clock, which means it starts at 0 when the process begins. To get the current
-  // wall clock time (actual UNIX timestamp), we need to add the starting time origin and the current time elapsed.
-  //
-  // TODO: This does not account for the case where the monotonic clock that powers performance.now() drifts from the
-  // wall clock time, which causes the returned timestamp to be inaccurate. We should investigate how to detect and
-  // correct for this.
-  // See: https://github.com/getsentry/sentry-javascript/issues/2590
-  // See: https://github.com/mdn/content/issues/4713
-  // See: https://dev.to/noamr/when-a-millisecond-is-not-a-millisecond-3h6
-  return () => {
-    return (timeOrigin + performance.now()) / ONE_SECOND_IN_MS;
-  };
-}
-
-/**
- * Returns a timestamp in seconds since the UNIX epoch using either the Performance or Date APIs, depending on the
- * availability of the Performance API.
- *
- * BUG: Note that because of how browsers implement the Performance API, the clock might stop when the computer is
- * asleep. This creates a skew between `dateTimestampInSeconds` and `timestampInSeconds`. The
- * skew can grow to arbitrary amounts like days, weeks or months.
- * See https://github.com/getsentry/sentry-javascript/issues/2590.
- */
-const timestampInSeconds = createUnixTimestampInSecondsFunc();
-
-/**
- * The number of milliseconds since the UNIX epoch. This value is only usable in a browser, and only when the
- * performance API is available.
- */
-(() => {
-  // Unfortunately browsers may report an inaccurate time origin data, through either performance.timeOrigin or
-  // performance.timing.navigationStart, which results in poor results in performance data. We only treat time origin
-  // data as reliable if they are within a reasonable threshold of the current time.
-
-  const { performance } = GLOBAL_OBJ ;
-  if (!performance || !performance.now) {
-    return undefined;
-  }
-
-  const threshold = 3600 * 1000;
-  const performanceNow = performance.now();
-  const dateNow = Date.now();
-
-  // if timeOrigin isn't available set delta to threshold so it isn't used
-  const timeOriginDelta = performance.timeOrigin
-    ? Math.abs(performance.timeOrigin + performanceNow - dateNow)
-    : threshold;
-  const timeOriginIsReliable = timeOriginDelta < threshold;
-
-  // While performance.timing.navigationStart is deprecated in favor of performance.timeOrigin, performance.timeOrigin
-  // is not as widely supported. Namely, performance.timeOrigin is undefined in Safari as of writing.
-  // Also as of writing, performance.timing is not available in Web Workers in mainstream browsers, so it is not always
-  // a valid fallback. In the absence of an initial time provided by the browser, fallback to the current time from the
-  // Date API.
-  // eslint-disable-next-line deprecation/deprecation
-  const navigationStart = performance.timing && performance.timing.navigationStart;
-  const hasNavigationStart = typeof navigationStart === 'number';
-  // if navigationStart isn't available set delta to threshold so it isn't used
-  const navigationStartDelta = hasNavigationStart ? Math.abs(navigationStart + performanceNow - dateNow) : threshold;
-  const navigationStartIsReliable = navigationStartDelta < threshold;
-
-  if (timeOriginIsReliable || navigationStartIsReliable) {
-    // Use the more reliable time origin
-    if (timeOriginDelta <= navigationStartDelta) {
-      return performance.timeOrigin;
-    } else {
-      return navigationStart;
-    }
-  }
-  return dateNow;
-})();
-
 const SENTRY_BAGGAGE_KEY_PREFIX = 'sentry-';
 
 const SENTRY_BAGGAGE_KEY_PREFIX_REGEX = /^sentry-/;
@@ -4133,7 +4133,7 @@ const DEFAULT_MAX_BREADCRUMBS = 100;
 /**
  * Holds additional event information.
  */
-class Scope  {
+class ScopeClass  {
   /** Flag if notifying is happening. */
 
   /** Callback for client to receive scope changes. */
@@ -4198,7 +4198,7 @@ class Scope  {
    * @inheritDoc
    */
    clone() {
-    const newScope = new Scope();
+    const newScope = new ScopeClass();
     newScope._breadcrumbs = [...this._breadcrumbs];
     newScope._tags = { ...this._tags };
     newScope._extra = { ...this._extra };
@@ -4667,6 +4667,19 @@ class Scope  {
     }
   }
 }
+
+// NOTE: By exporting this here as const & type, instead of doing `export class`,
+// We can get the correct class when importing from `@sentry/core`, but the original type (from `@sentry/types`)
+// This is helpful for interop, e.g. when doing `import type { Scope } from '@sentry/node';` (which re-exports this)
+
+/**
+ * Holds additional event information.
+ */
+const Scope = ScopeClass;
+
+/**
+ * Holds additional event information.
+ */
 
 function generatePropagationContext() {
   return {
@@ -5549,9 +5562,13 @@ function hasTracingEnabled(
     return false;
   }
 
-  const client = getClient();
-  const options = maybeOptions || (client && client.getOptions());
+  const options = maybeOptions || getClientOptions();
   return !!options && (options.enableTracing || 'tracesSampleRate' in options || 'tracesSampler' in options);
+}
+
+function getClientOptions() {
+  const client = getClient();
+  return client && client.getOptions();
 }
 
 /**
@@ -5891,8 +5908,10 @@ function createEventEnvelope(
 
 /**
  * Create envelope from Span item.
+ *
+ * Takes an optional client and runs spans through `beforeSendSpan` if available.
  */
-function createSpanEnvelope(spans) {
+function createSpanEnvelope(spans, client) {
   function dscHasRequiredProps(dsc) {
     return !!dsc.trace_id && !!dsc.public_key;
   }
@@ -5906,7 +5925,20 @@ function createSpanEnvelope(spans) {
     sent_at: new Date().toISOString(),
     ...(dscHasRequiredProps(dsc) && { trace: dsc }),
   };
-  const items = spans.map(span => createSpanEnvelopeItem(spanToJSON(span)));
+
+  const beforeSendSpan = client && client.getOptions().beforeSendSpan;
+  const convertToSpanJSON = beforeSendSpan
+    ? (span) => beforeSendSpan(spanToJSON(span) )
+    : (span) => spanToJSON(span);
+
+  const items = [];
+  for (const span of spans) {
+    const spanJson = convertToSpanJSON(span);
+    if (spanJson) {
+      items.push(createSpanEnvelopeItem(spanJson));
+    }
+  }
+
   return createEnvelope(headers, items);
 }
 
@@ -5996,12 +6028,12 @@ class SentrySpan  {
 
     this._events = [];
 
+    this._isStandaloneSpan = spanContext.isStandalone;
+
     // If the span is already ended, ensure we finalize the span immediately
     if (this._endTime) {
       this._onSpanEnded();
     }
-
-    this._isStandaloneSpan = spanContext.isStandalone;
   }
 
   /** @inheritdoc */
@@ -6158,7 +6190,7 @@ class SentrySpan  {
 
     // if this is a standalone span, we send it immediately
     if (this._isStandaloneSpan) {
-      sendSpanEnvelope(createSpanEnvelope([this]));
+      sendSpanEnvelope(createSpanEnvelope([this], client));
       return;
     }
 
@@ -6256,9 +6288,21 @@ function isStandaloneSpan(span) {
   return span instanceof SentrySpan && span.isStandaloneSpan();
 }
 
+/**
+ * Sends a `SpanEnvelope`.
+ *
+ * Note: If the envelope's spans are dropped, e.g. via `beforeSendSpan`,
+ * the envelope will not be sent either.
+ */
 function sendSpanEnvelope(envelope) {
   const client = getClient();
   if (!client) {
+    return;
+  }
+
+  const spanItems = envelope[1];
+  if (!spanItems || spanItems.length === 0) {
+    client.recordDroppedEvent('before_send', 'span');
     return;
   }
 
@@ -8502,14 +8546,27 @@ function processBeforeSend(
   event,
   hint,
 ) {
-  const { beforeSend, beforeSendTransaction } = options;
+  const { beforeSend, beforeSendTransaction, beforeSendSpan } = options;
 
   if (isErrorEvent(event) && beforeSend) {
     return beforeSend(event, hint);
   }
 
-  if (isTransactionEvent(event) && beforeSendTransaction) {
-    return beforeSendTransaction(event, hint);
+  if (isTransactionEvent(event)) {
+    if (event.spans && beforeSendSpan) {
+      const processedSpans = [];
+      for (const span of event.spans) {
+        const processedSpan = beforeSendSpan(span);
+        if (processedSpan) {
+          processedSpans.push(processedSpan);
+        }
+      }
+      event.spans = processedSpans;
+    }
+
+    if (beforeSendTransaction) {
+      return beforeSendTransaction(event, hint);
+    }
   }
 
   return event;
@@ -8950,7 +9007,7 @@ function getEventForEnvelopeItem(item, type) {
   return Array.isArray(item) ? (item )[1] : undefined;
 }
 
-const SDK_VERSION = '8.1.0';
+const SDK_VERSION = '8.2.0';
 
 /**
  * Default maximum number of breadcrumbs added to an event. Can be overwritten
@@ -9862,12 +9919,12 @@ function generateIteratee({
 const INTEGRATION_NAME$7 = 'SessionTiming';
 
 const _sessionTimingIntegration = (() => {
-  const startTime = Date.now();
+  const startTime = timestampInSeconds() * 1000;
 
   return {
     name: INTEGRATION_NAME$7,
     processEvent(event) {
-      const now = Date.now();
+      const now = timestampInSeconds() * 1000;
 
       return {
         ...event,
