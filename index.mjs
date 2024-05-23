@@ -1312,12 +1312,13 @@ function supportsFetch() {
     return false;
   }
 }
+
 /**
- * isNativeFetch checks if the given function is a native implementation of fetch()
+ * isNative checks if the given function is a native implementation
  */
 // eslint-disable-next-line @typescript-eslint/ban-types
-function isNativeFetch(func) {
-  return func && /^function fetch\(\)\s+\{\s+\[native code\]\s+\}$/.test(func.toString());
+function isNativeFunction(func) {
+  return func && /^function\s+\w+\(\)\s+\{\s+\[native code\]\s+\}$/.test(func.toString());
 }
 
 /**
@@ -1337,7 +1338,7 @@ function supportsNativeFetch() {
 
   // Fast path to avoid DOM I/O
   // eslint-disable-next-line @typescript-eslint/unbound-method
-  if (isNativeFetch(WINDOW.fetch)) {
+  if (isNativeFunction(WINDOW.fetch)) {
     return true;
   }
 
@@ -1353,7 +1354,7 @@ function supportsNativeFetch() {
       doc.head.appendChild(sandbox);
       if (sandbox.contentWindow && sandbox.contentWindow.fetch) {
         // eslint-disable-next-line @typescript-eslint/unbound-method
-        result = isNativeFetch(sandbox.contentWindow.fetch);
+        result = isNativeFunction(sandbox.contentWindow.fetch);
       }
       doc.head.removeChild(sandbox);
     } catch (err) {
@@ -9011,7 +9012,7 @@ function getEventForEnvelopeItem(item, type) {
   return Array.isArray(item) ? (item )[1] : undefined;
 }
 
-const SDK_VERSION = '8.3.0';
+const SDK_VERSION = '8.4.0';
 
 /**
  * Default maximum number of breadcrumbs added to an event. Can be overwritten
@@ -10121,7 +10122,7 @@ function addToMetricsAggregator(
  * @experimental This API is experimental and might have breaking changes in the future.
  */
 function increment$1(aggregator, name, value = 1, data) {
-  addToMetricsAggregator(aggregator, COUNTER_METRIC_TYPE, name, value, data);
+  addToMetricsAggregator(aggregator, COUNTER_METRIC_TYPE, name, ensureNumber(value), data);
 }
 
 /**
@@ -10130,7 +10131,7 @@ function increment$1(aggregator, name, value = 1, data) {
  * @experimental This API is experimental and might have breaking changes in the future.
  */
 function distribution$1(aggregator, name, value, data) {
-  addToMetricsAggregator(aggregator, DISTRIBUTION_METRIC_TYPE, name, value, data);
+  addToMetricsAggregator(aggregator, DISTRIBUTION_METRIC_TYPE, name, ensureNumber(value), data);
 }
 
 /**
@@ -10148,7 +10149,7 @@ function set$1(aggregator, name, value, data) {
  * @experimental This API is experimental and might have breaking changes in the future.
  */
 function gauge$1(aggregator, name, value, data) {
-  addToMetricsAggregator(aggregator, GAUGE_METRIC_TYPE, name, value, data);
+  addToMetricsAggregator(aggregator, GAUGE_METRIC_TYPE, name, ensureNumber(value), data);
 }
 
 const metrics = {
@@ -10161,6 +10162,11 @@ const metrics = {
    */
   getMetricsAggregatorForClient: getMetricsAggregatorForClient$1,
 };
+
+// Although this is typed to be a number, we try to handle strings as well here
+function ensureNumber(number) {
+  return typeof number === 'string' ? parseInt(number) : number;
+}
 
 /**
  * Generate bucket key from metric properties.
