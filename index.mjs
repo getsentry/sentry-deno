@@ -3913,6 +3913,16 @@ class LRUMap {
 }
 
 /**
+ * Returns a new minimal propagation context
+ */
+function generatePropagationContext() {
+  return {
+    traceId: uuid4(),
+    spanId: uuid4().substring(16),
+  };
+}
+
+/**
  * This serves as a build time flag that will be true by default, but false in non-debug builds or if users replace `__SENTRY_DEBUG__` in their generated code.
  *
  * ATTENTION: This constant must never cross package boundaries (i.e. be exported) to guarantee that it can be used for tree shaking.
@@ -4677,17 +4687,6 @@ class ScopeClass  {
  * Holds additional event information.
  */
 const Scope = ScopeClass;
-
-/**
- * Holds additional event information.
- */
-
-function generatePropagationContext() {
-  return {
-    traceId: uuid4(),
-    spanId: uuid4().substring(16),
-  };
-}
 
 /** Get the default current scope. */
 function getDefaultCurrentScope() {
@@ -6475,6 +6474,51 @@ const continueTrace = (
     return callback();
   });
 };
+
+/**
+ * Forks the current scope and sets the provided span as active span in the context of the provided callback. Can be
+ * passed `null` to start an entirely new span tree.
+ *
+ * @param span Spans started in the context of the provided callback will be children of this span. If `null` is passed,
+ * spans started within the callback will not be attached to a parent span.
+ * @param callback Execution context in which the provided span will be active. Is passed the newly forked scope.
+ * @returns the value returned from the provided callback function.
+ */
+function withActiveSpan(span, callback) {
+  const acs = getAcs();
+  if (acs.withActiveSpan) {
+    return acs.withActiveSpan(span, callback);
+  }
+
+  return withScope(scope => {
+    _setSpanForScope(scope, span || undefined);
+    return callback(scope);
+  });
+}
+
+/**
+ * Starts a new trace for the duration of the provided callback. Spans started within the
+ * callback will be part of the new trace instead of a potentially previously started trace.
+ *
+ * Important: Only use this function if you want to override the default trace lifetime and
+ * propagation mechanism of the SDK for the duration and scope of the provided callback.
+ * The newly created trace will also be the root of a new distributed trace, for example if
+ * you make http requests within the callback.
+ * This function might be useful if the operation you want to instrument should not be part
+ * of a potentially ongoing trace.
+ *
+ * Default behavior:
+ * - Server-side: A new trace is started for each incoming request.
+ * - Browser: A new trace is started for each page our route. Navigating to a new route
+ *            or page will automatically create a new trace.
+ */
+function startNewTrace(callback) {
+  return withScope(scope => {
+    scope.setPropagationContext(generatePropagationContext());
+    DEBUG_BUILD && logger.info(`Starting a new trace with id ${scope.getPropagationContext().traceId}`);
+    return withActiveSpan(null, callback);
+  });
+}
 
 function createChildOrRootSpan({
   parentSpan,
@@ -9012,7 +9056,7 @@ function getEventForEnvelopeItem(item, type) {
   return Array.isArray(item) ? (item )[1] : undefined;
 }
 
-const SDK_VERSION = '8.4.0';
+const SDK_VERSION = '8.5.0';
 
 /**
  * Default maximum number of breadcrumbs added to an event. Can be overwritten
@@ -10668,11 +10712,14 @@ function getMetricsAggregatorForClient(client) {
   return metrics.getMetricsAggregatorForClient(client, MetricsAggregator);
 }
 
-const metricsDefault = {
+const metricsDefault
+
+ = {
   increment,
   distribution,
   set,
   gauge,
+
   /**
    * @ignore This is for internal use only.
    */
@@ -10685,10 +10732,9 @@ const metricsDefault = {
 function captureFeedback(
   feedbackParams,
   hint = {},
+  scope = getCurrentScope(),
 ) {
   const { message, name, email, url, source, associatedEventId } = feedbackParams;
-
-  const client = getClient();
 
   const feedbackEvent = {
     contexts: {
@@ -10705,11 +10751,13 @@ function captureFeedback(
     level: 'info',
   };
 
+  const client = (scope && scope.getClient()) || getClient();
+
   if (client) {
     client.emit('beforeSendFeedback', feedbackEvent, hint);
   }
 
-  const eventId = getCurrentScope().captureEvent(feedbackEvent, hint);
+  const eventId = scope.captureEvent(feedbackEvent, hint);
 
   return eventId;
 }
@@ -11638,5 +11686,5 @@ const _denoCronIntegration = (() => {
  */
 const denoCronIntegration = defineIntegration(_denoCronIntegration);
 
-export { DenoClient, SDK_VERSION, SEMANTIC_ATTRIBUTE_SENTRY_OP, SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE, SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, Scope, addBreadcrumb, addEventProcessor, breadcrumbsIntegration, captureCheckIn, captureConsoleIntegration, captureEvent, captureException, captureFeedback, captureMessage, captureSession, close, contextLinesIntegration, continueTrace, createTransport, debugIntegration, dedupeIntegration, denoContextIntegration, denoCronIntegration, endSession, extraErrorDataIntegration, flush, functionToStringIntegration, getActiveSpan, getClient, getCurrentScope, getDefaultIntegrations, getGlobalScope, getIsolationScope, getRootSpan, getSpanStatusFromHttpCode, globalHandlersIntegration, inboundFiltersIntegration, init, isInitialized, lastEventId, linkedErrorsIntegration, metricsDefault as metrics, normalizePathsIntegration, requestDataIntegration, rewriteFramesIntegration, sessionTimingIntegration, setContext, setCurrentClient, setExtra, setExtras, setHttpStatus, setMeasurement, setTag, setTags, setUser, spanToBaggageHeader, spanToJSON, spanToTraceHeader, startInactiveSpan, startSession, startSpan, startSpanManual, withIsolationScope, withMonitor, withScope, zodErrorsIntegration };
+export { DenoClient, SDK_VERSION, SEMANTIC_ATTRIBUTE_SENTRY_OP, SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE, SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, Scope, addBreadcrumb, addEventProcessor, breadcrumbsIntegration, captureCheckIn, captureConsoleIntegration, captureEvent, captureException, captureFeedback, captureMessage, captureSession, close, contextLinesIntegration, continueTrace, createTransport, debugIntegration, dedupeIntegration, denoContextIntegration, denoCronIntegration, endSession, extraErrorDataIntegration, flush, functionToStringIntegration, getActiveSpan, getClient, getCurrentScope, getDefaultIntegrations, getGlobalScope, getIsolationScope, getRootSpan, getSpanStatusFromHttpCode, globalHandlersIntegration, inboundFiltersIntegration, init, isInitialized, lastEventId, linkedErrorsIntegration, metricsDefault as metrics, normalizePathsIntegration, requestDataIntegration, rewriteFramesIntegration, sessionTimingIntegration, setContext, setCurrentClient, setExtra, setExtras, setHttpStatus, setMeasurement, setTag, setTags, setUser, spanToBaggageHeader, spanToJSON, spanToTraceHeader, startInactiveSpan, startNewTrace, startSession, startSpan, startSpanManual, withIsolationScope, withMonitor, withScope, zodErrorsIntegration };
 //# sourceMappingURL=index.mjs.map

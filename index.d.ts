@@ -445,6 +445,7 @@ interface Contexts extends Record<string, Context | undefined> {
     trace?: TraceContext;
     cloud_resource?: CloudResourceContext;
     state?: StateContext;
+    profile?: ProfileContext;
 }
 interface StateContext extends Record<string, unknown> {
     state: {
@@ -542,6 +543,9 @@ interface CloudResourceContext extends Record<string, unknown> {
     ['cloud.platform']?: string;
     ['host.id']?: string;
     ['host.type']?: string;
+}
+interface ProfileContext extends Record<string, unknown> {
+    profile_id: string;
 }
 
 interface CrontabSchedule {
@@ -1472,7 +1476,7 @@ type SpanItemHeaders = {
 type EventItem = BaseEnvelopeItem<EventItemHeaders, Event>;
 type AttachmentItem = BaseEnvelopeItem<AttachmentItemHeaders, string | Uint8Array>;
 type UserFeedbackItem = BaseEnvelopeItem<UserFeedbackItemHeaders, UserFeedback>;
-type SessionItem = BaseEnvelopeItem<SessionItemHeaders, Session | SerializedSession> | BaseEnvelopeItem<SessionAggregatesItemHeaders, SessionAggregates>;
+type SessionItem = BaseEnvelopeItem<SessionItemHeaders, SerializedSession> | BaseEnvelopeItem<SessionAggregatesItemHeaders, SessionAggregates>;
 type ClientReportItem = BaseEnvelopeItem<ClientReportItemHeaders, ClientReport>;
 type CheckInItem = BaseEnvelopeItem<CheckInItemHeaders, SerializedCheckIn>;
 type ReplayEventItem = BaseEnvelopeItem<ReplayEventItemHeaders, ReplayEvent>;
@@ -2261,6 +2265,12 @@ type ExpressRequest = NodeRequest & {
     _reconstructedRoute?: string;
 };
 
+interface MetricData {
+    unit?: MeasurementUnit;
+    tags?: Record<string, Primitive>;
+    timestamp?: number;
+    client?: Client;
+}
 /**
  * A metrics aggregator that aggregates metrics in memory and flushes them periodically.
  */
@@ -2281,6 +2291,32 @@ interface MetricsAggregator {
      * Returns a string representation of the aggregator.
      */
     toString(): string;
+}
+interface Metrics {
+    /**
+     * Adds a value to a counter metric
+     *
+     * @experimental This API is experimental and might have breaking changes in the future.
+     */
+    increment(name: string, value?: number, data?: MetricData): void;
+    /**
+     * Adds a value to a distribution metric
+     *
+     * @experimental This API is experimental and might have breaking changes in the future.
+     */
+    distribution(name: string, value: number, data?: MetricData): void;
+    /**
+     * Adds a value to a set metric. Value must be a string or integer.
+     *
+     * @experimental This API is experimental and might have breaking changes in the future.
+     */
+    set(name: string, value: number | string, data?: MetricData): void;
+    /**
+     * Adds a value to a gauge metric
+     *
+     * @experimental This API is experimental and might have breaking changes in the future.
+     */
+    gauge(name: string, value: number, data?: MetricData): void;
 }
 
 interface PromiseBuffer<T> {
@@ -2414,6 +2450,23 @@ declare const continueTrace: <V>({ sentryTrace, baggage, }: {
     sentryTrace: Parameters<typeof propagationContextFromHeaders>[0];
     baggage: Parameters<typeof propagationContextFromHeaders>[1];
 }, callback: () => V) => V;
+/**
+ * Starts a new trace for the duration of the provided callback. Spans started within the
+ * callback will be part of the new trace instead of a potentially previously started trace.
+ *
+ * Important: Only use this function if you want to override the default trace lifetime and
+ * propagation mechanism of the SDK for the duration and scope of the provided callback.
+ * The newly created trace will also be the root of a new distributed trace, for example if
+ * you make http requests within the callback.
+ * This function might be useful if the operation you want to instrument should not be part
+ * of a potentially ongoing trace.
+ *
+ * Default behavior:
+ * - Server-side: A new trace is started for each incoming request.
+ * - Browser: A new trace is started for each page our route. Navigating to a new route
+ *            or page will automatically create a new trace.
+ */
+declare function startNewTrace<T>(callback: () => T): T;
 
 /**
  * Convert a Span to a Sentry trace header.
@@ -3312,7 +3365,7 @@ declare function getClient<C extends Client>(): C | undefined;
  */
 declare function createTransport(options: InternalBaseTransportOptions, makeRequest: TransportRequestExecutor, buffer?: PromiseBuffer<TransportMakeRequestResponse>): Transport;
 
-declare const SDK_VERSION = "8.4.0";
+declare const SDK_VERSION = "8.5.0";
 
 /**
  * Records a new breadcrumb which will be attached to future events.
@@ -3442,49 +3495,11 @@ interface ZodErrorsOptions {
 }
 declare const zodErrorsIntegration: (options?: ZodErrorsOptions | undefined) => Integration;
 
-interface MetricData {
-    unit?: MeasurementUnit;
-    tags?: Record<string, Primitive>;
-    timestamp?: number;
-    client?: Client;
-}
-
-/**
- * Adds a value to a counter metric
- *
- * @experimental This API is experimental and might have breaking changes in the future.
- */
-declare function increment(name: string, value?: number, data?: MetricData): void;
-/**
- * Adds a value to a distribution metric
- *
- * @experimental This API is experimental and might have breaking changes in the future.
- */
-declare function distribution(name: string, value: number, data?: MetricData): void;
-/**
- * Adds a value to a set metric. Value must be a string or integer.
- *
- * @experimental This API is experimental and might have breaking changes in the future.
- */
-declare function set(name: string, value: number | string, data?: MetricData): void;
-/**
- * Adds a value to a gauge metric
- *
- * @experimental This API is experimental and might have breaking changes in the future.
- */
-declare function gauge(name: string, value: number, data?: MetricData): void;
 /**
  * Returns the metrics aggregator for a given client.
  */
 declare function getMetricsAggregatorForClient(client: Client): MetricsAggregator;
-declare const metricsDefault: {
-    increment: typeof increment;
-    distribution: typeof distribution;
-    set: typeof set;
-    gauge: typeof gauge;
-    /**
-     * @ignore This is for internal use only.
-     */
+declare const metricsDefault: Metrics & {
     getMetricsAggregatorForClient: typeof getMetricsAggregatorForClient;
 };
 
@@ -3493,7 +3508,7 @@ declare const metricsDefault: {
  */
 declare function captureFeedback(feedbackParams: SendFeedbackParams, hint?: EventHint & {
     includeReplay?: boolean;
-}): string;
+}, scope?: Scope$1): string;
 
 /**
  * The Sentry Deno SDK Client.
@@ -3663,4 +3678,4 @@ interface BreadcrumbsOptions {
  */
 declare const breadcrumbsIntegration: (options?: Partial<BreadcrumbsOptions> | undefined) => Integration;
 
-export { type AddRequestDataToEventOptions, type Breadcrumb, type BreadcrumbHint, DenoClient, type DenoOptions, type ErrorEvent, type Event, type EventHint, type Exception, type PolymorphicRequest, type Request, SDK_VERSION, SEMANTIC_ATTRIBUTE_SENTRY_OP, SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE, SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, Scope, type SdkInfo, type Session, type SeverityLevel, type Span, type StackFrame, type Stacktrace, type Thread, type User, addBreadcrumb, addEventProcessor, breadcrumbsIntegration, captureCheckIn, captureConsoleIntegration, captureEvent, captureException, captureFeedback, captureMessage, captureSession, close, contextLinesIntegration, continueTrace, createTransport, debugIntegration, dedupeIntegration, denoContextIntegration, denoCronIntegration, endSession, extraErrorDataIntegration, flush, functionToStringIntegration, getActiveSpan, getClient, getCurrentScope, getDefaultIntegrations, getGlobalScope, getIsolationScope, getRootSpan, getSpanStatusFromHttpCode, globalHandlersIntegration, inboundFiltersIntegration, init, isInitialized, lastEventId, linkedErrorsIntegration, metricsDefault as metrics, normalizePathsIntegration, requestDataIntegration, rewriteFramesIntegration, sessionTimingIntegration, setContext, setCurrentClient, setExtra, setExtras, setHttpStatus, setMeasurement, setTag, setTags, setUser, spanToBaggageHeader, spanToJSON, spanToTraceHeader, startInactiveSpan, startSession, startSpan, startSpanManual, withIsolationScope, withMonitor, withScope, zodErrorsIntegration };
+export { type AddRequestDataToEventOptions, type Breadcrumb, type BreadcrumbHint, DenoClient, type DenoOptions, type ErrorEvent, type Event, type EventHint, type Exception, type PolymorphicRequest, type Request, SDK_VERSION, SEMANTIC_ATTRIBUTE_SENTRY_OP, SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE, SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, Scope, type SdkInfo, type Session, type SeverityLevel, type Span, type StackFrame, type Stacktrace, type Thread, type User, addBreadcrumb, addEventProcessor, breadcrumbsIntegration, captureCheckIn, captureConsoleIntegration, captureEvent, captureException, captureFeedback, captureMessage, captureSession, close, contextLinesIntegration, continueTrace, createTransport, debugIntegration, dedupeIntegration, denoContextIntegration, denoCronIntegration, endSession, extraErrorDataIntegration, flush, functionToStringIntegration, getActiveSpan, getClient, getCurrentScope, getDefaultIntegrations, getGlobalScope, getIsolationScope, getRootSpan, getSpanStatusFromHttpCode, globalHandlersIntegration, inboundFiltersIntegration, init, isInitialized, lastEventId, linkedErrorsIntegration, metricsDefault as metrics, normalizePathsIntegration, requestDataIntegration, rewriteFramesIntegration, sessionTimingIntegration, setContext, setCurrentClient, setExtra, setExtras, setHttpStatus, setMeasurement, setTag, setTags, setUser, spanToBaggageHeader, spanToJSON, spanToTraceHeader, startInactiveSpan, startNewTrace, startSession, startSpan, startSpanManual, withIsolationScope, withMonitor, withScope, zodErrorsIntegration };
