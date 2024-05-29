@@ -448,13 +448,13 @@ function truncateAggregateExceptions(exceptions, maxValueLength) {
   });
 }
 
-/** Internal global with common properties and Sentry extensions  */
+const SDK_VERSION = '8.6.0';
 
 /** Get's the global object for the current JavaScript runtime */
 const GLOBAL_OBJ = globalThis ;
 
 /**
- * Returns a global singleton contained in the global `__SENTRY__` object.
+ * Returns a global singleton contained in the global `__SENTRY__[]` object.
  *
  * If the singleton doesn't already exist in `__SENTRY__`, it will be created using the given factory
  * function and added to the `__SENTRY__` object.
@@ -467,8 +467,8 @@ const GLOBAL_OBJ = globalThis ;
 function getGlobalSingleton(name, creator, obj) {
   const gbl = (obj || GLOBAL_OBJ) ;
   const __SENTRY__ = (gbl.__SENTRY__ = gbl.__SENTRY__ || {});
-  const singleton = __SENTRY__[name] || (__SENTRY__[name] = creator());
-  return singleton;
+  const versionedCarrier = (__SENTRY__[SDK_VERSION] = __SENTRY__[SDK_VERSION] || {});
+  return versionedCarrier[name] || (versionedCarrier[name] = creator());
 }
 
 const WINDOW$1 = GLOBAL_OBJ ;
@@ -3930,7 +3930,7 @@ function generatePropagationContext() {
 const DEBUG_BUILD = (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__);
 
 /**
- * An object that contains a hub and maintains a scope stack.
+ * An object that contains globally accessible properties and maintains a scope stack.
  * @hidden
  */
 
@@ -3949,12 +3949,14 @@ function getMainCarrier() {
 
 /** Will either get the existing sentry carrier, or create a new one. */
 function getSentryCarrier(carrier) {
-  if (!carrier.__SENTRY__) {
-    carrier.__SENTRY__ = {
-      extensions: {},
-    };
-  }
-  return carrier.__SENTRY__;
+  const __SENTRY__ = (carrier.__SENTRY__ = carrier.__SENTRY__ || {});
+
+  // For now: First SDK that sets the .version property wins
+  __SENTRY__.version = __SENTRY__.version || SDK_VERSION;
+
+  // Intentionally populating and returning the version of "this" SDK instance
+  // rather than what's set in .version so that "this" SDK always gets its carrier
+  return (__SENTRY__[SDK_VERSION] = __SENTRY__[SDK_VERSION] || {});
 }
 
 /**
@@ -4817,19 +4819,9 @@ class AsyncContextStack {
  */
 function getAsyncContextStack() {
   const registry = getMainCarrier();
+  const sentry = getSentryCarrier(registry);
 
-  // For now we continue to keep this as `hub` on the ACS,
-  // as e.g. the Loader Script relies on this.
-  // Eventually we may change this if/when we update the loader to not require this field anymore
-  // Related, we also write to `hub` in {@link ./../sdk.ts registerClientOnGlobalHub}
-  const sentry = getSentryCarrier(registry) ;
-
-  if (sentry.hub) {
-    return sentry.hub;
-  }
-
-  sentry.hub = new AsyncContextStack(getDefaultCurrentScope(), getDefaultIsolationScope());
-  return sentry.hub;
+  return (sentry.stack = sentry.stack || new AsyncContextStack(getDefaultCurrentScope(), getDefaultIsolationScope()));
 }
 
 function withScope$1(callback) {
@@ -4837,9 +4829,9 @@ function withScope$1(callback) {
 }
 
 function withSetScope(scope, callback) {
-  const hub = getAsyncContextStack() ;
-  return hub.withScope(() => {
-    hub.getStackTop().scope = scope;
+  const stack = getAsyncContextStack() ;
+  return stack.withScope(() => {
+    stack.getStackTop().scope = scope;
     return callback(scope);
   });
 }
@@ -4984,17 +4976,13 @@ function getClient() {
  * value: [exportKey, MetricSummary]
  */
 
-let SPAN_METRIC_SUMMARY;
-
-function getMetricStorageForSpan(span) {
-  return SPAN_METRIC_SUMMARY ? SPAN_METRIC_SUMMARY.get(span) : undefined;
-}
+const METRICS_SPAN_FIELD = '_sentryMetrics';
 
 /**
  * Fetches the metric summary if it exists for the passed span
  */
 function getMetricSummaryJsonForSpan(span) {
-  const storage = getMetricStorageForSpan(span);
+  const storage = (span )[METRICS_SPAN_FIELD];
 
   if (!storage) {
     return undefined;
@@ -5024,7 +5012,10 @@ function updateMetricSummaryOnSpan(
   tags,
   bucketKey,
 ) {
-  const storage = getMetricStorageForSpan(span) || new Map();
+  const existingStorage = (span )[METRICS_SPAN_FIELD];
+  const storage =
+    existingStorage ||
+    ((span )[METRICS_SPAN_FIELD] = new Map());
 
   const exportKey = `${metricType}:${sanitizedName}@${unit}`;
   const bucketItem = storage.get(bucketKey);
@@ -5053,12 +5044,6 @@ function updateMetricSummaryOnSpan(
       },
     ]);
   }
-
-  if (!SPAN_METRIC_SUMMARY) {
-    SPAN_METRIC_SUMMARY = new WeakMap();
-  }
-
-  SPAN_METRIC_SUMMARY.set(span, storage);
 }
 
 /**
@@ -5332,7 +5317,7 @@ function addChildSpanToSpan(span, childSpan) {
 
   // We store a list of child spans on the parent span
   // We need this for `getSpanDescendants()` to work
-  if (span[CHILD_SPANS_FIELD] && span[CHILD_SPANS_FIELD].size < 1000) {
+  if (span[CHILD_SPANS_FIELD]) {
     span[CHILD_SPANS_FIELD].add(childSpan);
   } else {
     addNonEnumerableProperty(span, CHILD_SPANS_FIELD, new Set([childSpan]));
@@ -5983,6 +5968,8 @@ function timedEventsToMeasurements(events) {
   return measurements;
 }
 
+const MAX_SPAN_COUNT = 1000;
+
 /**
  * Span contains all data about a span
  */
@@ -6245,7 +6232,12 @@ class SentrySpan  {
       contexts: {
         trace: spanToTransactionTraceContext(this),
       },
-      spans,
+      spans:
+        // spans.sort() mutates the array, but `spans` is already a copy so we can safely do this here
+        // we do not use spans anymore after this point
+        spans.length > MAX_SPAN_COUNT
+          ? spans.sort((a, b) => a.start_timestamp - b.start_timestamp).slice(0, MAX_SPAN_COUNT)
+          : spans,
       start_timestamp: this._startTime,
       timestamp: this._endTime,
       transaction: this._name,
@@ -6963,7 +6955,7 @@ function prepareEvent(
   const clientEventProcessors = client ? client.getEventProcessors() : [];
 
   // This should be the last thing called, since we want that
-  // {@link Hub.addEventProcessor} gets the finished prepared event.
+  // {@link Scope.addEventProcessor} gets the finished prepared event.
   // Merge scope data together
   const data = getGlobalScope().getScopeData();
 
@@ -8814,6 +8806,8 @@ class ServerRuntimeClient
         checkin_margin: monitorConfig.checkinMargin,
         max_runtime: monitorConfig.maxRuntime,
         timezone: monitorConfig.timezone,
+        failure_issue_threshold: monitorConfig.failureIssueThreshold,
+        recovery_threshold: monitorConfig.recoveryThreshold,
       };
     }
 
@@ -8946,21 +8940,6 @@ function initAndBind(
  */
 function setCurrentClient(client) {
   getCurrentScope().setClient(client);
-  registerClientOnGlobalHub(client);
-}
-
-/**
- * Unfortunately, we still have to manually bind the client to the "hub" property set on the global
- * Sentry carrier object. This is because certain scripts (e.g. our loader script) obtain
- * the client via `window.__SENTRY__.hub.getClient()`.
- *
- * @see {@link ./asyncContext/stackStrategy.ts getAsyncContextStack}
- */
-function registerClientOnGlobalHub(client) {
-  const sentryGlobal = getSentryCarrier(getMainCarrier()) ;
-  if (sentryGlobal.hub && typeof sentryGlobal.hub.getStackTop === 'function') {
-    sentryGlobal.hub.getStackTop().client = client;
-  }
 }
 
 const DEFAULT_TRANSPORT_BUFFER_SIZE = 64;
@@ -9055,8 +9034,6 @@ function getEventForEnvelopeItem(item, type) {
 
   return Array.isArray(item) ? (item )[1] : undefined;
 }
-
-const SDK_VERSION = '8.5.0';
 
 /**
  * Default maximum number of breadcrumbs added to an event. Can be overwritten
@@ -10140,6 +10117,7 @@ function addToMetricsAggregator(
 
   const span = getActiveSpan();
   const rootSpan = span ? getRootSpan(span) : undefined;
+  const transactionName = rootSpan && spanToJSON(rootSpan).description;
 
   const { unit, tags, timestamp } = data;
   const { release, environment } = client.getOptions();
@@ -10150,8 +10128,8 @@ function addToMetricsAggregator(
   if (environment) {
     metricTags.environment = environment;
   }
-  if (rootSpan) {
-    metricTags.transaction = spanToJSON(rootSpan).description || '';
+  if (transactionName) {
+    metricTags.transaction = transactionName;
   }
 
   DEBUG_BUILD && logger.log(`Adding value of ${value} to ${metricType} metric ${name}`);
@@ -10179,6 +10157,54 @@ function distribution$1(aggregator, name, value, data) {
 }
 
 /**
+ * Adds a timing metric.
+ * The metric is added as a distribution metric.
+ *
+ * You can either directly capture a numeric `value`, or wrap a callback function in `timing`.
+ * In the latter case, the duration of the callback execution will be captured as a span & a metric.
+ *
+ * @experimental This API is experimental and might have breaking changes in the future.
+ */
+function timing$1(
+  aggregator,
+  name,
+  value,
+  unit = 'second',
+  data,
+) {
+  // callback form
+  if (typeof value === 'function') {
+    const startTime = timestampInSeconds();
+
+    return startSpanManual(
+      {
+        op: 'metrics.timing',
+        name,
+        startTime,
+        onlyIfParent: true,
+      },
+      span => {
+        return handleCallbackErrors(
+          () => value(),
+          () => {
+            // no special error handling necessary
+          },
+          () => {
+            const endTime = timestampInSeconds();
+            const timeDiff = endTime - startTime;
+            distribution$1(aggregator, name, timeDiff, { ...data, unit: 'second' });
+            span.end(endTime);
+          },
+        );
+      },
+    );
+  }
+
+  // value form
+  distribution$1(aggregator, name, value, { ...data, unit });
+}
+
+/**
  * Adds a value to a set metric. Value must be a string or integer.
  *
  * @experimental This API is experimental and might have breaking changes in the future.
@@ -10201,6 +10227,7 @@ const metrics = {
   distribution: distribution$1,
   set: set$1,
   gauge: gauge$1,
+  timing: timing$1,
   /**
    * @ignore This is for internal use only.
    */
@@ -10706,6 +10733,25 @@ function gauge(name, value, data) {
 }
 
 /**
+ * Adds a timing metric.
+ * The metric is added as a distribution metric.
+ *
+ * You can either directly capture a numeric `value`, or wrap a callback function in `timing`.
+ * In the latter case, the duration of the callback execution will be captured as a span & a metric.
+ *
+ * @experimental This API is experimental and might have breaking changes in the future.
+ */
+
+function timing(
+  name,
+  value,
+  unit = 'second',
+  data,
+) {
+  return metrics.timing(MetricsAggregator, name, value, unit, data);
+}
+
+/**
  * Returns the metrics aggregator for a given client.
  */
 function getMetricsAggregatorForClient(client) {
@@ -10719,7 +10765,7 @@ const metricsDefault
   distribution,
   set,
   gauge,
-
+  timing,
   /**
    * @ignore This is for internal use only.
    */

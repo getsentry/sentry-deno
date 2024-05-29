@@ -570,6 +570,8 @@ interface SerializedCheckIn {
         checkin_margin?: number;
         max_runtime?: number;
         timezone?: string;
+        failure_issue_threshold?: number;
+        recovery_threshold?: number;
     };
     contexts?: {
         trace?: TraceContext;
@@ -596,8 +598,8 @@ interface MonitorConfig {
     checkinMargin?: SerializedMonitorConfig['checkin_margin'];
     maxRuntime?: SerializedMonitorConfig['max_runtime'];
     timezone?: SerializedMonitorConfig['timezone'];
-    failure_issue_threshold?: number;
-    recovery_threshold?: number;
+    failureIssueThreshold?: SerializedMonitorConfig['failure_issue_threshold'];
+    recoveryThreshold?: SerializedMonitorConfig['recovery_threshold'];
 }
 
 type DataCategory = 'default' | 'error' | 'transaction' | 'replay' | 'security' | 'attachment' | 'session' | 'internal' | 'profile' | 'monitor' | 'feedback' | 'metric_bucket' | 'span' | 'unknown';
@@ -2317,6 +2319,17 @@ interface Metrics {
      * @experimental This API is experimental and might have breaking changes in the future.
      */
     gauge(name: string, value: number, data?: MetricData): void;
+    /**
+     * Adds a timing metric.
+     * The metric is added as a distribution metric.
+     *
+     * You can either directly capture a numeric `value`, or wrap a callback function in `timing`.
+     * In the latter case, the duration of the callback execution will be captured as a span & a metric.
+     *
+     * @experimental This API is experimental and might have breaking changes in the future.
+     */
+    timing(name: string, value: number, unit?: DurationUnit, data?: Omit<MetricData, 'unit'>): void;
+    timing<T>(name: string, callback: () => T, unit?: DurationUnit, data?: Omit<MetricData, 'unit'>): T;
 }
 
 interface PromiseBuffer<T> {
@@ -2357,6 +2370,8 @@ type TransactionNamingScheme = 'path' | 'methodPath' | 'handler';
  * creates a minimal new one if the headers are undefined.
  */
 declare function propagationContextFromHeaders(sentryTrace: string | undefined, baggage: string | number | boolean | string[] | null | undefined): PropagationContext;
+
+declare const SDK_VERSION = "8.6.0";
 
 interface DenoTransportOptions extends BaseTransportOptions {
     /** Custom headers for the transport. Used by the XHRTransport and FetchTransport */
@@ -3364,8 +3379,6 @@ declare function getClient<C extends Client>(): C | undefined;
  * @param makeRequest
  */
 declare function createTransport(options: InternalBaseTransportOptions, makeRequest: TransportRequestExecutor, buffer?: PromiseBuffer<TransportMakeRequestResponse>): Transport;
-
-declare const SDK_VERSION = "8.5.0";
 
 /**
  * Records a new breadcrumb which will be attached to future events.
