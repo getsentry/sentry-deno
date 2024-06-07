@@ -448,7 +448,7 @@ function truncateAggregateExceptions(exceptions, maxValueLength) {
   });
 }
 
-const SDK_VERSION = '8.7.0';
+const SDK_VERSION = '8.8.0';
 
 /** Get's the global object for the current JavaScript runtime */
 const GLOBAL_OBJ = globalThis ;
@@ -1214,6 +1214,31 @@ function getFunctionName(fn) {
     // can cause a "Permission denied" exception (see raven-js#495).
     return defaultFunctionName;
   }
+}
+
+/**
+ * Get's stack frames from an event without needing to check for undefined properties.
+ */
+function getFramesFromEvent(event) {
+  const exception = event.exception;
+
+  if (exception) {
+    const frames = [];
+    try {
+      // @ts-expect-error Object could be undefined
+      exception.values.forEach(value => {
+        // @ts-expect-error Value could be undefined
+        if (value.stacktrace.frames) {
+          // @ts-expect-error Value could be undefined
+          frames.push(...value.stacktrace.frames);
+        }
+      });
+      return frames;
+    } catch (_oO) {
+      return undefined;
+    }
+  }
+  return undefined;
 }
 
 // We keep the handlers globally
@@ -6262,7 +6287,10 @@ class SentrySpan  {
 
     if (hasMeasurements) {
       DEBUG_BUILD &&
-        logger.log('[Measurements] Adding measurements to transaction', JSON.stringify(measurements, undefined, 2));
+        logger.log(
+          '[Measurements] Adding measurements to transaction event',
+          JSON.stringify(measurements, undefined, 2),
+        );
       transaction.measurements = measurements;
     }
 
@@ -9123,8 +9151,12 @@ const functionToStringIntegration = defineIntegration(_functionToStringIntegrati
 const DEFAULT_IGNORE_ERRORS = [
   /^Script error\.?$/,
   /^Javascript error: Script error\.? on line 0$/,
-  /^ResizeObserver loop completed with undelivered notifications.$/,
-  /^Cannot redefine property: googletag$/,
+  /^ResizeObserver loop completed with undelivered notifications.$/, // The browser logs this when a ResizeObserver handler takes a bit longer. Usually this is not an actual issue though. It indicates slowness.
+  /^Cannot redefine property: googletag$/, // This is thrown when google tag manager is used in combination with an ad blocker
+  "undefined is not an object (evaluating 'a.L')", // Random error that happens but not actionable or noticeable to end-users.
+  'can\'t redefine non-configurable property "solana"', // Probably a browser extension or custom browser (Brave) throwing this error
+  "vv().getRestrictions is not a function. (In 'vv().getRestrictions(1,a)', 'vv().getRestrictions' is undefined)", // Error thrown by GTM, seemingly not affecting end-users
+  "Can't find variable: _AutofillCallbackHandler", // Unactionable error in instagram webview https://developers.facebook.com/community/threads/320013549791141/
 ];
 
 /** Options for the InboundFilters integration */
@@ -9170,6 +9202,15 @@ function _shouldDropEvent$1(event, options) {
     DEBUG_BUILD &&
       logger.warn(
         `Event dropped due to being matched by \`ignoreErrors\` option.\nEvent: ${getEventDescription(event)}`,
+      );
+    return true;
+  }
+  if (_isUselessError(event)) {
+    DEBUG_BUILD &&
+      logger.warn(
+        `Event dropped due to not having an error message, error type or stacktrace.\nEvent: ${getEventDescription(
+          event,
+        )}`,
       );
     return true;
   }
@@ -9300,6 +9341,25 @@ function _getEventFilterUrl(event) {
     DEBUG_BUILD && logger.error(`Cannot extract url for event ${getEventDescription(event)}`);
     return null;
   }
+}
+
+function _isUselessError(event) {
+  if (event.type) {
+    // event is not an error
+    return false;
+  }
+
+  // We only want to consider events for dropping that actually have recorded exception values.
+  if (!event.exception || !event.exception.values || event.exception.values.length === 0) {
+    return false;
+  }
+
+  return (
+    // No top-level message
+    !event.message &&
+    // There are no exception values that have a stacktrace, a non-generic-Error type or value
+    !event.exception.values.some(value => value.stacktrace || (value.type && value.type !== 'Error') || value.value)
+  );
 }
 
 const DEFAULT_KEY = 'cause';
@@ -9652,8 +9712,8 @@ function _isSameExceptionEvent(currentEvent, previousEvent) {
 }
 
 function _isSameStacktrace(currentEvent, previousEvent) {
-  let currentFrames = _getFramesFromEvent(currentEvent);
-  let previousFrames = _getFramesFromEvent(previousEvent);
+  let currentFrames = getFramesFromEvent(currentEvent);
+  let previousFrames = getFramesFromEvent(previousEvent);
 
   // If neither event has a stacktrace, they are assumed to be the same
   if (!currentFrames && !previousFrames) {
@@ -9718,20 +9778,6 @@ function _isSameFingerprint(currentEvent, previousEvent) {
 
 function _getExceptionFromEvent(event) {
   return event.exception && event.exception.values && event.exception.values[0];
-}
-
-function _getFramesFromEvent(event) {
-  const exception = event.exception;
-
-  if (exception) {
-    try {
-      // @ts-expect-error Object could be undefined
-      return exception.values[0].stacktrace.frames;
-    } catch (_oO) {
-      return undefined;
-    }
-  }
-  return undefined;
 }
 
 const INTEGRATION_NAME$9 = 'ExtraErrorData';
