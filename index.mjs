@@ -448,7 +448,7 @@ function truncateAggregateExceptions(exceptions, maxValueLength) {
   });
 }
 
-const SDK_VERSION = '8.9.2';
+const SDK_VERSION = '8.10.0';
 
 /** Get's the global object for the current JavaScript runtime */
 const GLOBAL_OBJ = globalThis ;
@@ -538,11 +538,6 @@ function _htmlElementAsString(el, keyAttrs) {
 ;
 
   const out = [];
-  let className;
-  let classes;
-  let key;
-  let attr;
-  let i;
 
   if (!elem || !elem.tagName) {
     return '';
@@ -578,22 +573,22 @@ function _htmlElementAsString(el, keyAttrs) {
       out.push(`#${elem.id}`);
     }
 
-    className = elem.className;
+    const className = elem.className;
     if (className && isString(className)) {
-      classes = className.split(/\s+/);
-      for (i = 0; i < classes.length; i++) {
-        out.push(`.${classes[i]}`);
+      const classes = className.split(/\s+/);
+      for (const c of classes) {
+        out.push(`.${c}`);
       }
     }
   }
   const allowedAttrs = ['aria-label', 'type', 'name', 'title', 'alt'];
-  for (i = 0; i < allowedAttrs.length; i++) {
-    key = allowedAttrs[i];
-    attr = elem.getAttribute(key);
+  for (const k of allowedAttrs) {
+    const attr = elem.getAttribute(k);
     if (attr) {
-      out.push(`[${key}="${attr}"]`);
+      out.push(`[${k}="${attr}"]`);
     }
   }
+
   return out.join('');
 }
 
@@ -733,7 +728,7 @@ function dsnFromString(str) {
     return undefined;
   }
 
-  const [protocol, publicKey, pass = '', host, port = '', lastPath] = match.slice(1);
+  const [protocol, publicKey, pass = '', host = '', port = '', lastPath = ''] = match.slice(1);
   let path = '';
   let projectId = lastPath;
 
@@ -989,12 +984,14 @@ function extractExceptionKeysForMessage(exception, maxLength = 40) {
   const keys = Object.keys(convertToPlainObject(exception));
   keys.sort();
 
-  if (!keys.length) {
+  const firstKey = keys[0];
+
+  if (!firstKey) {
     return '[object has no keys]';
   }
 
-  if (keys[0].length >= maxLength) {
-    return truncate(keys[0], maxLength);
+  if (firstKey.length >= maxLength) {
+    return truncate(firstKey, maxLength);
   }
 
   for (let includedKeys = keys.length; includedKeys > 0; includedKeys--) {
@@ -1103,7 +1100,7 @@ function createStackParser(...parsers) {
     const lines = stack.split('\n');
 
     for (let i = skipFirstLines; i < lines.length; i++) {
-      const line = lines[i];
+      const line = lines[i] ;
       // Ignore lines over 1kb as they are unlikely to be stack frames.
       // Many of the regular expressions use backtracking which results in run time that increases exponentially with
       // input size. Huge strings can result in hangs/Denial of Service:
@@ -1167,7 +1164,7 @@ function stripSentryFramesAndReverse(stack) {
   const localStack = Array.from(stack);
 
   // If stack starts with one of our API calls, remove it (starts, meaning it's the top of the stack - aka last call)
-  if (/sentryWrapped/.test(localStack[localStack.length - 1].function || '')) {
+  if (/sentryWrapped/.test(getLastStackFrame(localStack).function || '')) {
     localStack.pop();
   }
 
@@ -1175,7 +1172,7 @@ function stripSentryFramesAndReverse(stack) {
   localStack.reverse();
 
   // If stack ends with one of our internal API calls, remove it (ends, meaning it's the bottom of the stack - aka top-most call)
-  if (STRIP_FRAME_REGEXP.test(localStack[localStack.length - 1].function || '')) {
+  if (STRIP_FRAME_REGEXP.test(getLastStackFrame(localStack).function || '')) {
     localStack.pop();
 
     // When using synthetic events, we will have a 2 levels deep stack, as `new Error('Sentry syntheticException')`
@@ -1186,16 +1183,20 @@ function stripSentryFramesAndReverse(stack) {
     //
     // instead of just the top `Sentry` call itself.
     // This forces us to possibly strip an additional frame in the exact same was as above.
-    if (STRIP_FRAME_REGEXP.test(localStack[localStack.length - 1].function || '')) {
+    if (STRIP_FRAME_REGEXP.test(getLastStackFrame(localStack).function || '')) {
       localStack.pop();
     }
   }
 
   return localStack.slice(0, STACKTRACE_FRAME_LIMIT).map(frame => ({
     ...frame,
-    filename: frame.filename || localStack[localStack.length - 1].filename,
+    filename: frame.filename || getLastStackFrame(localStack).filename,
     function: frame.function || UNKNOWN_FUNCTION,
   }));
+}
+
+function getLastStackFrame(arr) {
+  return arr[arr.length - 1] || {};
 }
 
 const defaultFunctionName = '<anonymous>';
@@ -1773,6 +1774,7 @@ function uuid4() {
         // @see https://developer.mozilla.org/en-US/docs/Web/API/Crypto/getRandomValues#typedarray
         const typedArray = new Uint8Array(1);
         crypto.getRandomValues(typedArray);
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
         return typedArray[0];
       };
     }
@@ -1875,7 +1877,11 @@ function addContextToFrame(lines, frame, linesOfContext = 5) {
     .slice(Math.max(0, sourceLine - linesOfContext), sourceLine)
     .map((line) => snipLine(line, 0));
 
-  frame.context_line = snipLine(lines[Math.min(maxLines - 1, sourceLine)], frame.colno || 0);
+  // We guard here to ensure this is not larger than the existing number of lines
+  const lineIndex = Math.min(maxLines - 1, sourceLine);
+
+  // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+  frame.context_line = snipLine(lines[lineIndex], frame.colno || 0);
 
   frame.post_context = lines
     .slice(Math.min(sourceLine + 1, maxLines), sourceLine + 1 + linesOfContext)
@@ -2340,7 +2346,7 @@ function relative(from, to) {
 /** JSDoc */
 function dirname(path) {
   const result = splitPath(path);
-  const root = result[0];
+  const root = result[0] || '';
   let dir = result[1];
 
   if (!root && !dir) {
@@ -2358,7 +2364,7 @@ function dirname(path) {
 
 /** JSDoc */
 function basename(path, ext) {
-  let f = splitPath(path)[2];
+  let f = splitPath(path)[2] || '';
   if (ext && f.slice(ext.length * -1) === ext) {
     f = f.slice(0, f.length - ext.length);
   }
@@ -2571,7 +2577,7 @@ function makePromiseBuffer(limit) {
    * @returns Removed promise.
    */
   function remove(task) {
-    return buffer.splice(buffer.indexOf(task), 1)[0];
+    return buffer.splice(buffer.indexOf(task), 1)[0] || Promise.resolve(undefined);
   }
 
   /**
@@ -2744,8 +2750,7 @@ function parseCookie(str) {
  * @returns URL or path without query string or fragment
  */
 function stripUrlQueryAndFragment(urlPath) {
-  // eslint-disable-next-line no-useless-escape
-  return urlPath.split(/[\?#]/, 1)[0];
+  return (urlPath.split(/[?#]/, 1) )[0];
 }
 
 const DEFAULT_INCLUDES = {
@@ -3153,9 +3158,9 @@ function node(getModule) {
         filename,
         module: getModule ? getModule(filename) : undefined,
         function: functionName,
-        lineno: parseInt(lineMatch[3], 10) || undefined,
-        colno: parseInt(lineMatch[4], 10) || undefined,
-        in_app: filenameIsInApp(filename, isNative),
+        lineno: _parseIntOrUndefined(lineMatch[3]),
+        colno: _parseIntOrUndefined(lineMatch[4]),
+        in_app: filenameIsInApp(filename || '', isNative),
       };
     }
 
@@ -3177,6 +3182,10 @@ function node(getModule) {
  */
 function nodeStackLineParser(getModule) {
   return [90, node(getModule)];
+}
+
+function _parseIntOrUndefined(input) {
+  return parseInt(input || '', 10) || undefined;
 }
 
 const SENTRY_BAGGAGE_KEY_PREFIX = 'sentry-';
@@ -3270,9 +3279,9 @@ function parseBaggageHeader(
     // Combine all baggage headers into one object containing the baggage values so we can later read the Sentry-DSC-values from it
     return baggageHeader.reduce((acc, curr) => {
       const currBaggageObject = baggageHeaderToObject(curr);
-      for (const key of Object.keys(currBaggageObject)) {
-        acc[key] = currBaggageObject[key];
-      }
+      Object.entries(currBaggageObject).forEach(([key, value]) => {
+        acc[key] = value;
+      });
       return acc;
     }, {});
   }
@@ -3291,7 +3300,9 @@ function baggageHeaderToObject(baggageHeader) {
     .split(',')
     .map(baggageEntry => baggageEntry.split('=').map(keyOrValue => decodeURIComponent(keyOrValue.trim())))
     .reduce((acc, [key, value]) => {
-      acc[key] = value;
+      if (key && value) {
+        acc[key] = value;
+      }
       return acc;
     }, {});
 }
@@ -3676,7 +3687,7 @@ function updateRateLimits(
      *         Only present if rate limit applies to the metric_bucket data category.
      */
     for (const limit of rateLimitHeader.trim().split(',')) {
-      const [retryAfter, categories, , , namespaces] = limit.split(':', 5);
+      const [retryAfter, categories, , , namespaces] = limit.split(':', 5) ;
       const headerDelay = parseInt(retryAfter, 10);
       const delay = (!isNaN(headerDelay) ? headerDelay : 60) * 1000; // 60sec default
       if (!categories) {
@@ -4833,7 +4844,7 @@ class AsyncContextStack {
    * Returns the topmost scope layer in the order domain > local > process.
    */
    getStackTop() {
-    return this._stack[this._stack.length - 1];
+    return this._stack[this._stack.length - 1] ;
   }
 
   /**
@@ -5035,11 +5046,8 @@ function getMetricSummaryJsonForSpan(span) {
   const output = {};
 
   for (const [, [exportKey, summary]] of storage) {
-    if (!output[exportKey]) {
-      output[exportKey] = [];
-    }
-
-    output[exportKey].push(dropUndefinedKeys(summary));
+    const arr = output[exportKey] || (output[exportKey] = []);
+    arr.push(dropUndefinedKeys(summary));
   }
 
   return output;
@@ -5680,15 +5688,25 @@ function getDynamicSamplingContextFromSpan(span) {
   const dsc = getDynamicSamplingContextFromClient(spanToJSON(span).trace_id || '', client);
 
   const rootSpan = getRootSpan(span);
-  if (!rootSpan) {
-    return dsc;
-  }
 
+  // For core implementation, we freeze the DSC onto the span as a non-enumerable property
   const frozenDsc = (rootSpan )[FROZEN_DSC_FIELD];
   if (frozenDsc) {
     return frozenDsc;
   }
 
+  // For OpenTelemetry, we freeze the DSC on the trace state
+  const traceState = rootSpan.spanContext().traceState;
+  const traceStateDsc = traceState && traceState.get('sentry.dsc');
+
+  // If the span has a DSC, we want it to take precedence
+  const dscOnTraceState = traceStateDsc && baggageHeaderToDynamicSamplingContext(traceStateDsc);
+
+  if (dscOnTraceState) {
+    return dscOnTraceState;
+  }
+
+  // Else, we generate it from the span
   const jsonSpan = spanToJSON(rootSpan);
   const attributes = jsonSpan.data || {};
   const maybeSampleRate = attributes[SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE];
@@ -5701,13 +5719,14 @@ function getDynamicSamplingContextFromSpan(span) {
   const source = attributes[SEMANTIC_ATTRIBUTE_SENTRY_SOURCE];
 
   // after JSON conversion, txn.name becomes jsonSpan.description
-  if (source && source !== 'url') {
-    dsc.transaction = jsonSpan.description;
+  const name = jsonSpan.description;
+  if (source !== 'url' && name) {
+    dsc.transaction = name;
   }
 
   dsc.sampled = String(spanIsSampled(rootSpan));
 
-  client.emit('createDsc', dsc);
+  client.emit('createDsc', dsc, rootSpan);
 
   return dsc;
 }
@@ -6226,7 +6245,15 @@ class SentrySpan  {
 
     // if this is a standalone span, we send it immediately
     if (this._isStandaloneSpan) {
-      sendSpanEnvelope(createSpanEnvelope([this], client));
+      if (this._sampled) {
+        sendSpanEnvelope(createSpanEnvelope([this], client));
+      } else {
+        DEBUG_BUILD &&
+          logger.log('[Tracing] Discarding standalone span because its trace was not chosen to be sampled.');
+        if (client) {
+          client.recordDroppedEvent('sample_rate', 'span');
+        }
+      }
       return;
     }
 
@@ -7106,25 +7133,29 @@ function applyDebugIds(event, stackParser) {
   }
 
   // Build a map of filename -> debug_id
-  const filenameDebugIdMap = Object.keys(debugIdMap).reduce((acc, debugIdStackTrace) => {
-    let parsedStack;
-    const cachedParsedStack = debugIdStackFramesCache.get(debugIdStackTrace);
-    if (cachedParsedStack) {
-      parsedStack = cachedParsedStack;
-    } else {
-      parsedStack = stackParser(debugIdStackTrace);
-      debugIdStackFramesCache.set(debugIdStackTrace, parsedStack);
-    }
-
-    for (let i = parsedStack.length - 1; i >= 0; i--) {
-      const stackFrame = parsedStack[i];
-      if (stackFrame.filename) {
-        acc[stackFrame.filename] = debugIdMap[debugIdStackTrace];
-        break;
+  const filenameDebugIdMap = Object.entries(debugIdMap).reduce(
+    (acc, [debugIdStackTrace, debugIdValue]) => {
+      let parsedStack;
+      const cachedParsedStack = debugIdStackFramesCache.get(debugIdStackTrace);
+      if (cachedParsedStack) {
+        parsedStack = cachedParsedStack;
+      } else {
+        parsedStack = stackParser(debugIdStackTrace);
+        debugIdStackFramesCache.set(debugIdStackTrace, parsedStack);
       }
-    }
-    return acc;
-  }, {});
+
+      for (let i = parsedStack.length - 1; i >= 0; i--) {
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+        const stackFrame = parsedStack[i];
+        if (stackFrame.filename) {
+          acc[stackFrame.filename] = debugIdValue;
+          break;
+        }
+      }
+      return acc;
+    },
+    {},
+  );
 
   try {
     // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
@@ -7174,11 +7205,11 @@ function applyDebugMeta(event) {
   event.debug_meta = event.debug_meta || {};
   event.debug_meta.images = event.debug_meta.images || [];
   const images = event.debug_meta.images;
-  Object.keys(filenameDebugIdMap).forEach(filename => {
+  Object.entries(filenameDebugIdMap).forEach(([filename, debug_id]) => {
     images.push({
       type: 'sourcemap',
       code_file: filename,
-      debug_id: filenameDebugIdMap[filename],
+      debug_id,
     });
   });
 }
@@ -7655,7 +7686,7 @@ class SessionFlusher  {
    constructor(client, attrs) {
     this._client = client;
     this.flushTimeout = 60;
-    this._pendingAggregates = {};
+    this._pendingAggregates = new Map();
     this._isEnabled = true;
 
     // Call to setInterval, so that flush is called every 60 seconds.
@@ -7674,15 +7705,13 @@ class SessionFlusher  {
     if (sessionAggregates.aggregates.length === 0) {
       return;
     }
-    this._pendingAggregates = {};
+    this._pendingAggregates = new Map();
     this._client.sendSession(sessionAggregates);
   }
 
   /** Massages the entries in `pendingAggregates` and returns aggregated sessions */
    getSessionAggregates() {
-    const aggregates = Object.keys(this._pendingAggregates).map((key) => {
-      return this._pendingAggregates[parseInt(key)];
-    });
+    const aggregates = Array.from(this._pendingAggregates.values());
 
     const sessionAggregates = {
       attrs: this._sessionAttrs,
@@ -7726,13 +7755,13 @@ class SessionFlusher  {
    _incrementSessionStatusCount(status, date) {
     // Truncate minutes and seconds on Session Started attribute to have one minute bucket keys
     const sessionStartedTrunc = new Date(date).setSeconds(0, 0);
-    this._pendingAggregates[sessionStartedTrunc] = this._pendingAggregates[sessionStartedTrunc] || {};
 
     // corresponds to aggregated sessions in one specific minute bucket
     // for example, {"started":"2021-03-16T08:00:00.000Z","exited":4, "errored": 1}
-    const aggregationCounts = this._pendingAggregates[sessionStartedTrunc];
-    if (!aggregationCounts.started) {
-      aggregationCounts.started = new Date(sessionStartedTrunc).toISOString();
+    let aggregationCounts = this._pendingAggregates.get(sessionStartedTrunc);
+    if (!aggregationCounts) {
+      aggregationCounts = { started: new Date(sessionStartedTrunc).toISOString() };
+      this._pendingAggregates.set(sessionStartedTrunc, aggregationCounts);
     }
 
     switch (status) {
@@ -7810,7 +7839,7 @@ function filterDuplicates(integrations) {
     integrationsByName[name] = currentInstance;
   });
 
-  return Object.keys(integrationsByName).map(k => integrationsByName[k]);
+  return Object.values(integrationsByName);
 }
 
 /** Gets integrations to install */
@@ -7839,9 +7868,9 @@ function getIntegrationsToSetup(options) {
   // `beforeSendTransaction`. It therefore has to run after all other integrations, so that the changes of all event
   // processors will be reflected in the printed values. For lack of a more elegant way to guarantee that, we therefore
   // locate it and, assuming it exists, pop it out of its current spot and shove it onto the end of the array.
-  const debugIndex = findIndex(finalIntegrations, integration => integration.name === 'Debug');
-  if (debugIndex !== -1) {
-    const [debugInstance] = finalIntegrations.splice(debugIndex, 1);
+  const debugIndex = finalIntegrations.findIndex(integration => integration.name === 'Debug');
+  if (debugIndex > -1) {
+    const [debugInstance] = finalIntegrations.splice(debugIndex, 1) ;
     finalIntegrations.push(debugInstance);
   }
 
@@ -7914,17 +7943,6 @@ function setupIntegration(client, integration, integrationIndex) {
   }
 
   DEBUG_BUILD && logger.log(`Integration installed: ${integration.name}`);
-}
-
-// Polyfill for Array.findIndex(), which is not supported in ES5
-function findIndex(arr, callback) {
-  for (let i = 0; i < arr.length; i++) {
-    if (callback(arr[i]) === true) {
-      return i;
-    }
-  }
-
-  return -1;
 }
 
 /**
@@ -8246,8 +8264,7 @@ class BaseClient {
       const key = `${reason}:${category}`;
       DEBUG_BUILD && logger.log(`Adding outcome: "${key}"`);
 
-      // The following works because undefined + 1 === NaN and NaN is falsy
-      this._outcomes[key] = this._outcomes[key] + 1 || 1;
+      this._outcomes[key] = (this._outcomes[key] || 0) + 1;
     }
   }
 
@@ -8270,8 +8287,9 @@ class BaseClient {
 
   /** @inheritdoc */
    emit(hook, ...rest) {
-    if (this._hooks[hook]) {
-      this._hooks[hook].forEach(callback => callback(...rest));
+    const callbacks = this._hooks[hook];
+    if (callbacks) {
+      callbacks.forEach(callback => callback(...rest));
     }
   }
 
@@ -8584,12 +8602,12 @@ class BaseClient {
    _clearOutcomes() {
     const outcomes = this._outcomes;
     this._outcomes = {};
-    return Object.keys(outcomes).map(key => {
+    return Object.entries(outcomes).map(([key, quantity]) => {
       const [reason, category] = key.split(':') ;
       return {
         reason,
         category,
-        quantity: outcomes[key],
+        quantity,
       };
     });
   }
@@ -9755,7 +9773,9 @@ function _isSameStacktrace(currentEvent, previousEvent) {
 
   // Otherwise, compare the two
   for (let i = 0; i < previousFrames.length; i++) {
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
     const frameA = previousFrames[i];
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
     const frameB = currentFrames[i];
 
     if (
@@ -9809,8 +9829,9 @@ const _extraErrorDataIntegration = ((options = {}) => {
   const { depth = 3, captureErrorCause = true } = options;
   return {
     name: INTEGRATION_NAME$9,
-    processEvent(event, hint) {
-      return _enhanceEventWithErrorData(event, hint, depth, captureErrorCause);
+    processEvent(event, hint, client) {
+      const { maxValueLength = 250 } = client.getOptions();
+      return _enhanceEventWithErrorData(event, hint, depth, captureErrorCause, maxValueLength);
     },
   };
 }) ;
@@ -9822,13 +9843,14 @@ function _enhanceEventWithErrorData(
   hint = {},
   depth,
   captureErrorCause,
+  maxValueLength,
 ) {
   if (!hint.originalException || !isError(hint.originalException)) {
     return event;
   }
   const exceptionName = (hint.originalException ).name || hint.originalException.constructor.name;
 
-  const errorData = _extractErrorData(hint.originalException , captureErrorCause);
+  const errorData = _extractErrorData(hint.originalException , captureErrorCause, maxValueLength);
 
   if (errorData) {
     const contexts = {
@@ -9856,7 +9878,11 @@ function _enhanceEventWithErrorData(
 /**
  * Extract extra information from the Error object
  */
-function _extractErrorData(error, captureErrorCause) {
+function _extractErrorData(
+  error,
+  captureErrorCause,
+  maxValueLength,
+) {
   // We are trying to enhance already existing event, so no harm done if it won't succeed
   try {
     const nativeKeys = [
@@ -9879,7 +9905,7 @@ function _extractErrorData(error, captureErrorCause) {
         continue;
       }
       const value = error[key];
-      extraErrorInfo[key] = isError(value) ? value.toString() : value;
+      extraErrorInfo[key] = isError(value) || typeof value === 'string' ? truncate(`${value}`, maxValueLength) : value;
     }
 
     // Error.cause is a standard property that is non enumerable, we therefore need to access it separately.
@@ -10070,7 +10096,9 @@ function formatIssueTitle(issue) {
 function formatIssueMessage(zodError) {
   const errorKeyMap = new Set();
   for (const iss of zodError.issues) {
-    if (iss.path) errorKeyMap.add(iss.path[0]);
+    if (iss.path && iss.path[0]) {
+      errorKeyMap.add(iss.path[0]);
+    }
   }
   const errorKeys = Array.from(errorKeyMap);
 
@@ -10842,11 +10870,11 @@ const metricsDefault
  * Send user feedback to Sentry.
  */
 function captureFeedback(
-  feedbackParams,
+  params,
   hint = {},
   scope = getCurrentScope(),
 ) {
-  const { message, name, email, url, source, associatedEventId } = feedbackParams;
+  const { message, name, email, url, source, associatedEventId, tags } = params;
 
   const feedbackEvent = {
     contexts: {
@@ -10861,6 +10889,7 @@ function captureFeedback(
     },
     type: 'feedback',
     level: 'info',
+    tags,
   };
 
   const client = (scope && scope.getClient()) || getClient();
@@ -11436,22 +11465,24 @@ function appRootFromErrorStack(error) {
           .filter(seg => seg !== ''), // remove empty segments
     ) ;
 
-  if (paths.length == 0) {
+  const firstPath = paths[0];
+
+  if (!firstPath) {
     return undefined;
   }
 
   if (paths.length == 1) {
     // Assume the single file is in the root
-    return dirname(paths[0].join('/'));
+    return dirname(firstPath.join('/'));
   }
 
   // Iterate over the paths and bail out when they no longer have a common root
   let i = 0;
-  while (paths[0][i] && paths.every(w => w[i] === paths[0][i])) {
+  while (firstPath[i] && paths.every(w => w[i] === firstPath[i])) {
     i++;
   }
 
-  return paths[0].slice(0, i).join('/');
+  return firstPath.slice(0, i).join('/');
 }
 
 function getCwd() {

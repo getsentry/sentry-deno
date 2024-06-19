@@ -1295,6 +1295,12 @@ interface SendFeedbackParams {
     url?: string;
     source?: string;
     associatedEventId?: string;
+    /**
+     * Set an object that will be merged sent as tags data with the event.
+     */
+    tags?: {
+        [key: string]: Primitive;
+    };
 }
 
 type ThreadId = string;
@@ -1349,7 +1355,6 @@ interface ContinuousThreadCpuProfile {
     }>;
 }
 interface BaseProfile<T> {
-    timestamp: string;
     version: string;
     release: string;
     environment: string;
@@ -2160,7 +2165,7 @@ interface Client<O extends ClientOptions = ClientOptions> {
     /**
      * Register a callback when a DSC (Dynamic Sampling Context) is created.
      */
-    on(hook: 'createDsc', callback: (dsc: DynamicSamplingContext) => void): void;
+    on(hook: 'createDsc', callback: (dsc: DynamicSamplingContext, rootSpan?: Span) => void): void;
     /**
      * Register a callback when a Feedback event has been prepared.
      * This should be used to mutate the event. The options argument can hint
@@ -2225,7 +2230,7 @@ interface Client<O extends ClientOptions = ClientOptions> {
     /**
      * Fire a hook for when a DSC (Dynamic Sampling Context) is created. Expects the DSC as second argument.
      */
-    emit(hook: 'createDsc', dsc: DynamicSamplingContext): void;
+    emit(hook: 'createDsc', dsc: DynamicSamplingContext, rootSpan?: Span): void;
     /**
      * Fire a hook event for after preparing a feedback event. Events to be given
      * a feedback event as the second argument, and an optional options object as
@@ -2416,7 +2421,7 @@ type TransactionNamingScheme = 'path' | 'methodPath' | 'handler';
  */
 declare function propagationContextFromHeaders(sentryTrace: string | undefined, baggage: string | number | boolean | string[] | null | undefined): PropagationContext;
 
-declare const SDK_VERSION = "8.9.2";
+declare const SDK_VERSION = "8.10.0";
 
 interface DenoTransportOptions extends BaseTransportOptions {
     /** Custom headers for the transport. Used by the XHRTransport and FetchTransport */
@@ -2908,7 +2913,7 @@ declare abstract class BaseClient<O extends ClientOptions> implements Client<O> 
     /** @inheritdoc */
     on(hook: 'beforeAddBreadcrumb', callback: (breadcrumb: Breadcrumb, hint?: BreadcrumbHint) => void): void;
     /** @inheritdoc */
-    on(hook: 'createDsc', callback: (dsc: DynamicSamplingContext) => void): void;
+    on(hook: 'createDsc', callback: (dsc: DynamicSamplingContext, rootSpan?: Span) => void): void;
     /** @inheritdoc */
     on(hook: 'beforeSendFeedback', callback: (feedback: FeedbackEvent, options?: {
         includeReplay: boolean;
@@ -2957,7 +2962,7 @@ declare abstract class BaseClient<O extends ClientOptions> implements Client<O> 
     /** @inheritdoc */
     emit(hook: 'beforeAddBreadcrumb', breadcrumb: Breadcrumb, hint?: BreadcrumbHint): void;
     /** @inheritdoc */
-    emit(hook: 'createDsc', dsc: DynamicSamplingContext): void;
+    emit(hook: 'createDsc', dsc: DynamicSamplingContext, rootSpan?: Span): void;
     /** @inheritdoc */
     emit(hook: 'beforeSendFeedback', feedback: FeedbackEvent, options?: {
         includeReplay: boolean;
@@ -3564,7 +3569,7 @@ declare const metricsDefault: Metrics & {
 /**
  * Send user feedback to Sentry.
  */
-declare function captureFeedback(feedbackParams: SendFeedbackParams, hint?: EventHint & {
+declare function captureFeedback(params: SendFeedbackParams, hint?: EventHint & {
     includeReplay?: boolean;
 }, scope?: Scope$1): string;
 
