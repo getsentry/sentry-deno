@@ -448,7 +448,7 @@ function truncateAggregateExceptions(exceptions, maxValueLength) {
   });
 }
 
-const SDK_VERSION = '8.11.0';
+const SDK_VERSION = '8.12.0-beta.0';
 
 /** Get's the global object for the current JavaScript runtime */
 const GLOBAL_OBJ = globalThis ;
@@ -7400,7 +7400,7 @@ function captureException(
 /**
  * Captures a message event and sends it to Sentry.
  *
- * @param exception The exception to capture.
+ * @param message The message to send to Sentry.
  * @param captureContext Define the level of the message or pass in additional data to attach to the message.
  * @returns the id of the captured message.
  */
@@ -7415,7 +7415,7 @@ function captureMessage(message, captureContext) {
 /**
  * Captures a manually created event and sends it to Sentry.
  *
- * @param exception The event to send to Sentry.
+ * @param event The event to send to Sentry.
  * @param hint Optional additional data to attach to the Sentry event.
  * @returns the id of the captured event.
  */
@@ -9030,6 +9030,7 @@ function initAndBind(
   const client = new clientClass(options);
   setCurrentClient(client);
   client.init();
+  return client;
 }
 
 /**
@@ -11704,7 +11705,7 @@ function init(options = {}) {
     transport: options.transport || makeFetchTransport,
   };
 
-  initAndBind(DenoClient, clientOptions);
+  return initAndBind(DenoClient, clientOptions);
 }
 
 /**

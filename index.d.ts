@@ -2426,7 +2426,7 @@ type TransactionNamingScheme = 'path' | 'methodPath' | 'handler';
  */
 declare function propagationContextFromHeaders(sentryTrace: string | undefined, baggage: string | number | boolean | string[] | null | undefined): PropagationContext;
 
-declare const SDK_VERSION = "8.11.0";
+declare const SDK_VERSION = "8.12.0-beta.0";
 
 interface DenoTransportOptions extends BaseTransportOptions {
     /** Custom headers for the transport. Used by the XHRTransport and FetchTransport */
@@ -3244,7 +3244,7 @@ declare function captureException(exception: any, hint?: ExclusiveEventHintOrCap
 /**
  * Captures a message event and sends it to Sentry.
  *
- * @param exception The exception to capture.
+ * @param message The message to send to Sentry.
  * @param captureContext Define the level of the message or pass in additional data to attach to the message.
  * @returns the id of the captured message.
  */
@@ -3252,7 +3252,7 @@ declare function captureMessage(message: string, captureContext?: CaptureContext
 /**
  * Captures a manually created event and sends it to Sentry.
  *
- * @param exception The event to send to Sentry.
+ * @param event The event to send to Sentry.
  * @param hint Optional additional data to attach to the Sentry event.
  * @returns the id of the captured event.
  */
@@ -3638,7 +3638,7 @@ declare function getDefaultIntegrations(_options: Options): Integration[];
  *
  * @see {@link DenoOptions} for documentation on configuration options.
  */
-declare function init(options?: DenoOptions): void;
+declare function init(options?: DenoOptions): Client;
 
 /**
  * Adds Deno related context to events. This includes contexts about app, device, os, v8, and TypeScript.
