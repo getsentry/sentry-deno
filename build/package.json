@@ -6,14 +6,14 @@
   "homepage": "https://github.com/getsentry/sentry-javascript/tree/master/packages/deno",
   "author": "Sentry",
   "license": "MIT",
-  "module": "build/index.mjs",
-  "types": "build/index.d.ts",
+  "module": "index.mjs",
+  "types": "index.d.ts",
   "exports": {
     "./package.json": "./package.json",
     ".": {
       "import": {
-        "types": "./build/index.d.ts",
-        "default": "./build/index.mjs"
+        "types": "./index.d.ts",
+        "default": "./index.mjs"
       }
     }
   },
