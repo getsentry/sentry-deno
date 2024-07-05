@@ -2120,11 +2120,13 @@ interface Client<O extends ClientOptions = ClientOptions> {
     /**
      * Register a callback for whenever a span is started.
      * Receives the span as argument.
+     * @returns A function that, when executed, removes the registered callback.
      */
-    on(hook: 'spanStart', callback: (span: Span) => void): void;
+    on(hook: 'spanStart', callback: (span: Span) => void): () => void;
     /**
      * Register a callback before span sampling runs. Receives a `samplingDecision` object argument with a `decision`
      * property that can be used to make a sampling decision that will be enforced, before any span sampling runs.
+     * @returns A function that, when executed, removes the registered callback.
      */
     on(hook: 'beforeSampling', callback: (samplingData: {
         spanAttributes: SpanAttributes;
@@ -2137,67 +2139,80 @@ interface Client<O extends ClientOptions = ClientOptions> {
     /**
      * Register a callback for whenever a span is ended.
      * Receives the span as argument.
+     * @returns A function that, when executed, removes the registered callback.
      */
-    on(hook: 'spanEnd', callback: (span: Span) => void): void;
+    on(hook: 'spanEnd', callback: (span: Span) => void): () => void;
     /**
      * Register a callback for when an idle span is allowed to auto-finish.
+     * @returns A function that, when executed, removes the registered callback.
      */
-    on(hook: 'idleSpanEnableAutoFinish', callback: (span: Span) => void): void;
+    on(hook: 'idleSpanEnableAutoFinish', callback: (span: Span) => void): () => void;
     /**
      * Register a callback for transaction start and finish.
+     * @returns A function that, when executed, removes the registered callback.
      */
-    on(hook: 'beforeEnvelope', callback: (envelope: Envelope) => void): void;
+    on(hook: 'beforeEnvelope', callback: (envelope: Envelope) => void): () => void;
     /**
      * Register a callback for before sending an event.
      * This is called right before an event is sent and should not be used to mutate the event.
      * Receives an Event & EventHint as arguments.
+     * @returns A function that, when executed, removes the registered callback.
      */
-    on(hook: 'beforeSendEvent', callback: (event: Event, hint?: EventHint | undefined) => void): void;
+    on(hook: 'beforeSendEvent', callback: (event: Event, hint?: EventHint | undefined) => void): () => void;
     /**
      * Register a callback for preprocessing an event,
      * before it is passed to (global) event processors.
      * Receives an Event & EventHint as arguments.
+     * @returns A function that, when executed, removes the registered callback.
      */
-    on(hook: 'preprocessEvent', callback: (event: Event, hint?: EventHint | undefined) => void): void;
+    on(hook: 'preprocessEvent', callback: (event: Event, hint?: EventHint | undefined) => void): () => void;
     /**
      * Register a callback for when an event has been sent.
+     * @returns A function that, when executed, removes the registered callback.
      */
-    on(hook: 'afterSendEvent', callback: (event: Event, sendResponse: TransportMakeRequestResponse) => void): void;
+    on(hook: 'afterSendEvent', callback: (event: Event, sendResponse: TransportMakeRequestResponse) => void): () => void;
     /**
      * Register a callback before a breadcrumb is added.
+     * @returns A function that, when executed, removes the registered callback.
      */
-    on(hook: 'beforeAddBreadcrumb', callback: (breadcrumb: Breadcrumb, hint?: BreadcrumbHint) => void): void;
+    on(hook: 'beforeAddBreadcrumb', callback: (breadcrumb: Breadcrumb, hint?: BreadcrumbHint) => void): () => void;
     /**
      * Register a callback when a DSC (Dynamic Sampling Context) is created.
+     * @returns A function that, when executed, removes the registered callback.
      */
-    on(hook: 'createDsc', callback: (dsc: DynamicSamplingContext, rootSpan?: Span) => void): void;
+    on(hook: 'createDsc', callback: (dsc: DynamicSamplingContext, rootSpan?: Span) => void): () => void;
     /**
      * Register a callback when a Feedback event has been prepared.
      * This should be used to mutate the event. The options argument can hint
      * about what kind of mutation it expects.
+     * @returns A function that, when executed, removes the registered callback.
      */
     on(hook: 'beforeSendFeedback', callback: (feedback: FeedbackEvent, options?: {
         includeReplay?: boolean;
-    }) => void): void;
+    }) => void): () => void;
     /**
      * A hook for the browser tracing integrations to trigger a span start for a page load.
+     * @returns A function that, when executed, removes the registered callback.
      */
     on(hook: 'startPageLoadSpan', callback: (options: StartSpanOptions, traceOptions?: {
         sentryTrace?: string | undefined;
         baggage?: string | undefined;
-    }) => void): void;
+    }) => void): () => void;
     /**
      * A hook for browser tracing integrations to trigger a span for a navigation.
+     * @returns A function that, when executed, removes the registered callback.
      */
-    on(hook: 'startNavigationSpan', callback: (options: StartSpanOptions) => void): void;
+    on(hook: 'startNavigationSpan', callback: (options: StartSpanOptions) => void): () => void;
     /**
      * A hook that is called when the client is flushing
+     * @returns A function that, when executed, removes the registered callback.
      */
-    on(hook: 'flush', callback: () => void): void;
+    on(hook: 'flush', callback: () => void): () => void;
     /**
      * A hook that is called when the client is closing
+     * @returns A function that, when executed, removes the registered callback.
      */
-    on(hook: 'close', callback: () => void): void;
+    on(hook: 'close', callback: () => void): () => void;
     /** Fire a hook whener a span starts. */
     emit(hook: 'spanStart', span: Span): void;
     /** A hook that is called every time before a span is sampled. */
@@ -2426,7 +2441,7 @@ type TransactionNamingScheme = 'path' | 'methodPath' | 'handler';
  */
 declare function propagationContextFromHeaders(sentryTrace: string | undefined, baggage: string | number | boolean | string[] | null | undefined): PropagationContext;
 
-declare const SDK_VERSION = "8.14.0";
+declare const SDK_VERSION = "8.15.0";
 
 interface DenoTransportOptions extends BaseTransportOptions {
     /** Custom headers for the transport. Used by the XHRTransport and FetchTransport */
@@ -2902,27 +2917,27 @@ declare abstract class BaseClient<O extends ClientOptions> implements Client<O> 
      */
     recordDroppedEvent(reason: EventDropReason, category: DataCategory, _event?: Event): void;
     /** @inheritdoc */
-    on(hook: 'spanStart', callback: (span: Span) => void): void;
+    on(hook: 'spanStart', callback: (span: Span) => void): () => void;
     /** @inheritdoc */
-    on(hook: 'spanEnd', callback: (span: Span) => void): void;
+    on(hook: 'spanEnd', callback: (span: Span) => void): () => void;
     /** @inheritdoc */
-    on(hook: 'idleSpanEnableAutoFinish', callback: (span: Span) => void): void;
+    on(hook: 'idleSpanEnableAutoFinish', callback: (span: Span) => void): () => void;
     /** @inheritdoc */
-    on(hook: 'beforeEnvelope', callback: (envelope: Envelope) => void): void;
+    on(hook: 'beforeEnvelope', callback: (envelope: Envelope) => void): () => void;
     /** @inheritdoc */
-    on(hook: 'beforeSendEvent', callback: (event: Event, hint?: EventHint) => void): void;
+    on(hook: 'beforeSendEvent', callback: (event: Event, hint?: EventHint) => void): () => void;
     /** @inheritdoc */
-    on(hook: 'preprocessEvent', callback: (event: Event, hint?: EventHint) => void): void;
+    on(hook: 'preprocessEvent', callback: (event: Event, hint?: EventHint) => void): () => void;
     /** @inheritdoc */
-    on(hook: 'afterSendEvent', callback: (event: Event, sendResponse: TransportMakeRequestResponse) => void): void;
+    on(hook: 'afterSendEvent', callback: (event: Event, sendResponse: TransportMakeRequestResponse) => void): () => void;
     /** @inheritdoc */
-    on(hook: 'beforeAddBreadcrumb', callback: (breadcrumb: Breadcrumb, hint?: BreadcrumbHint) => void): void;
+    on(hook: 'beforeAddBreadcrumb', callback: (breadcrumb: Breadcrumb, hint?: BreadcrumbHint) => void): () => void;
     /** @inheritdoc */
-    on(hook: 'createDsc', callback: (dsc: DynamicSamplingContext, rootSpan?: Span) => void): void;
+    on(hook: 'createDsc', callback: (dsc: DynamicSamplingContext, rootSpan?: Span) => void): () => void;
     /** @inheritdoc */
     on(hook: 'beforeSendFeedback', callback: (feedback: FeedbackEvent, options?: {
         includeReplay: boolean;
-    }) => void): void;
+    }) => void): () => void;
     /** @inheritdoc */
     on(hook: 'beforeSampling', callback: (samplingData: {
         spanAttributes: SpanAttributes;
@@ -2936,11 +2951,11 @@ declare abstract class BaseClient<O extends ClientOptions> implements Client<O> 
     on(hook: 'startPageLoadSpan', callback: (options: StartSpanOptions, traceOptions?: {
         sentryTrace?: string | undefined;
         baggage?: string | undefined;
-    }) => void): void;
+    }) => void): () => void;
     /** @inheritdoc */
-    on(hook: 'startNavigationSpan', callback: (options: StartSpanOptions) => void): void;
-    on(hook: 'flush', callback: () => void): void;
-    on(hook: 'close', callback: () => void): void;
+    on(hook: 'startNavigationSpan', callback: (options: StartSpanOptions) => void): () => void;
+    on(hook: 'flush', callback: () => void): () => void;
+    on(hook: 'close', callback: () => void): () => void;
     /** @inheritdoc */
     emit(hook: 'beforeSampling', samplingData: {
         spanAttributes: SpanAttributes;

@@ -448,7 +448,7 @@ function truncateAggregateExceptions(exceptions, maxValueLength) {
   });
 }
 
-const SDK_VERSION = '8.14.0';
+const SDK_VERSION = '8.15.0';
 
 /** Get's the global object for the current JavaScript runtime */
 const GLOBAL_OBJ = globalThis ;
@@ -4776,6 +4776,7 @@ class AsyncContextStack {
       assignedIsolationScope = isolationScope;
     }
 
+    // scope stack for domains or the process
     this._stack = [{ scope: assignedScope }];
     this._isolationScope = assignedIsolationScope;
   }
@@ -4834,13 +4835,6 @@ class AsyncContextStack {
   }
 
   /**
-   * Returns the scope stack for domains or the process.
-   */
-   getStack() {
-    return this._stack;
-  }
-
-  /**
    * Returns the topmost scope layer in the order domain > local > process.
    */
    getStackTop() {
@@ -4853,7 +4847,7 @@ class AsyncContextStack {
    _pushScope() {
     // We want to clone the content of prev scope
     const scope = this.getScope().clone();
-    this.getStack().push({
+    this._stack.push({
       client: this.getClient(),
       scope,
     });
@@ -4864,8 +4858,8 @@ class AsyncContextStack {
    * Pop a scope from the stack.
    */
    _popScope() {
-    if (this.getStack().length <= 1) return false;
-    return !!this.getStack().pop();
+    if (this._stack.length <= 1) return false;
+    return !!this._stack.pop();
   }
 }
 
@@ -5244,7 +5238,7 @@ function spanToTraceHeader(span) {
 }
 
 /**
- * Convert a span time input intp a timestamp in seconds.
+ * Convert a span time input into a timestamp in seconds.
  */
 function spanTimeInputToSeconds(input) {
   if (typeof input === 'number') {
@@ -8306,12 +8300,30 @@ class BaseClient {
 
   /** @inheritdoc */
    on(hook, callback) {
+    // Note that the code below, with nullish coalescing assignment,
+    // may reduce the code, so it may be switched to when Node 14 support
+    // is dropped (the `??=` operator is supported since Node 15).
+    // (this._hooks[hook] ??= []).push(callback);
     if (!this._hooks[hook]) {
       this._hooks[hook] = [];
     }
 
     // @ts-expect-error We assue the types are correct
     this._hooks[hook].push(callback);
+
+    // This function returns a callback execution handler that, when invoked,
+    // deregisters a callback. This is crucial for managing instances where callbacks
+    // need to be unregistered to prevent self-referencing in callback closures,
+    // ensuring proper garbage collection.
+    return () => {
+      const hooks = this._hooks[hook];
+
+      if (hooks) {
+        // @ts-expect-error We assue the types are correct
+        const cbIndex = hooks.indexOf(callback);
+        hooks.splice(cbIndex, 1);
+      }
+    };
   }
 
   /** @inheritdoc */
@@ -8564,12 +8576,18 @@ class BaseClient {
           return prepared;
         }
 
-        const result = processBeforeSend(options, prepared, hint);
+        const result = processBeforeSend(this, options, prepared, hint);
         return _validateBeforeSendResult(result, beforeSendLabel);
       })
       .then(processedEvent => {
         if (processedEvent === null) {
           this.recordDroppedEvent('before_send', dataCategory, event);
+          if (isTransactionEvent(event)) {
+            const spans = event.spans || [];
+            // the transaction itself counts as one span, plus all the child spans that are added
+            const spanCount = 1 + spans.length;
+            this._outcomes['span'] = (this._outcomes['span'] || 0) + spanCount;
+          }
           throw new SentryError(`${beforeSendLabel} returned \`null\`, will not send event.`, 'log');
         }
 
@@ -8680,6 +8698,7 @@ function _validateBeforeSendResult(
  * Process the matching `beforeSendXXX` callback.
  */
 function processBeforeSend(
+  client,
   options,
   event,
   hint,
@@ -8697,6 +8716,8 @@ function processBeforeSend(
         const processedSpan = beforeSendSpan(span);
         if (processedSpan) {
           processedSpans.push(processedSpan);
+        } else {
+          client.recordDroppedEvent('before_send', 'span');
         }
       }
       event.spans = processedSpans;
