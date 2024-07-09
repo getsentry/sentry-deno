@@ -448,7 +448,7 @@ function truncateAggregateExceptions(exceptions, maxValueLength) {
   });
 }
 
-const SDK_VERSION = '8.15.0';
+const SDK_VERSION = '8.16.0';
 
 /** Get's the global object for the current JavaScript runtime */
 const GLOBAL_OBJ = globalThis ;
@@ -7038,6 +7038,10 @@ function prepareEvent(
 
   applyClientOptions(prepared, options);
   applyIntegrationsMetadata(prepared, integrations);
+
+  if (client) {
+    client.emit('applyFrameMetadata', event);
+  }
 
   // Only put debug IDs onto frames for error events.
   if (event.type === undefined) {

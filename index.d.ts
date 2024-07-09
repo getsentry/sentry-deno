@@ -2153,6 +2153,11 @@ interface Client<O extends ClientOptions = ClientOptions> {
      */
     on(hook: 'beforeEnvelope', callback: (envelope: Envelope) => void): () => void;
     /**
+     * Register a callback that runs when stack frame metadata should be applied to an event.
+     * @returns A function that, when executed, removes the registered callback.
+     */
+    on(hook: 'applyFrameMetadata', callback: (event: Event) => void): () => void;
+    /**
      * Register a callback for before sending an event.
      * This is called right before an event is sent and should not be used to mutate the event.
      * Receives an Event & EventHint as arguments.
@@ -2231,6 +2236,7 @@ interface Client<O extends ClientOptions = ClientOptions> {
      */
     emit(hook: 'idleSpanEnableAutoFinish', span: Span): void;
     emit(hook: 'beforeEnvelope', envelope: Envelope): void;
+    emit(hook: 'applyFrameMetadata', event: Event): void;
     /**
      * Fire a hook event before sending an event.
      * This is called right before an event is sent and should not be used to mutate the event.
@@ -2441,7 +2447,7 @@ type TransactionNamingScheme = 'path' | 'methodPath' | 'handler';
  */
 declare function propagationContextFromHeaders(sentryTrace: string | undefined, baggage: string | number | boolean | string[] | null | undefined): PropagationContext;
 
-declare const SDK_VERSION = "8.15.0";
+declare const SDK_VERSION = "8.16.0";
 
 interface DenoTransportOptions extends BaseTransportOptions {
     /** Custom headers for the transport. Used by the XHRTransport and FetchTransport */
@@ -2956,6 +2962,7 @@ declare abstract class BaseClient<O extends ClientOptions> implements Client<O> 
     on(hook: 'startNavigationSpan', callback: (options: StartSpanOptions) => void): () => void;
     on(hook: 'flush', callback: () => void): () => void;
     on(hook: 'close', callback: () => void): () => void;
+    on(hook: 'applyFrameMetadata', callback: (event: Event) => void): () => void;
     /** @inheritdoc */
     emit(hook: 'beforeSampling', samplingData: {
         spanAttributes: SpanAttributes;
@@ -2998,6 +3005,8 @@ declare abstract class BaseClient<O extends ClientOptions> implements Client<O> 
     emit(hook: 'flush'): void;
     /** @inheritdoc */
     emit(hook: 'close'): void;
+    /** @inheritdoc */
+    emit(hook: 'applyFrameMetadata', event: Event): void;
     /**
      * @inheritdoc
      */
