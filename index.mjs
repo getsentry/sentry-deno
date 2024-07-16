@@ -448,7 +448,7 @@ function truncateAggregateExceptions(exceptions, maxValueLength) {
   });
 }
 
-const SDK_VERSION = '8.17.0';
+const SDK_VERSION = '8.18.0';
 
 /** Get's the global object for the current JavaScript runtime */
 const GLOBAL_OBJ = globalThis ;
@@ -5501,6 +5501,7 @@ function hasTracingEnabled(
   }
 
   const options = maybeOptions || getClientOptions();
+  // eslint-disable-next-line deprecation/deprecation
   return !!options && (options.enableTracing || 'tracesSampleRate' in options || 'tracesSampler' in options);
 }
 
@@ -6514,7 +6515,7 @@ function startInactiveSpan(options) {
   // If `options.parentSpan` is defined, we want to wrap the callback in `withActiveSpan`
   const wrapper = options.scope
     ? (callback) => withScope(options.scope, callback)
-    : customParentSpan
+    : customParentSpan !== undefined
       ? (callback) => withActiveSpan(customParentSpan, callback)
       : (callback) => callback();
 
@@ -6785,7 +6786,7 @@ function getParentSpan(scope) {
 }
 
 function getActiveSpanWrapper(parentSpan) {
-  return parentSpan
+  return parentSpan !== undefined
     ? (callback) => {
         return withActiveSpan(parentSpan, callback);
       }
@@ -8304,27 +8305,19 @@ class BaseClient {
 
   /** @inheritdoc */
    on(hook, callback) {
-    // Note that the code below, with nullish coalescing assignment,
-    // may reduce the code, so it may be switched to when Node 14 support
-    // is dropped (the `??=` operator is supported since Node 15).
-    // (this._hooks[hook] ??= []).push(callback);
-    if (!this._hooks[hook]) {
-      this._hooks[hook] = [];
-    }
+    const hooks = (this._hooks[hook] = this._hooks[hook] || []);
 
     // @ts-expect-error We assue the types are correct
-    this._hooks[hook].push(callback);
+    hooks.push(callback);
 
     // This function returns a callback execution handler that, when invoked,
     // deregisters a callback. This is crucial for managing instances where callbacks
     // need to be unregistered to prevent self-referencing in callback closures,
     // ensuring proper garbage collection.
     return () => {
-      const hooks = this._hooks[hook];
-
-      if (hooks) {
-        // @ts-expect-error We assue the types are correct
-        const cbIndex = hooks.indexOf(callback);
+      // @ts-expect-error We assue the types are correct
+      const cbIndex = hooks.indexOf(callback);
+      if (cbIndex > -1) {
         hooks.splice(cbIndex, 1);
       }
     };

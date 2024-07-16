@@ -1702,9 +1702,13 @@ interface ClientOptions<TO extends BaseTransportOptions = BaseTransportOptions> 
      */
     tracesSampleRate?: number;
     /**
-     * If this is enabled, transactions and trace data will be generated and captured.
+     * If this is enabled, spans and trace data will be generated and captured.
      * This will set the `tracesSampleRate` to the recommended default of `1.0` if `tracesSampleRate` is undefined.
      * Note that `tracesSampleRate` and `tracesSampler` take precedence over this option.
+     *
+     * @deprecated This option is deprecated and will be removed in the next major version. If you want to enable performance
+     * monitoring, please use the `tracesSampleRate` or `tracesSampler` options instead. If you wan't to disable performance
+     * monitoring, remove the `tracesSampler` and `tracesSampleRate` options.
      */
     enableTracing?: boolean;
     /**
@@ -1953,8 +1957,9 @@ interface StartSpanOptions {
     /**
      * If provided, make the new span a child of this span.
      * If this is not provided, the new span will be a child of the currently active span.
+     * If this is set to `null`, the new span will have no parent span.
      */
-    parentSpan?: Span;
+    parentSpan?: Span | null;
     /**
      * If set to true, this span will be forced to be treated as a transaction in the Sentry UI, if possible and applicable.
      * Note that it is up to the SDK to decide how exactly the span will be sent, which may change in future SDK versions.
@@ -2447,7 +2452,7 @@ type TransactionNamingScheme = 'path' | 'methodPath' | 'handler';
  */
 declare function propagationContextFromHeaders(sentryTrace: string | undefined, baggage: string | number | boolean | string[] | null | undefined): PropagationContext;
 
-declare const SDK_VERSION = "8.17.0";
+declare const SDK_VERSION = "8.18.0";
 
 interface DenoTransportOptions extends BaseTransportOptions {
     /** Custom headers for the transport. Used by the XHRTransport and FetchTransport */
