@@ -448,7 +448,7 @@ function truncateAggregateExceptions(exceptions, maxValueLength) {
   });
 }
 
-const SDK_VERSION = '8.18.0';
+const SDK_VERSION = '8.19.0';
 
 /** Get's the global object for the current JavaScript runtime */
 const GLOBAL_OBJ = globalThis ;
@@ -5566,6 +5566,39 @@ class SentryNonRecordingSpan  {
   ) {
     return this;
   }
+
+  /**
+   * This should generally not be used,
+   * but we need it for being comliant with the OTEL Span interface.
+   *
+   * @hidden
+   * @internal
+   */
+   addLink(_link) {
+    return this;
+  }
+
+  /**
+   * This should generally not be used,
+   * but we need it for being comliant with the OTEL Span interface.
+   *
+   * @hidden
+   * @internal
+   */
+   addLinks(_links) {
+    return this;
+  }
+
+  /**
+   * This should generally not be used,
+   * but we need it for being comliant with the OTEL Span interface.
+   *
+   * @hidden
+   * @internal
+   */
+   recordException(_exception, _time) {
+    // noop
+  }
 }
 
 /**
@@ -6086,6 +6119,39 @@ class SentrySpan  {
     }
   }
 
+  /**
+   * This should generally not be used,
+   * but it is needed for being compliant with the OTEL Span interface.
+   *
+   * @hidden
+   * @internal
+   */
+   addLink(_link) {
+    return this;
+  }
+
+  /**
+   * This should generally not be used,
+   * but it is needed for being compliant with the OTEL Span interface.
+   *
+   * @hidden
+   * @internal
+   */
+   addLinks(_links) {
+    return this;
+  }
+
+  /**
+   * This should generally not be used,
+   * but it is needed for being compliant with the OTEL Span interface.
+   *
+   * @hidden
+   * @internal
+   */
+   recordException(_exception, _time) {
+    // noop
+  }
+
   /** @inheritdoc */
    spanContext() {
     const { _spanId: spanId, _traceId: traceId, _sampled: sampled } = this;
@@ -6104,11 +6170,14 @@ class SentrySpan  {
     } else {
       this._attributes[key] = value;
     }
+
+    return this;
   }
 
   /** @inheritdoc */
    setAttributes(attributes) {
     Object.keys(attributes).forEach(key => this.setAttribute(key, attributes[key]));
+    return this;
   }
 
   /**

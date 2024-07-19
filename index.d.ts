@@ -410,12 +410,12 @@ interface Span {
      * Set a single attribute on the span.
      * Set it to `undefined` to remove the attribute.
      */
-    setAttribute(key: string, value: SpanAttributeValue | undefined): void;
+    setAttribute(key: string, value: SpanAttributeValue | undefined): this;
     /**
      * Set multiple attributes on the span.
      * Any attribute set to `undefined` will be removed.
      */
-    setAttributes(attributes: SpanAttributes): void;
+    setAttributes(attributes: SpanAttributes): this;
     /**
      * Sets the status attribute on the current span.
      */
@@ -433,6 +433,18 @@ interface Span {
      * Adds an event to the Span.
      */
     addEvent(name: string, attributesOrStartTime?: SpanAttributes | SpanTimeInput, startTime?: SpanTimeInput): this;
+    /**
+     * NOT USED IN SENTRY, only added for compliance with OTEL Span interface
+     */
+    addLink(link: unknown): this;
+    /**
+     * NOT USED IN SENTRY, only added for compliance with OTEL Span interface
+     */
+    addLinks(links: unknown): this;
+    /**
+     * NOT USED IN SENTRY, only added for compliance with OTEL Span interface
+     */
+    recordException(exception: unknown, time?: number): void;
 }
 
 type Context = Record<string, unknown>;
@@ -2452,7 +2464,7 @@ type TransactionNamingScheme = 'path' | 'methodPath' | 'handler';
  */
 declare function propagationContextFromHeaders(sentryTrace: string | undefined, baggage: string | number | boolean | string[] | null | undefined): PropagationContext;
 
-declare const SDK_VERSION = "8.18.0";
+declare const SDK_VERSION = "8.19.0";
 
 interface DenoTransportOptions extends BaseTransportOptions {
     /** Custom headers for the transport. Used by the XHRTransport and FetchTransport */
