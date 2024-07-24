@@ -448,7 +448,7 @@ function truncateAggregateExceptions(exceptions, maxValueLength) {
   });
 }
 
-const SDK_VERSION = '8.19.0';
+const SDK_VERSION = '8.20.0';
 
 /** Get's the global object for the current JavaScript runtime */
 const GLOBAL_OBJ = globalThis ;
@@ -3608,6 +3608,26 @@ function createEventEnvelopeHeaders(
       trace: dropUndefinedKeys({ ...dynamicSamplingContext }),
     }),
   };
+}
+
+/**
+ * Creates client report envelope
+ * @param discarded_events An array of discard events
+ * @param dsn A DSN that can be set on the header. Optional.
+ */
+function createClientReportEnvelope(
+  discarded_events,
+  dsn,
+  timestamp,
+) {
+  const clientReportItem = [
+    { type: 'client_report' },
+    {
+      timestamp: timestamp || dateTimestampInSeconds(),
+      discarded_events,
+    },
+  ];
+  return createEnvelope(dsn ? { dsn } : {}, [clientReportItem]);
 }
 
 // Intentionally keeping the key broad, as we don't know for sure what rate limit headers get returned from backend
@@ -8725,6 +8745,34 @@ class BaseClient {
         quantity,
       };
     });
+  }
+
+  /**
+   * Sends client reports as an envelope.
+   */
+   _flushOutcomes() {
+    DEBUG_BUILD && logger.log('Flushing outcomes...');
+
+    const outcomes = this._clearOutcomes();
+
+    if (outcomes.length === 0) {
+      DEBUG_BUILD && logger.log('No outcomes to send');
+      return;
+    }
+
+    // This is really the only place where we want to check for a DSN and only send outcomes then
+    if (!this._dsn) {
+      DEBUG_BUILD && logger.log('No dsn provided, will not send outcomes');
+      return;
+    }
+
+    DEBUG_BUILD && logger.log('Sending outcomes:', outcomes);
+
+    const envelope = createClientReportEnvelope(outcomes, this._options.tunnel && dsnToString(this._dsn));
+
+    // sendEnvelope should not throw
+    // eslint-disable-next-line @typescript-eslint/no-floating-promises
+    this.sendEnvelope(envelope);
   }
 
   /**

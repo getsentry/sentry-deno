@@ -1666,8 +1666,7 @@ interface ClientOptions<TO extends BaseTransportOptions = BaseTransportOptions> 
      */
     autoSessionTracking?: boolean;
     /**
-     * Send SDK Client Reports.
-     * By default, Client Reports are enabled.
+     * Send SDK Client Reports. When calling `Sentry.init()`, this option defaults to `true`.
      */
     sendClientReports?: boolean;
     /**
@@ -2464,7 +2463,7 @@ type TransactionNamingScheme = 'path' | 'methodPath' | 'handler';
  */
 declare function propagationContextFromHeaders(sentryTrace: string | undefined, baggage: string | number | boolean | string[] | null | undefined): PropagationContext;
 
-declare const SDK_VERSION = "8.19.0";
+declare const SDK_VERSION = "8.20.0";
 
 interface DenoTransportOptions extends BaseTransportOptions {
     /** Custom headers for the transport. Used by the XHRTransport and FetchTransport */
@@ -3089,6 +3088,10 @@ declare abstract class BaseClient<O extends ClientOptions> implements Client<O> 
      * Clears outcomes on this client and returns them.
      */
     protected _clearOutcomes(): Outcome[];
+    /**
+     * Sends client reports as an envelope.
+     */
+    protected _flushOutcomes(): void;
     /**
      * @inheritDoc
      */
