@@ -2463,7 +2463,7 @@ type TransactionNamingScheme = 'path' | 'methodPath' | 'handler';
  */
 declare function propagationContextFromHeaders(sentryTrace: string | undefined, baggage: string | number | boolean | string[] | null | undefined): PropagationContext;
 
-declare const SDK_VERSION = "8.20.0";
+declare const SDK_VERSION = "8.21.0";
 
 interface DenoTransportOptions extends BaseTransportOptions {
     /** Custom headers for the transport. Used by the XHRTransport and FetchTransport */
@@ -2937,7 +2937,7 @@ declare abstract class BaseClient<O extends ClientOptions> implements Client<O> 
     /**
      * @inheritDoc
      */
-    recordDroppedEvent(reason: EventDropReason, category: DataCategory, _event?: Event): void;
+    recordDroppedEvent(reason: EventDropReason, category: DataCategory, eventOrCount?: Event | number): void;
     /** @inheritdoc */
     on(hook: 'spanStart', callback: (span: Span) => void): () => void;
     /** @inheritdoc */
