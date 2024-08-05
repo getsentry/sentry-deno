@@ -448,7 +448,7 @@ function truncateAggregateExceptions(exceptions, maxValueLength) {
   });
 }
 
-const SDK_VERSION = '8.22.0';
+const SDK_VERSION = '8.23.0';
 
 /** Get's the global object for the current JavaScript runtime */
 const GLOBAL_OBJ = globalThis ;
@@ -1553,40 +1553,35 @@ function instrumentFetch(onFetchResolved, skipNativeFetchCheck = false) {
           if (onFetchResolved) {
             onFetchResolved(response);
           } else {
-            const finishedHandlerData = {
+            triggerHandlers('fetch', {
               ...handlerData,
               endTimestamp: timestampInSeconds() * 1000,
               response,
-            };
-            triggerHandlers('fetch', finishedHandlerData);
+            });
           }
 
           return response;
         },
         (error) => {
-          if (!onFetchResolved) {
-            const erroredHandlerData = {
-              ...handlerData,
-              endTimestamp: timestampInSeconds() * 1000,
-              error,
-            };
+          triggerHandlers('fetch', {
+            ...handlerData,
+            endTimestamp: timestampInSeconds() * 1000,
+            error,
+          });
 
-            triggerHandlers('fetch', erroredHandlerData);
-
-            if (isError(error) && error.stack === undefined) {
-              // NOTE: If you are a Sentry user, and you are seeing this stack frame,
-              //       it means the error, that was caused by your fetch call did not
-              //       have a stack trace, so the SDK backfilled the stack trace so
-              //       you can see which fetch call failed.
-              error.stack = virtualStackTrace;
-              addNonEnumerableProperty(error, 'framesToPop', 1);
-            }
-
+          if (isError(error) && error.stack === undefined) {
             // NOTE: If you are a Sentry user, and you are seeing this stack frame,
-            //       it means the sentry.javascript SDK caught an error invoking your application code.
-            //       This is expected behavior and NOT indicative of a bug with sentry.javascript.
-            throw error;
+            //       it means the error, that was caused by your fetch call did not
+            //       have a stack trace, so the SDK backfilled the stack trace so
+            //       you can see which fetch call failed.
+            error.stack = virtualStackTrace;
+            addNonEnumerableProperty(error, 'framesToPop', 1);
           }
+
+          // NOTE: If you are a Sentry user, and you are seeing this stack frame,
+          //       it means the sentry.javascript SDK caught an error invoking your application code.
+          //       This is expected behavior and NOT indicative of a bug with sentry.javascript.
+          throw error;
         },
       );
     };
@@ -9302,6 +9297,80 @@ function getEventForEnvelopeItem(item, type) {
 }
 
 /**
+ * Extracts trace propagation data from the current span or from the client's scope (via transaction or propagation
+ * context) and serializes it to `sentry-trace` and `baggage` values to strings. These values can be used to propagate
+ * a trace via our tracing Http headers or Html `<meta>` tags.
+ *
+ * This function also applies some validation to the generated sentry-trace and baggage values to ensure that
+ * only valid strings are returned.
+ *
+ * @param span a span to take the trace data from. By default, the currently active span is used.
+ * @param scope the scope to take trace data from By default, the active current scope is used.
+ * @param client the SDK's client to take trace data from. By default, the current client is used.
+ *
+ * @returns an object with the tracing data values. The object keys are the name of the tracing key to be used as header
+ * or meta tag name.
+ */
+function getTraceData(span, scope, client) {
+  const clientToUse = client || getClient();
+  const scopeToUse = scope || getCurrentScope();
+  const spanToUse = span || getActiveSpan();
+
+  const { dsc, sampled, traceId } = scopeToUse.getPropagationContext();
+  const rootSpan = spanToUse && getRootSpan(spanToUse);
+
+  const sentryTrace = spanToUse ? spanToTraceHeader(spanToUse) : generateSentryTraceHeader(traceId, undefined, sampled);
+
+  const dynamicSamplingContext = rootSpan
+    ? getDynamicSamplingContextFromSpan(rootSpan)
+    : dsc
+      ? dsc
+      : clientToUse
+        ? getDynamicSamplingContextFromClient(traceId, clientToUse)
+        : undefined;
+
+  const baggage = dynamicSamplingContextToSentryBaggageHeader(dynamicSamplingContext);
+
+  const isValidSentryTraceHeader = TRACEPARENT_REGEXP.test(sentryTrace);
+  if (!isValidSentryTraceHeader) {
+    logger.warn('Invalid sentry-trace data. Cannot generate trace data');
+    return {};
+  }
+
+  const validBaggage = isValidBaggageString(baggage);
+  if (!validBaggage) {
+    logger.warn('Invalid baggage data. Not returning "baggage" value');
+  }
+
+  return {
+    'sentry-trace': sentryTrace,
+    ...(validBaggage && { baggage }),
+  };
+}
+
+/**
+ * Tests string against baggage spec as defined in:
+ *
+ * - W3C Baggage grammar: https://www.w3.org/TR/baggage/#definition
+ * - RFC7230 token definition: https://datatracker.ietf.org/doc/html/rfc7230#section-3.2.6
+ *
+ * exported for testing
+ */
+function isValidBaggageString(baggage) {
+  if (!baggage || !baggage.length) {
+    return false;
+  }
+  const keyRegex = "[-!#$%&'*+.^_`|~A-Za-z0-9]+";
+  const valueRegex = '[!#-+-./0-9:<=>?@A-Z\\[\\]a-z{-}]+';
+  const spaces = '\\s*';
+  // eslint-disable-next-line @sentry-internal/sdk/no-regexp-constructor -- RegExp for readability, no user input
+  const baggageRegex = new RegExp(
+    `^${keyRegex}${spaces}=${spaces}${valueRegex}(${spaces},${spaces}${keyRegex}${spaces}=${spaces}${valueRegex})*$`,
+  );
+  return baggageRegex.test(baggage);
+}
+
+/**
  * Default maximum number of breadcrumbs added to an event. Can be overwritten
  * with {@link Options.maxBreadcrumbs}.
  */
@@ -12029,5 +12098,5 @@ const _denoCronIntegration = (() => {
  */
 const denoCronIntegration = defineIntegration(_denoCronIntegration);
 
-export { DenoClient, SDK_VERSION, SEMANTIC_ATTRIBUTE_SENTRY_OP, SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE, SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, Scope, addBreadcrumb, addEventProcessor, breadcrumbsIntegration, captureCheckIn, captureConsoleIntegration, captureEvent, captureException, captureFeedback, captureMessage, captureSession, close, contextLinesIntegration, continueTrace, createTransport, debugIntegration, dedupeIntegration, denoContextIntegration, denoCronIntegration, endSession, extraErrorDataIntegration, flush, functionToStringIntegration, getActiveSpan, getClient, getCurrentScope, getDefaultIntegrations, getGlobalScope, getIsolationScope, getRootSpan, getSpanStatusFromHttpCode, globalHandlersIntegration, inboundFiltersIntegration, init, isInitialized, lastEventId, linkedErrorsIntegration, metricsDefault as metrics, normalizePathsIntegration, requestDataIntegration, rewriteFramesIntegration, sessionTimingIntegration, setContext, setCurrentClient, setExtra, setExtras, setHttpStatus, setMeasurement, setTag, setTags, setUser, spanToBaggageHeader, spanToJSON, spanToTraceHeader, startInactiveSpan, startNewTrace, startSession, startSpan, startSpanManual, withIsolationScope, withMonitor, withScope, zodErrorsIntegration };
+export { DenoClient, SDK_VERSION, SEMANTIC_ATTRIBUTE_SENTRY_OP, SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE, SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, Scope, addBreadcrumb, addEventProcessor, breadcrumbsIntegration, captureCheckIn, captureConsoleIntegration, captureEvent, captureException, captureFeedback, captureMessage, captureSession, close, contextLinesIntegration, continueTrace, createTransport, debugIntegration, dedupeIntegration, denoContextIntegration, denoCronIntegration, endSession, extraErrorDataIntegration, flush, functionToStringIntegration, getActiveSpan, getClient, getCurrentScope, getDefaultIntegrations, getGlobalScope, getIsolationScope, getRootSpan, getSpanStatusFromHttpCode, getTraceData, globalHandlersIntegration, inboundFiltersIntegration, init, isInitialized, lastEventId, linkedErrorsIntegration, metricsDefault as metrics, normalizePathsIntegration, requestDataIntegration, rewriteFramesIntegration, sessionTimingIntegration, setContext, setCurrentClient, setExtra, setExtras, setHttpStatus, setMeasurement, setTag, setTags, setUser, spanToBaggageHeader, spanToJSON, spanToTraceHeader, startInactiveSpan, startNewTrace, startSession, startSpan, startSpanManual, withIsolationScope, withMonitor, withScope, zodErrorsIntegration };
 //# sourceMappingURL=index.mjs.map

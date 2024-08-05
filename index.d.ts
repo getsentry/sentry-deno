@@ -770,7 +770,7 @@ type Extra = unknown;
 type Extras = Record<string, Extra>;
 
 /**
- * Event processors are used to change the event before it will be send.
+ * Event processors are used to change the event before it will be sent.
  * We strongly advise to make this function sync.
  * Returning a PromiseLike<Event | null> will work just fine, but better be sure that you know what you are doing.
  * Event processing will be deferred until your Promise is resolved.
@@ -1435,6 +1435,10 @@ interface Profile extends BaseProfile<ThreadCpuProfile> {
 interface ProfileChunk extends BaseProfile<ContinuousThreadCpuProfile> {
     chunk_id: string;
     profiler_id: string;
+    client_sdk: {
+        name: string;
+        version: string;
+    };
 }
 
 /**
@@ -2467,7 +2471,7 @@ type TransactionNamingScheme = 'path' | 'methodPath' | 'handler';
  */
 declare function propagationContextFromHeaders(sentryTrace: string | undefined, baggage: string | number | boolean | string[] | null | undefined): PropagationContext;
 
-declare const SDK_VERSION = "8.22.0";
+declare const SDK_VERSION = "8.23.0";
 
 interface DenoTransportOptions extends BaseTransportOptions {
     /** Custom headers for the transport. Used by the XHRTransport and FetchTransport */
@@ -3483,6 +3487,27 @@ declare function getClient<C extends Client>(): C | undefined;
  */
 declare function createTransport(options: InternalBaseTransportOptions, makeRequest: TransportRequestExecutor, buffer?: PromiseBuffer<TransportMakeRequestResponse>): Transport;
 
+type TraceData = {
+    'sentry-trace'?: string;
+    baggage?: string;
+};
+/**
+ * Extracts trace propagation data from the current span or from the client's scope (via transaction or propagation
+ * context) and serializes it to `sentry-trace` and `baggage` values to strings. These values can be used to propagate
+ * a trace via our tracing Http headers or Html `<meta>` tags.
+ *
+ * This function also applies some validation to the generated sentry-trace and baggage values to ensure that
+ * only valid strings are returned.
+ *
+ * @param span a span to take the trace data from. By default, the currently active span is used.
+ * @param scope the scope to take trace data from By default, the active current scope is used.
+ * @param client the SDK's client to take trace data from. By default, the current client is used.
+ *
+ * @returns an object with the tracing data values. The object keys are the name of the tracing key to be used as header
+ * or meta tag name.
+ */
+declare function getTraceData(span?: Span, scope?: Scope$1, client?: Client): TraceData;
+
 /**
  * Records a new breadcrumb which will be attached to future events.
  *
@@ -3794,4 +3819,4 @@ interface BreadcrumbsOptions {
  */
 declare const breadcrumbsIntegration: (options?: Partial<BreadcrumbsOptions> | undefined) => Integration;
 
-export { type AddRequestDataToEventOptions, type Breadcrumb, type BreadcrumbHint, DenoClient, type DenoOptions, type ErrorEvent, type Event, type EventHint, type Exception, type PolymorphicRequest, type Request, SDK_VERSION, SEMANTIC_ATTRIBUTE_SENTRY_OP, SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE, SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, Scope, type SdkInfo, type Session, type SeverityLevel, type Span, type StackFrame, type Stacktrace, type Thread, type User, addBreadcrumb, addEventProcessor, breadcrumbsIntegration, captureCheckIn, captureConsoleIntegration, captureEvent, captureException, captureFeedback, captureMessage, captureSession, close, contextLinesIntegration, continueTrace, createTransport, debugIntegration, dedupeIntegration, denoContextIntegration, denoCronIntegration, endSession, extraErrorDataIntegration, flush, functionToStringIntegration, getActiveSpan, getClient, getCurrentScope, getDefaultIntegrations, getGlobalScope, getIsolationScope, getRootSpan, getSpanStatusFromHttpCode, globalHandlersIntegration, inboundFiltersIntegration, init, isInitialized, lastEventId, linkedErrorsIntegration, metricsDefault as metrics, normalizePathsIntegration, requestDataIntegration, rewriteFramesIntegration, sessionTimingIntegration, setContext, setCurrentClient, setExtra, setExtras, setHttpStatus, setMeasurement, setTag, setTags, setUser, spanToBaggageHeader, spanToJSON, spanToTraceHeader, startInactiveSpan, startNewTrace, startSession, startSpan, startSpanManual, withIsolationScope, withMonitor, withScope, zodErrorsIntegration };
+export { type AddRequestDataToEventOptions, type Breadcrumb, type BreadcrumbHint, DenoClient, type DenoOptions, type ErrorEvent, type Event, type EventHint, type Exception, type PolymorphicRequest, type Request, SDK_VERSION, SEMANTIC_ATTRIBUTE_SENTRY_OP, SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE, SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, Scope, type SdkInfo, type Session, type SeverityLevel, type Span, type StackFrame, type Stacktrace, type Thread, type User, addBreadcrumb, addEventProcessor, breadcrumbsIntegration, captureCheckIn, captureConsoleIntegration, captureEvent, captureException, captureFeedback, captureMessage, captureSession, close, contextLinesIntegration, continueTrace, createTransport, debugIntegration, dedupeIntegration, denoContextIntegration, denoCronIntegration, endSession, extraErrorDataIntegration, flush, functionToStringIntegration, getActiveSpan, getClient, getCurrentScope, getDefaultIntegrations, getGlobalScope, getIsolationScope, getRootSpan, getSpanStatusFromHttpCode, getTraceData, globalHandlersIntegration, inboundFiltersIntegration, init, isInitialized, lastEventId, linkedErrorsIntegration, metricsDefault as metrics, normalizePathsIntegration, requestDataIntegration, rewriteFramesIntegration, sessionTimingIntegration, setContext, setCurrentClient, setExtra, setExtras, setHttpStatus, setMeasurement, setTag, setTags, setUser, spanToBaggageHeader, spanToJSON, spanToTraceHeader, startInactiveSpan, startNewTrace, startSession, startSpan, startSpanManual, withIsolationScope, withMonitor, withScope, zodErrorsIntegration };
