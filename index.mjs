@@ -448,7 +448,7 @@ function truncateAggregateExceptions(exceptions, maxValueLength) {
   });
 }
 
-const SDK_VERSION = '8.23.0';
+const SDK_VERSION = '8.24.0';
 
 /** Get's the global object for the current JavaScript runtime */
 const GLOBAL_OBJ = globalThis ;
@@ -5526,14 +5526,10 @@ function hasTracingEnabled(
     return false;
   }
 
-  const options = maybeOptions || getClientOptions();
+  const client = getClient();
+  const options = maybeOptions || (client && client.getOptions());
   // eslint-disable-next-line deprecation/deprecation
   return !!options && (options.enableTracing || 'tracesSampleRate' in options || 'tracesSampler' in options);
-}
-
-function getClientOptions() {
-  const client = getClient();
-  return client && client.getOptions();
 }
 
 /**
