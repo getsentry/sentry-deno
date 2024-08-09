@@ -2471,7 +2471,7 @@ type TransactionNamingScheme = 'path' | 'methodPath' | 'handler';
  */
 declare function propagationContextFromHeaders(sentryTrace: string | undefined, baggage: string | number | boolean | string[] | null | undefined): PropagationContext;
 
-declare const SDK_VERSION = "8.24.0";
+declare const SDK_VERSION = "8.25.0";
 
 interface DenoTransportOptions extends BaseTransportOptions {
     /** Custom headers for the transport. Used by the XHRTransport and FetchTransport */
@@ -3509,6 +3509,29 @@ type TraceData = {
 declare function getTraceData(span?: Span, scope?: Scope$1, client?: Client): TraceData;
 
 /**
+ * Returns a string of meta tags that represent the current trace data.
+ *
+ * You can use this to propagate a trace from your server-side rendered Html to the browser.
+ * This function returns up to two meta tags, `sentry-trace` and `baggage`, depending on the
+ * current trace data state.
+ *
+ * @example
+ * Usage example:
+ *
+ * ```js
+ * function renderHtml() {
+ *   return `
+ *     <head>
+ *       ${getTraceMetaTags()}
+ *     </head>
+ *   `;
+ * }
+ * ```
+ *
+ */
+declare function getTraceMetaTags(span?: Span, scope?: Scope$1, client?: Client): string;
+
+/**
  * Records a new breadcrumb which will be attached to future events.
  *
  * Breadcrumbs will be added to subsequent events to provide more context on
@@ -3819,4 +3842,4 @@ interface BreadcrumbsOptions {
  */
 declare const breadcrumbsIntegration: (options?: Partial<BreadcrumbsOptions> | undefined) => Integration;
 
-export { type AddRequestDataToEventOptions, type Breadcrumb, type BreadcrumbHint, DenoClient, type DenoOptions, type ErrorEvent, type Event, type EventHint, type Exception, type PolymorphicRequest, type Request, SDK_VERSION, SEMANTIC_ATTRIBUTE_SENTRY_OP, SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE, SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, Scope, type SdkInfo, type Session, type SeverityLevel, type Span, type StackFrame, type Stacktrace, type Thread, type User, addBreadcrumb, addEventProcessor, breadcrumbsIntegration, captureCheckIn, captureConsoleIntegration, captureEvent, captureException, captureFeedback, captureMessage, captureSession, close, contextLinesIntegration, continueTrace, createTransport, debugIntegration, dedupeIntegration, denoContextIntegration, denoCronIntegration, endSession, extraErrorDataIntegration, flush, functionToStringIntegration, getActiveSpan, getClient, getCurrentScope, getDefaultIntegrations, getGlobalScope, getIsolationScope, getRootSpan, getSpanStatusFromHttpCode, getTraceData, globalHandlersIntegration, inboundFiltersIntegration, init, isInitialized, lastEventId, linkedErrorsIntegration, metricsDefault as metrics, normalizePathsIntegration, requestDataIntegration, rewriteFramesIntegration, sessionTimingIntegration, setContext, setCurrentClient, setExtra, setExtras, setHttpStatus, setMeasurement, setTag, setTags, setUser, spanToBaggageHeader, spanToJSON, spanToTraceHeader, startInactiveSpan, startNewTrace, startSession, startSpan, startSpanManual, withIsolationScope, withMonitor, withScope, zodErrorsIntegration };
+export { type AddRequestDataToEventOptions, type Breadcrumb, type BreadcrumbHint, DenoClient, type DenoOptions, type ErrorEvent, type Event, type EventHint, type Exception, type PolymorphicRequest, type Request, SDK_VERSION, SEMANTIC_ATTRIBUTE_SENTRY_OP, SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE, SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, Scope, type SdkInfo, type Session, type SeverityLevel, type Span, type StackFrame, type Stacktrace, type Thread, type User, addBreadcrumb, addEventProcessor, breadcrumbsIntegration, captureCheckIn, captureConsoleIntegration, captureEvent, captureException, captureFeedback, captureMessage, captureSession, close, contextLinesIntegration, continueTrace, createTransport, debugIntegration, dedupeIntegration, denoContextIntegration, denoCronIntegration, endSession, extraErrorDataIntegration, flush, functionToStringIntegration, getActiveSpan, getClient, getCurrentScope, getDefaultIntegrations, getGlobalScope, getIsolationScope, getRootSpan, getSpanStatusFromHttpCode, getTraceData, getTraceMetaTags, globalHandlersIntegration, inboundFiltersIntegration, init, isInitialized, lastEventId, linkedErrorsIntegration, metricsDefault as metrics, normalizePathsIntegration, requestDataIntegration, rewriteFramesIntegration, sessionTimingIntegration, setContext, setCurrentClient, setExtra, setExtras, setHttpStatus, setMeasurement, setTag, setTags, setUser, spanToBaggageHeader, spanToJSON, spanToTraceHeader, startInactiveSpan, startNewTrace, startSession, startSpan, startSpanManual, withIsolationScope, withMonitor, withScope, zodErrorsIntegration };

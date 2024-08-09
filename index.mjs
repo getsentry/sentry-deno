@@ -448,7 +448,7 @@ function truncateAggregateExceptions(exceptions, maxValueLength) {
   });
 }
 
-const SDK_VERSION = '8.24.0';
+const SDK_VERSION = '8.25.0';
 
 /** Get's the global object for the current JavaScript runtime */
 const GLOBAL_OBJ = globalThis ;
@@ -2759,6 +2759,130 @@ function stripUrlQueryAndFragment(urlPath) {
   return (urlPath.split(/[?#]/, 1) )[0];
 }
 
+// Vendored / modified from @sergiodxa/remix-utils
+
+// https://github.com/sergiodxa/remix-utils/blob/02af80e12829a53696bfa8f3c2363975cf59f55e/src/server/get-client-ip-address.ts
+// MIT License
+
+// Copyright (c) 2021 Sergio Xalambrí
+
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
+// The headers to check, in priority order
+const ipHeaderNames = [
+  'X-Client-IP',
+  'X-Forwarded-For',
+  'Fly-Client-IP',
+  'CF-Connecting-IP',
+  'Fastly-Client-Ip',
+  'True-Client-Ip',
+  'X-Real-IP',
+  'X-Cluster-Client-IP',
+  'X-Forwarded',
+  'Forwarded-For',
+  'Forwarded',
+  'X-Vercel-Forwarded-For',
+];
+
+/**
+ * Get the IP address of the client sending a request.
+ *
+ * It receives a Request headers object and use it to get the
+ * IP address from one of the following headers in order.
+ *
+ * If the IP address is valid, it will be returned. Otherwise, null will be
+ * returned.
+ *
+ * If the header values contains more than one IP address, the first valid one
+ * will be returned.
+ */
+function getClientIPAddress(headers) {
+  // This will end up being Array<string | string[] | undefined | null> because of the various possible values a header
+  // can take
+  const headerValues = ipHeaderNames.map((headerName) => {
+    const rawValue = headers[headerName];
+    const value = Array.isArray(rawValue) ? rawValue.join(';') : rawValue;
+
+    if (headerName === 'Forwarded') {
+      return parseForwardedHeader(value);
+    }
+
+    return value && value.split(',').map((v) => v.trim());
+  });
+
+  // Flatten the array and filter out any falsy entries
+  const flattenedHeaderValues = headerValues.reduce((acc, val) => {
+    if (!val) {
+      return acc;
+    }
+
+    return acc.concat(val);
+  }, []);
+
+  // Find the first value which is a valid IP address, if any
+  const ipAddress = flattenedHeaderValues.find(ip => ip !== null && isIP(ip));
+
+  return ipAddress || null;
+}
+
+function parseForwardedHeader(value) {
+  if (!value) {
+    return null;
+  }
+
+  for (const part of value.split(';')) {
+    if (part.startsWith('for=')) {
+      return part.slice(4);
+    }
+  }
+
+  return null;
+}
+
+//
+/**
+ * Custom method instead of importing this from `net` package, as this only exists in node
+ * Accepts:
+ * 127.0.0.1
+ * 192.168.1.1
+ * 192.168.1.255
+ * 255.255.255.255
+ * 10.1.1.1
+ * 0.0.0.0
+ * 2b01:cb19:8350:ed00:d0dd:fa5b:de31:8be5
+ *
+ * Rejects:
+ * 1.1.1.01
+ * 30.168.1.255.1
+ * 127.1
+ * 192.168.1.256
+ * -1.2.3.4
+ * 1.1.1.1.
+ * 3...3
+ * 192.168.1.099
+ */
+function isIP(str) {
+  const regex =
+    /(?:^(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)){3}$)|(?:^(?:(?:[a-fA-F\d]{1,4}:){7}(?:[a-fA-F\d]{1,4}|:)|(?:[a-fA-F\d]{1,4}:){6}(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)(?:\\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)){3}|:[a-fA-F\d]{1,4}|:)|(?:[a-fA-F\d]{1,4}:){5}(?::(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)(?:\\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)){3}|(?::[a-fA-F\d]{1,4}){1,2}|:)|(?:[a-fA-F\d]{1,4}:){4}(?:(?::[a-fA-F\d]{1,4}){0,1}:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)(?:\\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)){3}|(?::[a-fA-F\d]{1,4}){1,3}|:)|(?:[a-fA-F\d]{1,4}:){3}(?:(?::[a-fA-F\d]{1,4}){0,2}:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)(?:\\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)){3}|(?::[a-fA-F\d]{1,4}){1,4}|:)|(?:[a-fA-F\d]{1,4}:){2}(?:(?::[a-fA-F\d]{1,4}){0,3}:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)(?:\\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)){3}|(?::[a-fA-F\d]{1,4}){1,5}|:)|(?:[a-fA-F\d]{1,4}:){1}(?:(?::[a-fA-F\d]{1,4}){0,4}:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)(?:\\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)){3}|(?::[a-fA-F\d]{1,4}){1,6}|:)|(?::(?:(?::[a-fA-F\d]{1,4}){0,5}:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)(?:\\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)){3}|(?::[a-fA-F\d]{1,4}){1,7}|:)))(?:%[0-9a-zA-Z]{1,})?$)/;
+  return regex.test(str);
+}
+
 const DEFAULT_INCLUDES = {
   ip: false,
   request: true,
@@ -2820,7 +2944,6 @@ function extractPathForTransaction(
   return [name, source];
 }
 
-/** JSDoc */
 function extractTransaction(req, type) {
   switch (type) {
     case 'path': {
@@ -2838,7 +2961,6 @@ function extractTransaction(req, type) {
   }
 }
 
-/** JSDoc */
 function extractUserData(
   user
 
@@ -2870,10 +2992,9 @@ function extractRequestData(
   req,
   options
 
-,
+ = {},
 ) {
-  const { include = DEFAULT_REQUEST_INCLUDES } = options || {};
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { include = DEFAULT_REQUEST_INCLUDES } = options;
   const requestData = {};
 
   // headers:
@@ -2910,6 +3031,14 @@ function extractRequestData(
         // Remove the Cookie header in case cookie data should not be included in the event
         if (!include.includes('cookies')) {
           delete (requestData.headers ).cookie;
+        }
+
+        // Remove IP headers in case IP data should not be included in the event
+        if (!include.includes('ip')) {
+          ipHeaderNames.forEach(ipHeaderName => {
+            // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+            delete (requestData.headers )[ipHeaderName];
+          });
         }
 
         break;
@@ -2985,9 +3114,12 @@ function addRequestDataToEvent(
   };
 
   if (include.request) {
-    const extractedRequestData = Array.isArray(include.request)
-      ? extractRequestData(req, { include: include.request })
-      : extractRequestData(req);
+    const includeRequest = Array.isArray(include.request) ? [...include.request] : [...DEFAULT_REQUEST_INCLUDES];
+    if (include.ip) {
+      includeRequest.push('ip');
+    }
+
+    const extractedRequestData = extractRequestData(req, { include: includeRequest });
 
     event.request = {
       ...event.request,
@@ -3009,8 +3141,9 @@ function addRequestDataToEvent(
   // client ip:
   //   node, nextjs: req.socket.remoteAddress
   //   express, koa: req.ip
+  //   It may also be sent by proxies as specified in X-Forwarded-For or similar headers
   if (include.ip) {
-    const ip = req.ip || (req.socket && req.socket.remoteAddress);
+    const ip = (req.headers && getClientIPAddress(req.headers)) || req.ip || (req.socket && req.socket.remoteAddress);
     if (ip) {
       event.user = {
         ...event.user,
@@ -9367,6 +9500,33 @@ function isValidBaggageString(baggage) {
 }
 
 /**
+ * Returns a string of meta tags that represent the current trace data.
+ *
+ * You can use this to propagate a trace from your server-side rendered Html to the browser.
+ * This function returns up to two meta tags, `sentry-trace` and `baggage`, depending on the
+ * current trace data state.
+ *
+ * @example
+ * Usage example:
+ *
+ * ```js
+ * function renderHtml() {
+ *   return `
+ *     <head>
+ *       ${getTraceMetaTags()}
+ *     </head>
+ *   `;
+ * }
+ * ```
+ *
+ */
+function getTraceMetaTags(span, scope, client) {
+  return Object.entries(getTraceData(span, scope, client))
+    .map(([key, value]) => `<meta name="${key}" content="${value}"/>`)
+    .join('\n');
+}
+
+/**
  * Default maximum number of breadcrumbs added to an event. Can be overwritten
  * with {@link Options.maxBreadcrumbs}.
  */
@@ -12094,5 +12254,5 @@ const _denoCronIntegration = (() => {
  */
 const denoCronIntegration = defineIntegration(_denoCronIntegration);
 
-export { DenoClient, SDK_VERSION, SEMANTIC_ATTRIBUTE_SENTRY_OP, SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE, SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, Scope, addBreadcrumb, addEventProcessor, breadcrumbsIntegration, captureCheckIn, captureConsoleIntegration, captureEvent, captureException, captureFeedback, captureMessage, captureSession, close, contextLinesIntegration, continueTrace, createTransport, debugIntegration, dedupeIntegration, denoContextIntegration, denoCronIntegration, endSession, extraErrorDataIntegration, flush, functionToStringIntegration, getActiveSpan, getClient, getCurrentScope, getDefaultIntegrations, getGlobalScope, getIsolationScope, getRootSpan, getSpanStatusFromHttpCode, getTraceData, globalHandlersIntegration, inboundFiltersIntegration, init, isInitialized, lastEventId, linkedErrorsIntegration, metricsDefault as metrics, normalizePathsIntegration, requestDataIntegration, rewriteFramesIntegration, sessionTimingIntegration, setContext, setCurrentClient, setExtra, setExtras, setHttpStatus, setMeasurement, setTag, setTags, setUser, spanToBaggageHeader, spanToJSON, spanToTraceHeader, startInactiveSpan, startNewTrace, startSession, startSpan, startSpanManual, withIsolationScope, withMonitor, withScope, zodErrorsIntegration };
+export { DenoClient, SDK_VERSION, SEMANTIC_ATTRIBUTE_SENTRY_OP, SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE, SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, Scope, addBreadcrumb, addEventProcessor, breadcrumbsIntegration, captureCheckIn, captureConsoleIntegration, captureEvent, captureException, captureFeedback, captureMessage, captureSession, close, contextLinesIntegration, continueTrace, createTransport, debugIntegration, dedupeIntegration, denoContextIntegration, denoCronIntegration, endSession, extraErrorDataIntegration, flush, functionToStringIntegration, getActiveSpan, getClient, getCurrentScope, getDefaultIntegrations, getGlobalScope, getIsolationScope, getRootSpan, getSpanStatusFromHttpCode, getTraceData, getTraceMetaTags, globalHandlersIntegration, inboundFiltersIntegration, init, isInitialized, lastEventId, linkedErrorsIntegration, metricsDefault as metrics, normalizePathsIntegration, requestDataIntegration, rewriteFramesIntegration, sessionTimingIntegration, setContext, setCurrentClient, setExtra, setExtras, setHttpStatus, setMeasurement, setTag, setTags, setUser, spanToBaggageHeader, spanToJSON, spanToTraceHeader, startInactiveSpan, startNewTrace, startSession, startSpan, startSpanManual, withIsolationScope, withMonitor, withScope, zodErrorsIntegration };
 //# sourceMappingURL=index.mjs.map
