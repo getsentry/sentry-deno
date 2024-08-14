@@ -912,6 +912,14 @@ interface PropagationContext {
      */
     dsc?: Partial<DynamicSamplingContext>;
 }
+/**
+ * An object holding trace data, like span and trace ids, sampling decision, and dynamic sampling context
+ * in a serialized form. Both keys are expected to be used as Http headers or Html meta tags.
+ */
+interface SerializedTraceData {
+    'sentry-trace'?: string;
+    baggage?: string;
+}
 
 /** JSDocs */
 type CaptureContext = Scope$1 | Partial<ScopeContext> | ((scope: Scope$1) => Scope$1);
@@ -2471,7 +2479,7 @@ type TransactionNamingScheme = 'path' | 'methodPath' | 'handler';
  */
 declare function propagationContextFromHeaders(sentryTrace: string | undefined, baggage: string | number | boolean | string[] | null | undefined): PropagationContext;
 
-declare const SDK_VERSION = "8.25.0";
+declare const SDK_VERSION = "8.26.0";
 
 interface DenoTransportOptions extends BaseTransportOptions {
     /** Custom headers for the transport. Used by the XHRTransport and FetchTransport */
@@ -2520,6 +2528,19 @@ interface DenoClientOptions extends ClientOptions<DenoTransportOptions>, BaseDen
  * Make the given client the current client.
  */
 declare function setCurrentClient(client: Client): void;
+
+/**
+ * Extracts trace propagation data from the current span or from the client's scope (via transaction or propagation
+ * context) and serializes it to `sentry-trace` and `baggage` values to strings. These values can be used to propagate
+ * a trace via our tracing Http headers or Html `<meta>` tags.
+ *
+ * This function also applies some validation to the generated sentry-trace and baggage values to ensure that
+ * only valid strings are returned.
+ *
+ * @returns an object with the tracing data values. The object keys are the name of the tracing key to be used as header
+ * or meta tag name.
+ */
+declare function getTraceData(): SerializedTraceData;
 
 /**
  * Wraps a function with a transaction/span and finishes the span after the function is done.
@@ -3487,27 +3508,6 @@ declare function getClient<C extends Client>(): C | undefined;
  */
 declare function createTransport(options: InternalBaseTransportOptions, makeRequest: TransportRequestExecutor, buffer?: PromiseBuffer<TransportMakeRequestResponse>): Transport;
 
-type TraceData = {
-    'sentry-trace'?: string;
-    baggage?: string;
-};
-/**
- * Extracts trace propagation data from the current span or from the client's scope (via transaction or propagation
- * context) and serializes it to `sentry-trace` and `baggage` values to strings. These values can be used to propagate
- * a trace via our tracing Http headers or Html `<meta>` tags.
- *
- * This function also applies some validation to the generated sentry-trace and baggage values to ensure that
- * only valid strings are returned.
- *
- * @param span a span to take the trace data from. By default, the currently active span is used.
- * @param scope the scope to take trace data from By default, the active current scope is used.
- * @param client the SDK's client to take trace data from. By default, the current client is used.
- *
- * @returns an object with the tracing data values. The object keys are the name of the tracing key to be used as header
- * or meta tag name.
- */
-declare function getTraceData(span?: Span, scope?: Scope$1, client?: Client): TraceData;
-
 /**
  * Returns a string of meta tags that represent the current trace data.
  *
@@ -3529,7 +3529,7 @@ declare function getTraceData(span?: Span, scope?: Scope$1, client?: Client): Tr
  * ```
  *
  */
-declare function getTraceMetaTags(span?: Span, scope?: Scope$1, client?: Client): string;
+declare function getTraceMetaTags(): string;
 
 /**
  * Records a new breadcrumb which will be attached to future events.

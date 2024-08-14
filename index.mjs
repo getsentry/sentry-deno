@@ -448,7 +448,7 @@ function truncateAggregateExceptions(exceptions, maxValueLength) {
   });
 }
 
-const SDK_VERSION = '8.25.0';
+const SDK_VERSION = '8.26.0';
 
 /** Get's the global object for the current JavaScript runtime */
 const GLOBAL_OBJ = globalThis ;
@@ -8072,7 +8072,7 @@ const installedIntegrations = [];
 
 /**
  * Remove duplicates from the given array, preferring the last instance of any duplicate. Not guaranteed to
- * preseve the order of integrations in the array.
+ * preserve the order of integrations in the array.
  *
  * @private
  */
@@ -8445,7 +8445,15 @@ class BaseClient {
 
   /** @inheritdoc */
    init() {
-    if (this._isEnabled()) {
+    if (
+      this._isEnabled() ||
+      // Force integrations to be setup even if no DSN was set when we have
+      // Spotlight enabled. This is particularly important for browser as we
+      // don't support the `spotlight` option there and rely on the users
+      // adding the `spotlightBrowserIntegration()` to their integrations which
+      // wouldn't get initialized with the check below when there's no DSN set.
+      this._options.integrations.some(({ name }) => name.startsWith('Spotlight'))
+    ) {
       this._setupIntegrations();
     }
   }
@@ -9433,29 +9441,31 @@ function getEventForEnvelopeItem(item, type) {
  * This function also applies some validation to the generated sentry-trace and baggage values to ensure that
  * only valid strings are returned.
  *
- * @param span a span to take the trace data from. By default, the currently active span is used.
- * @param scope the scope to take trace data from By default, the active current scope is used.
- * @param client the SDK's client to take trace data from. By default, the current client is used.
- *
  * @returns an object with the tracing data values. The object keys are the name of the tracing key to be used as header
  * or meta tag name.
  */
-function getTraceData(span, scope, client) {
-  const clientToUse = client || getClient();
-  const scopeToUse = scope || getCurrentScope();
-  const spanToUse = span || getActiveSpan();
+function getTraceData() {
+  const carrier = getMainCarrier();
+  const acs = getAsyncContextStrategy(carrier);
+  if (acs.getTraceData) {
+    return acs.getTraceData();
+  }
 
-  const { dsc, sampled, traceId } = scopeToUse.getPropagationContext();
-  const rootSpan = spanToUse && getRootSpan(spanToUse);
+  const client = getClient();
+  const scope = getCurrentScope();
+  const span = getActiveSpan();
 
-  const sentryTrace = spanToUse ? spanToTraceHeader(spanToUse) : generateSentryTraceHeader(traceId, undefined, sampled);
+  const { dsc, sampled, traceId } = scope.getPropagationContext();
+  const rootSpan = span && getRootSpan(span);
+
+  const sentryTrace = span ? spanToTraceHeader(span) : generateSentryTraceHeader(traceId, undefined, sampled);
 
   const dynamicSamplingContext = rootSpan
     ? getDynamicSamplingContextFromSpan(rootSpan)
     : dsc
       ? dsc
-      : clientToUse
-        ? getDynamicSamplingContextFromClient(traceId, clientToUse)
+      : client
+        ? getDynamicSamplingContextFromClient(traceId, client)
         : undefined;
 
   const baggage = dynamicSamplingContextToSentryBaggageHeader(dynamicSamplingContext);
@@ -9520,8 +9530,8 @@ function isValidBaggageString(baggage) {
  * ```
  *
  */
-function getTraceMetaTags(span, scope, client) {
-  return Object.entries(getTraceData(span, scope, client))
+function getTraceMetaTags() {
+  return Object.entries(getTraceData())
     .map(([key, value]) => `<meta name="${key}" content="${value}"/>`)
     .join('\n');
 }
