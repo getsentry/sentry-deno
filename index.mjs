@@ -448,7 +448,7 @@ function truncateAggregateExceptions(exceptions, maxValueLength) {
   });
 }
 
-const SDK_VERSION = '8.27.0';
+const SDK_VERSION = '8.28.0';
 
 /** Get's the global object for the current JavaScript runtime */
 const GLOBAL_OBJ = globalThis ;
@@ -6807,6 +6807,20 @@ function withActiveSpan(span, callback) {
   });
 }
 
+/** Suppress tracing in the given callback, ensuring no spans are generated inside of it. */
+function suppressTracing(callback) {
+  const acs = getAcs();
+
+  if (acs.suppressTracing) {
+    return acs.suppressTracing(callback);
+  }
+
+  return withScope(scope => {
+    scope.setSDKProcessingMetadata({ [SUPPRESS_TRACING_KEY]: true });
+    return callback();
+  });
+}
+
 /**
  * Starts a new trace for the duration of the provided callback. Spans started within the
  * callback will be part of the new trace instead of a potentially previously started trace.
@@ -12032,14 +12046,16 @@ function makeFetchTransport(options) {
     };
 
     try {
-      return fetch(options.url, requestOptions).then(response => {
-        return {
-          statusCode: response.status,
-          headers: {
-            'x-sentry-rate-limits': response.headers.get('X-Sentry-Rate-Limits'),
-            'retry-after': response.headers.get('Retry-After'),
-          },
-        };
+      return suppressTracing(() => {
+        return fetch(options.url, requestOptions).then(response => {
+          return {
+            statusCode: response.status,
+            headers: {
+              'x-sentry-rate-limits': response.headers.get('X-Sentry-Rate-Limits'),
+              'retry-after': response.headers.get('Retry-After'),
+            },
+          };
+        });
       });
     } catch (e) {
       return rejectedSyncPromise(e);

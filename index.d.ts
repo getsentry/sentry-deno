@@ -1127,7 +1127,7 @@ interface Scope$1 {
     /**
      * Capture a message for this scope.
      *
-     * @param exception The exception to capture.
+     * @param message The message to capture.
      * @param level An optional severity level to report the message with.
      * @param hint Optional additional data to attach to the Sentry event.
      * @returns the id of the captured message.
@@ -1136,7 +1136,7 @@ interface Scope$1 {
     /**
      * Capture a Sentry event for this scope.
      *
-     * @param exception The event to capture.
+     * @param event The event to capture.
      * @param hint Optional additional data to attach to the Sentry event.
      * @returns the id of the captured event.
      */
@@ -2479,7 +2479,7 @@ type TransactionNamingScheme = 'path' | 'methodPath' | 'handler';
  */
 declare function propagationContextFromHeaders(sentryTrace: string | undefined, baggage: string | number | boolean | string[] | null | undefined): PropagationContext;
 
-declare const SDK_VERSION = "8.27.0";
+declare const SDK_VERSION = "8.28.0";
 
 interface DenoTransportOptions extends BaseTransportOptions {
     /** Custom headers for the transport. Used by the XHRTransport and FetchTransport */
