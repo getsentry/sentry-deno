@@ -448,7 +448,7 @@ function truncateAggregateExceptions(exceptions, maxValueLength) {
   });
 }
 
-const SDK_VERSION = '8.28.0';
+const SDK_VERSION = '8.29.0';
 
 /** Get's the global object for the current JavaScript runtime */
 const GLOBAL_OBJ = globalThis ;
@@ -684,7 +684,11 @@ function makeLogger() {
   return logger ;
 }
 
-const logger = makeLogger();
+/**
+ * This is a logger singleton which either logs things or no-ops if logging is not enabled.
+ * The logger is a singleton on the carrier, to ensure that a consistent logger is used throughout the SDK.
+ */
+const logger = getGlobalSingleton('logger', makeLogger);
 
 /** Regular expression used to parse a Dsn. */
 const DSN_REGEX = /^(?:(\w+):)\/\/(?:(\w+)(?::(\w+)?)?@)([\w.-]+)(?::(\d+))?\/(.+)/;
