@@ -2479,7 +2479,7 @@ type TransactionNamingScheme = 'path' | 'methodPath' | 'handler';
  */
 declare function propagationContextFromHeaders(sentryTrace: string | undefined, baggage: string | number | boolean | string[] | null | undefined): PropagationContext;
 
-declare const SDK_VERSION = "8.29.0";
+declare const SDK_VERSION = "8.30.0";
 
 interface DenoTransportOptions extends BaseTransportOptions {
     /** Custom headers for the transport. Used by the XHRTransport and FetchTransport */
@@ -3272,9 +3272,10 @@ declare function setHttpStatus(span: Span, httpStatus: number): void;
 declare function spanToBaggageHeader(span: Span): string | undefined;
 
 /**
- * Adds a measurement to the current active transaction.
+ * Adds a measurement to the active transaction on the current global scope. You can optionally pass in a different span
+ * as the 4th parameter.
  */
-declare function setMeasurement(name: string, value: number, unit: MeasurementUnit): void;
+declare function setMeasurement(name: string, value: number, unit: MeasurementUnit, activeSpan?: Span | undefined): void;
 
 /**
  * Use this attribute to represent the source of a span.

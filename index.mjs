@@ -448,7 +448,7 @@ function truncateAggregateExceptions(exceptions, maxValueLength) {
   });
 }
 
-const SDK_VERSION = '8.29.0';
+const SDK_VERSION = '8.30.0';
 
 /** Get's the global object for the current JavaScript runtime */
 const GLOBAL_OBJ = globalThis ;
@@ -6183,10 +6183,10 @@ function createSpanEnvelope(spans, client) {
 }
 
 /**
- * Adds a measurement to the current active transaction.
+ * Adds a measurement to the active transaction on the current global scope. You can optionally pass in a different span
+ * as the 4th parameter.
  */
-function setMeasurement(name, value, unit) {
-  const activeSpan = getActiveSpan();
+function setMeasurement(name, value, unit, activeSpan = getActiveSpan()) {
   const rootSpan = activeSpan && getRootSpan(activeSpan);
 
   if (rootSpan) {
