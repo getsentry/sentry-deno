@@ -448,7 +448,7 @@ function truncateAggregateExceptions(exceptions, maxValueLength) {
   });
 }
 
-const SDK_VERSION = '8.30.0';
+const SDK_VERSION = '8.31.0';
 
 /** Get's the global object for the current JavaScript runtime */
 const GLOBAL_OBJ = globalThis ;
@@ -2014,7 +2014,8 @@ function visit(
   // Get the simple cases out of the way first
   if (
     value == null || // this matches null and undefined -> eqeq not eqeqeq
-    (['number', 'boolean', 'string'].includes(typeof value) && !Number.isNaN(value))
+    ['boolean', 'string'].includes(typeof value) ||
+    (typeof value === 'number' && Number.isFinite(value))
   ) {
     return value ;
   }
@@ -2153,8 +2154,8 @@ function stringifyValue(
       return '[SyntheticEvent]';
     }
 
-    if (typeof value === 'number' && value !== value) {
-      return '[NaN]';
+    if (typeof value === 'number' && !Number.isFinite(value)) {
+      return `[${value}]`;
     }
 
     if (typeof value === 'function') {
