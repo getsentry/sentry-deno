@@ -1080,8 +1080,8 @@ interface Scope$1 {
     /** Clears the current scope and resets its properties. */
     clear(): this;
     /**
-     * Sets the breadcrumbs in the scope
-     * @param breadcrumbs Breadcrumb
+     * Adds a breadcrumb to the scope
+     * @param breadcrumb Breadcrumb
      * @param maxBreadcrumbs number of max breadcrumbs to merged into event.
      */
     addBreadcrumb(breadcrumb: Breadcrumb, maxBreadcrumbs?: number): this;
@@ -1090,7 +1090,7 @@ interface Scope$1 {
      */
     getLastBreadcrumb(): Breadcrumb | undefined;
     /**
-     * Clears all currently set Breadcrumbs.
+     * Clears all breadcrumbs from the scope.
      */
     clearBreadcrumbs(): this;
     /**
@@ -2479,7 +2479,7 @@ type TransactionNamingScheme = 'path' | 'methodPath' | 'handler';
  */
 declare function propagationContextFromHeaders(sentryTrace: string | undefined, baggage: string | number | boolean | string[] | null | undefined): PropagationContext;
 
-declare const SDK_VERSION = "8.31.0-beta.0";
+declare const SDK_VERSION = "8.32.0";
 
 interface DenoTransportOptions extends BaseTransportOptions {
     /** Custom headers for the transport. Used by the XHRTransport and FetchTransport */

@@ -448,7 +448,23 @@ function truncateAggregateExceptions(exceptions, maxValueLength) {
   });
 }
 
-const SDK_VERSION = '8.31.0-beta.0';
+/**
+ * Determine a breadcrumb's log level (only `warning` or `error`) based on an HTTP status code.
+ */
+function getBreadcrumbLogLevelFromHttpStatusCode(statusCode) {
+  // NOTE: undefined defaults to 'info' in Sentry
+  if (statusCode === undefined) {
+    return undefined;
+  } else if (statusCode >= 400 && statusCode < 500) {
+    return 'warning';
+  } else if (statusCode >= 500) {
+    return 'error';
+  } else {
+    return undefined;
+  }
+}
+
+const SDK_VERSION = '8.32.0';
 
 /** Get's the global object for the current JavaScript runtime */
 const GLOBAL_OBJ = globalThis ;
@@ -5912,7 +5928,12 @@ function getDynamicSamplingContextFromSpan(span) {
     dsc.transaction = name;
   }
 
-  dsc.sampled = String(spanIsSampled(rootSpan));
+  // How can we even land here with hasTracingEnabled() returning false?
+  // Otel creates a Non-recording span in Tracing Without Performance mode when handling incoming requests
+  // So we end up with an active span that is not sampled (neither positively nor negatively)
+  if (hasTracingEnabled()) {
+    dsc.sampled = String(spanIsSampled(rootSpan));
+  }
 
   client.emit('createDsc', dsc, rootSpan);
 
@@ -11558,11 +11579,14 @@ function _getFetchBreadcrumbHandler(client) {
         startTimestamp,
         endTimestamp,
       };
+      const level = getBreadcrumbLogLevelFromHttpStatusCode(data.status_code);
+
       addBreadcrumb(
         {
           category: 'fetch',
           data,
           type: 'http',
+          level,
         },
         hint,
       );
