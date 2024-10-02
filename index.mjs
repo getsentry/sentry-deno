@@ -464,7 +464,7 @@ function getBreadcrumbLogLevelFromHttpStatusCode(statusCode) {
   }
 }
 
-const SDK_VERSION = '8.32.0';
+const SDK_VERSION = '8.33.0';
 
 /** Get's the global object for the current JavaScript runtime */
 const GLOBAL_OBJ = globalThis ;
@@ -1056,7 +1056,7 @@ function _dropUndefinedKeys(inputValue, memoizationMap) {
     // Store the mapping of this value in case we visit it again, in case of circular data
     memoizationMap.set(inputValue, returnValue);
 
-    for (const key of Object.keys(inputValue)) {
+    for (const key of Object.getOwnPropertyNames(inputValue)) {
       if (typeof inputValue[key] !== 'undefined') {
         returnValue[key] = _dropUndefinedKeys(inputValue[key], memoizationMap);
       }
@@ -7864,6 +7864,12 @@ function isInitialized() {
   return !!getClient();
 }
 
+/** If the SDK is initialized & enabled. */
+function isEnabled() {
+  const client = getClient();
+  return !!client && client.getOptions().enabled !== false && !!client.getTransport();
+}
+
 /**
  * Add an event processor.
  * This will be added to the current isolation scope, ensuring any event that is processed in the current execution
@@ -9485,6 +9491,10 @@ function getEventForEnvelopeItem(item, type) {
  * or meta tag name.
  */
 function getTraceData() {
+  if (!isEnabled()) {
+    return {};
+  }
+
   const carrier = getMainCarrier();
   const acs = getAsyncContextStrategy(carrier);
   if (acs.getTraceData) {

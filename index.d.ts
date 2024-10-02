@@ -562,6 +562,7 @@ interface ProfileContext extends Record<string, unknown> {
 
 interface CrontabSchedule {
     type: 'crontab';
+    /** The crontab schedule string, e.g. 0 * * * *. */
     value: string;
 }
 interface IntervalSchedule {
@@ -571,18 +572,36 @@ interface IntervalSchedule {
 }
 type MonitorSchedule = CrontabSchedule | IntervalSchedule;
 interface SerializedCheckIn {
+    /** Check-In ID (unique and client generated). */
     check_in_id: string;
+    /** The distinct slug of the monitor. */
     monitor_slug: string;
+    /** The status of the check-in. */
     status: 'in_progress' | 'ok' | 'error';
+    /** The duration of the check-in in seconds. Will only take effect if the status is ok or error. */
     duration?: number;
     release?: string;
     environment?: string;
     monitor_config?: {
         schedule: MonitorSchedule;
+        /**
+         * The allowed allowed margin of minutes after the expected check-in time that
+         * the monitor will not be considered missed for.
+         */
         checkin_margin?: number;
+        /**
+         * The allowed allowed duration in minutes that the monitor may be `in_progress`
+         * for before being considered failed due to timeout.
+         */
         max_runtime?: number;
+        /**
+         * A tz database string representing the timezone which the monitor's execution schedule is in.
+         * See: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
+         */
         timezone?: string;
+        /** How many consecutive failed check-ins it takes to create an issue. */
         failure_issue_threshold?: number;
+        /** How many consecutive OK check-ins it takes to resolve an issue. */
         recovery_threshold?: number;
     };
     contexts?: {
@@ -590,27 +609,52 @@ interface SerializedCheckIn {
     };
 }
 interface HeartbeatCheckIn {
+    /** The distinct slug of the monitor. */
     monitorSlug: SerializedCheckIn['monitor_slug'];
+    /** The status of the check-in. */
     status: 'ok' | 'error';
 }
 interface InProgressCheckIn {
+    /** The distinct slug of the monitor. */
     monitorSlug: SerializedCheckIn['monitor_slug'];
+    /** The status of the check-in. */
     status: 'in_progress';
 }
 interface FinishedCheckIn {
+    /** The distinct slug of the monitor. */
     monitorSlug: SerializedCheckIn['monitor_slug'];
+    /** The status of the check-in. */
     status: 'ok' | 'error';
+    /** Check-In ID (unique and client generated). */
     checkInId: SerializedCheckIn['check_in_id'];
+    /** The duration of the check-in in seconds. Will only take effect if the status is ok or error. */
     duration?: SerializedCheckIn['duration'];
 }
 type CheckIn = HeartbeatCheckIn | InProgressCheckIn | FinishedCheckIn;
 type SerializedMonitorConfig = NonNullable<SerializedCheckIn['monitor_config']>;
 interface MonitorConfig {
+    /**
+     * The schedule on which the monitor should run. Either a crontab schedule string or an interval.
+     */
     schedule: MonitorSchedule;
+    /**
+     * The allowed allowed margin of minutes after the expected check-in time that
+     * the monitor will not be considered missed for.
+     */
     checkinMargin?: SerializedMonitorConfig['checkin_margin'];
+    /**
+     * The allowed allowed duration in minutes that the monitor may be `in_progress`
+     * for before being considered failed due to timeout.
+     */
     maxRuntime?: SerializedMonitorConfig['max_runtime'];
+    /**
+     * A tz database string representing the timezone which the monitor's execution schedule is in.
+     * See: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
+     */
     timezone?: SerializedMonitorConfig['timezone'];
+    /** How many consecutive failed check-ins it takes to create an issue. */
     failureIssueThreshold?: SerializedMonitorConfig['failure_issue_threshold'];
+    /** How many consecutive OK check-ins it takes to resolve an issue. */
     recoveryThreshold?: SerializedMonitorConfig['recovery_threshold'];
 }
 
@@ -2479,7 +2523,7 @@ type TransactionNamingScheme = 'path' | 'methodPath' | 'handler';
  */
 declare function propagationContextFromHeaders(sentryTrace: string | undefined, baggage: string | number | boolean | string[] | null | undefined): PropagationContext;
 
-declare const SDK_VERSION = "8.32.0";
+declare const SDK_VERSION = "8.33.0";
 
 interface DenoTransportOptions extends BaseTransportOptions {
     /** Custom headers for the transport. Used by the XHRTransport and FetchTransport */
