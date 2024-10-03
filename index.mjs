@@ -464,7 +464,7 @@ function getBreadcrumbLogLevelFromHttpStatusCode(statusCode) {
   }
 }
 
-const SDK_VERSION = '8.33.0';
+const SDK_VERSION = '8.33.1';
 
 /** Get's the global object for the current JavaScript runtime */
 const GLOBAL_OBJ = globalThis ;
