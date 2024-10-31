@@ -465,7 +465,7 @@ function getBreadcrumbLogLevelFromHttpStatusCode(statusCode) {
   }
 }
 
-const SDK_VERSION = '8.36.0-alpha.1';
+const SDK_VERSION = '8.36.0';
 
 /** Get's the global object for the current JavaScript runtime */
 const GLOBAL_OBJ = globalThis ;
@@ -482,7 +482,7 @@ const GLOBAL_OBJ = globalThis ;
  * @returns the singleton
  */
 function getGlobalSingleton(name, creator, obj) {
-  const gbl = (obj || GLOBAL_OBJ) ;
+  const gbl = (GLOBAL_OBJ) ;
   const __SENTRY__ = (gbl.__SENTRY__ = gbl.__SENTRY__ || {});
   const versionedCarrier = (__SENTRY__[SDK_VERSION] = __SENTRY__[SDK_VERSION] || {});
   return versionedCarrier[name] || (versionedCarrier[name] = creator());
@@ -1553,7 +1553,7 @@ function instrumentFetch(onFetchResolved, skipNativeFetchCheck = false) {
       };
 
       // if there is no callback, fetch is instrumented directly
-      if (!onFetchResolved) {
+      {
         triggerHandlers('fetch', {
           ...handlerData,
         });
@@ -1571,9 +1571,7 @@ function instrumentFetch(onFetchResolved, skipNativeFetchCheck = false) {
       // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
       return originalFetch.apply(GLOBAL_OBJ, args).then(
         async (response) => {
-          if (onFetchResolved) {
-            onFetchResolved(response);
-          } else {
+          {
             triggerHandlers('fetch', {
               ...handlerData,
               endTimestamp: timestampInSeconds() * 1000,
@@ -1854,10 +1852,10 @@ function addExceptionTypeValue(event, value, type) {
   const values = (exception.values = exception.values || []);
   const firstException = (values[0] = values[0] || {});
   if (!firstException.value) {
-    firstException.value = value || '';
+    firstException.value = '';
   }
   if (!firstException.type) {
-    firstException.type = type || 'Error';
+    firstException.type = 'Error';
   }
 }
 
@@ -2393,9 +2391,6 @@ function dirname(path) {
 /** JSDoc */
 function basename(path, ext) {
   let f = splitPath(path)[2] || '';
-  if (ext && f.slice(ext.length * -1) === ext) {
-    f = f.slice(0, f.length - ext.length);
-  }
   return f;
 }
 
@@ -3784,7 +3779,7 @@ function createClientReportEnvelope(
   const clientReportItem = [
     { type: 'client_report' },
     {
-      timestamp: timestamp || dateTimestampInSeconds(),
+      timestamp: dateTimestampInSeconds(),
       discarded_events,
     },
   ];
@@ -4036,7 +4031,7 @@ function eventFromUnknownInput(
     event.extra = extras;
   }
 
-  addExceptionTypeValue(event, undefined, undefined);
+  addExceptionTypeValue(event);
   addExceptionMechanism(event, mechanism);
 
   return {
@@ -4313,9 +4308,7 @@ function updateSession(session, context = {}) {
  */
 function closeSession(session, status) {
   let context = {};
-  if (status) {
-    context = { status };
-  } else if (session.status === 'ok') {
+  if (session.status === 'ok') {
     context = { status: 'exited' };
   }
 
@@ -6623,12 +6616,9 @@ function sendSpanEnvelope(envelope) {
     return;
   }
 
-  const transport = client.getTransport();
-  if (transport) {
-    transport.send(envelope).then(null, reason => {
-      DEBUG_BUILD && logger.error('Error while sending span:', reason);
-    });
-  }
+  // sendEnvelope should not throw
+  // eslint-disable-next-line @typescript-eslint/no-floating-promises
+  client.sendEnvelope(envelope);
 }
 
 const SUPPRESS_TRACING_KEY = '__SENTRY_SUPPRESS_TRACING__';
@@ -8621,7 +8611,7 @@ class BaseClient {
 
     if (this._isEnabled() && this._transport) {
       return this._transport.send(envelope).then(null, reason => {
-        DEBUG_BUILD && logger.error('Error while sending event:', reason);
+        DEBUG_BUILD && logger.error('Error while sending envelope:', reason);
         return reason;
       });
     }
