@@ -763,7 +763,7 @@ interface Mechanism {
      */
     exception_id?: number;
     /**
-     * References another exception via the `exception_id` field to indicate that this excpetion is a child of that
+     * References another exception via the `exception_id` field to indicate that this exception is a child of that
      * exception in the case of aggregate or linked errors.
      */
     parent_id?: number;
@@ -1164,7 +1164,7 @@ interface Scope$1 {
      * Capture an exception for this scope.
      *
      * @param exception The exception to capture.
-     * @param hint Optinal additional data to attach to the Sentry event.
+     * @param hint Optional additional data to attach to the Sentry event.
      * @returns the id of the captured Sentry event.
      */
     captureException(exception: unknown, hint?: EventHint): string;
@@ -2294,7 +2294,7 @@ interface Client<O extends ClientOptions = ClientOptions> {
      * @returns A function that, when executed, removes the registered callback.
      */
     on(hook: 'close', callback: () => void): () => void;
-    /** Fire a hook whener a span starts. */
+    /** Fire a hook whenever a span starts. */
     emit(hook: 'spanStart', span: Span): void;
     /** A hook that is called every time before a span is sampled. */
     emit(hook: 'beforeSampling', samplingData: {
@@ -2305,7 +2305,7 @@ interface Client<O extends ClientOptions = ClientOptions> {
     }, samplingDecision: {
         decision: boolean;
     }): void;
-    /** Fire a hook whener a span ends. */
+    /** Fire a hook whenever a span ends. */
     emit(hook: 'spanEnd', span: Span): void;
     /**
      * Fire a hook indicating that an idle span is allowed to auto finish.
@@ -2523,7 +2523,7 @@ type TransactionNamingScheme = 'path' | 'methodPath' | 'handler';
  */
 declare function propagationContextFromHeaders(sentryTrace: string | undefined, baggage: string | number | boolean | string[] | null | undefined): PropagationContext;
 
-declare const SDK_VERSION = "8.36.0";
+declare const SDK_VERSION = "8.37.0";
 
 interface DenoTransportOptions extends BaseTransportOptions {
     /** Custom headers for the transport. Used by the XHRTransport and FetchTransport */
@@ -3500,7 +3500,7 @@ declare function captureSession(end?: boolean): void;
 declare function getCurrentScope(): Scope$1;
 /**
  * Get the currently active isolation scope.
- * The isolation scope is active for the current exection context.
+ * The isolation scope is active for the current execution context.
  */
 declare function getIsolationScope(): Scope$1;
 /**
@@ -3710,6 +3710,11 @@ declare const zodErrorsIntegration: (options?: ZodErrorsOptions | undefined) => 
  * Returns the metrics aggregator for a given client.
  */
 declare function getMetricsAggregatorForClient(client: Client): MetricsAggregator;
+/**
+ * The metrics API is used to capture custom metrics in Sentry.
+ *
+ * @deprecated The Sentry metrics beta has ended. This export will be removed in a future release.
+ */
 declare const metricsDefault: Metrics & {
     getMetricsAggregatorForClient: typeof getMetricsAggregatorForClient;
 };

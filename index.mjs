@@ -465,7 +465,7 @@ function getBreadcrumbLogLevelFromHttpStatusCode(statusCode) {
   }
 }
 
-const SDK_VERSION = '8.36.0';
+const SDK_VERSION = '8.37.0';
 
 /** Get's the global object for the current JavaScript runtime */
 const GLOBAL_OBJ = globalThis ;
@@ -937,7 +937,7 @@ function urlEncode(object) {
  * non-enumerable properties attached.
  *
  * @param value Initial source that we have to transform in order for it to be usable by the serializer
- * @returns An Event or Error turned into an object - or the value argurment itself, when value is neither an Event nor
+ * @returns An Event or Error turned into an object - or the value argument itself, when value is neither an Event nor
  *  an Error.
  */
 function convertToPlainObject(
@@ -1276,8 +1276,12 @@ function addHandler(type, handler) {
 /** Maybe run an instrumentation function, unless it was already called. */
 function maybeInstrument(type, instrumentFn) {
   if (!instrumented[type]) {
-    instrumentFn();
     instrumented[type] = true;
+    try {
+      instrumentFn();
+    } catch (e) {
+      DEBUG_BUILD$1 && logger.error(`Error while instrumenting ${type}`, e);
+    }
   }
 }
 
@@ -1977,7 +1981,7 @@ function arrayify(maybeArray) {
  * @param input The object to be normalized.
  * @param depth The max depth to which to normalize the object. (Anything deeper stringified whole.)
  * @param maxProperties The max number of elements or properties to be included in any single array or
- * object in the normallized output.
+ * object in the normalized output.
  * @returns A normalized version of the object, or `"**non-serializable**"` if any errors are thrown during normalization.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -3656,7 +3660,7 @@ function serializeEnvelope(envelope) {
       try {
         stringifiedPayload = JSON.stringify(payload);
       } catch (e) {
-        // In case, despite all our efforts to keep `payload` circular-dependency-free, `JSON.strinify()` still
+        // In case, despite all our efforts to keep `payload` circular-dependency-free, `JSON.stringify()` still
         // fails, we try again after normalizing it again with infinite normalization depth. This of course has a
         // performance impact but in this case a performance hit is better than throwing.
         stringifiedPayload = JSON.stringify(normalize(payload));
@@ -5108,7 +5112,7 @@ function getCurrentScope() {
 
 /**
  * Get the currently active isolation scope.
- * The isolation scope is active for the current exection context.
+ * The isolation scope is active for the current execution context.
  */
 function getIsolationScope() {
   const carrier = getMainCarrier();
@@ -5296,7 +5300,7 @@ const SEMANTIC_ATTRIBUTE_SENTRY_MEASUREMENT_UNIT = 'sentry.measurement_unit';
 const SEMANTIC_ATTRIBUTE_SENTRY_MEASUREMENT_VALUE = 'sentry.measurement_value';
 
 /**
- * The id of the profile that this span occured in.
+ * The id of the profile that this span occurred in.
  */
 const SEMANTIC_ATTRIBUTE_PROFILE_ID = 'sentry.profile_id';
 
@@ -5630,7 +5634,7 @@ function errorCallback() {
   const rootSpan = activeSpan && getRootSpan(activeSpan);
   if (rootSpan) {
     const message = 'internal_error';
-    DEBUG_BUILD && logger.log(`[Tracing] Root span: ${message} -> Global error occured`);
+    DEBUG_BUILD && logger.log(`[Tracing] Root span: ${message} -> Global error occurred`);
     rootSpan.setStatus({ code: SPAN_STATUS_ERROR, message });
   }
 }
@@ -5739,7 +5743,7 @@ class SentryNonRecordingSpan  {
 
   /**
    * This should generally not be used,
-   * but we need it for being comliant with the OTEL Span interface.
+   * but we need it for being compliant with the OTEL Span interface.
    *
    * @hidden
    * @internal
@@ -5750,7 +5754,7 @@ class SentryNonRecordingSpan  {
 
   /**
    * This should generally not be used,
-   * but we need it for being comliant with the OTEL Span interface.
+   * but we need it for being compliant with the OTEL Span interface.
    *
    * @hidden
    * @internal
@@ -5761,7 +5765,7 @@ class SentryNonRecordingSpan  {
 
   /**
    * This should generally not be used,
-   * but we need it for being comliant with the OTEL Span interface.
+   * but we need it for being compliant with the OTEL Span interface.
    *
    * @hidden
    * @internal
@@ -6138,7 +6142,7 @@ function createEventEnvelope(
   /*
     Note: Due to TS, event.type may be `replay_event`, theoretically.
     In practice, we never call `createEventEnvelope` with `replay_event` type,
-    and we'd have to adjut a looot of types to make this work properly.
+    and we'd have to adjust a looot of types to make this work properly.
     We want to avoid casting this around, as that could lead to bugs (e.g. when we add another type)
     So the safe choice is to really guard against the replay_event type here.
   */
@@ -7802,8 +7806,9 @@ function withMonitor(
         () => {
           finishCheckIn('ok');
         },
-        () => {
+        e => {
           finishCheckIn('error');
+          throw e;
         },
       );
     } else {
@@ -8577,7 +8582,7 @@ class BaseClient {
    on(hook, callback) {
     const hooks = (this._hooks[hook] = this._hooks[hook] || []);
 
-    // @ts-expect-error We assue the types are correct
+    // @ts-expect-error We assume the types are correct
     hooks.push(callback);
 
     // This function returns a callback execution handler that, when invoked,
@@ -8585,7 +8590,7 @@ class BaseClient {
     // need to be unregistered to prevent self-referencing in callback closures,
     // ensuring proper garbage collection.
     return () => {
-      // @ts-expect-error We assue the types are correct
+      // @ts-expect-error We assume the types are correct
       const cbIndex = hooks.indexOf(callback);
       if (cbIndex > -1) {
         hooks.splice(cbIndex, 1);
@@ -10711,7 +10716,7 @@ function addToMetricsAggregator(
 /**
  * Adds a value to a counter metric
  *
- * @experimental This API is experimental and might have breaking changes in the future.
+ * @deprecated The Sentry metrics beta has ended. This method will be removed in a future release.
  */
 function increment$1(aggregator, name, value = 1, data) {
   addToMetricsAggregator(aggregator, COUNTER_METRIC_TYPE, name, ensureNumber(value), data);
@@ -10720,7 +10725,7 @@ function increment$1(aggregator, name, value = 1, data) {
 /**
  * Adds a value to a distribution metric
  *
- * @experimental This API is experimental and might have breaking changes in the future.
+ * @deprecated The Sentry metrics beta has ended. This method will be removed in a future release.
  */
 function distribution$1(aggregator, name, value, data) {
   addToMetricsAggregator(aggregator, DISTRIBUTION_METRIC_TYPE, name, ensureNumber(value), data);
@@ -10733,7 +10738,7 @@ function distribution$1(aggregator, name, value, data) {
  * You can either directly capture a numeric `value`, or wrap a callback function in `timing`.
  * In the latter case, the duration of the callback execution will be captured as a span & a metric.
  *
- * @experimental This API is experimental and might have breaking changes in the future.
+ * @deprecated The Sentry metrics beta has ended. This method will be removed in a future release.
  */
 function timing$1(
   aggregator,
@@ -10762,6 +10767,7 @@ function timing$1(
           () => {
             const endTime = timestampInSeconds();
             const timeDiff = endTime - startTime;
+            // eslint-disable-next-line deprecation/deprecation
             distribution$1(aggregator, name, timeDiff, { ...data, unit: 'second' });
             span.end(endTime);
           },
@@ -10771,13 +10777,14 @@ function timing$1(
   }
 
   // value form
+  // eslint-disable-next-line deprecation/deprecation
   distribution$1(aggregator, name, value, { ...data, unit });
 }
 
 /**
  * Adds a value to a set metric. Value must be a string or integer.
  *
- * @experimental This API is experimental and might have breaking changes in the future.
+ * @deprecated The Sentry metrics beta has ended. This method will be removed in a future release.
  */
 function set$1(aggregator, name, value, data) {
   addToMetricsAggregator(aggregator, SET_METRIC_TYPE, name, value, data);
@@ -10786,12 +10793,17 @@ function set$1(aggregator, name, value, data) {
 /**
  * Adds a value to a gauge metric
  *
- * @experimental This API is experimental and might have breaking changes in the future.
+ * @deprecated The Sentry metrics beta has ended. This method will be removed in a future release.
  */
 function gauge$1(aggregator, name, value, data) {
   addToMetricsAggregator(aggregator, GAUGE_METRIC_TYPE, name, ensureNumber(value), data);
 }
 
+/**
+ * The metrics API is used to capture custom metrics in Sentry.
+ *
+ * @deprecated The Sentry metrics beta has ended. This export will be removed in a future release.
+ */
 const metrics = {
   increment: increment$1,
   distribution: distribution$1,
@@ -11130,6 +11142,7 @@ class MetricsAggregator  {
     this._buckets = new Map();
     this._bucketsTotalWeight = 0;
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     this._interval = setInterval(() => this._flush(), DEFAULT_FLUSH_INTERVAL) ;
     // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     if (this._interval.unref) {
@@ -11269,36 +11282,40 @@ class MetricsAggregator  {
 /**
  * Adds a value to a counter metric
  *
- * @experimental This API is experimental and might have breaking changes in the future.
+ * @deprecated The Sentry metrics beta has ended. This method will be removed in a future release.
  */
 function increment(name, value = 1, data) {
+  // eslint-disable-next-line deprecation/deprecation
   metrics.increment(MetricsAggregator, name, value, data);
 }
 
 /**
  * Adds a value to a distribution metric
  *
- * @experimental This API is experimental and might have breaking changes in the future.
+ * @deprecated The Sentry metrics beta has ended. This method will be removed in a future release.
  */
 function distribution(name, value, data) {
+  // eslint-disable-next-line deprecation/deprecation
   metrics.distribution(MetricsAggregator, name, value, data);
 }
 
 /**
  * Adds a value to a set metric. Value must be a string or integer.
  *
- * @experimental This API is experimental and might have breaking changes in the future.
+ * @deprecated The Sentry metrics beta has ended. This method will be removed in a future release.
  */
 function set(name, value, data) {
+  // eslint-disable-next-line deprecation/deprecation
   metrics.set(MetricsAggregator, name, value, data);
 }
 
 /**
  * Adds a value to a gauge metric
  *
- * @experimental This API is experimental and might have breaking changes in the future.
+ * @deprecated The Sentry metrics beta has ended. This method will be removed in a future release.
  */
 function gauge(name, value, data) {
+  // eslint-disable-next-line deprecation/deprecation
   metrics.gauge(MetricsAggregator, name, value, data);
 }
 
@@ -11309,7 +11326,7 @@ function gauge(name, value, data) {
  * You can either directly capture a numeric `value`, or wrap a callback function in `timing`.
  * In the latter case, the duration of the callback execution will be captured as a span & a metric.
  *
- * @experimental This API is experimental and might have breaking changes in the future.
+ * @deprecated The Sentry metrics beta has ended. This method will be removed in a future release.
  */
 
 function timing(
@@ -11318,6 +11335,7 @@ function timing(
   unit = 'second',
   data,
 ) {
+  // eslint-disable-next-line deprecation/deprecation
   return metrics.timing(MetricsAggregator, name, value, unit, data);
 }
 
@@ -11325,9 +11343,15 @@ function timing(
  * Returns the metrics aggregator for a given client.
  */
 function getMetricsAggregatorForClient(client) {
+  // eslint-disable-next-line deprecation/deprecation
   return metrics.getMetricsAggregatorForClient(client, MetricsAggregator);
 }
 
+/**
+ * The metrics API is used to capture custom metrics in Sentry.
+ *
+ * @deprecated The Sentry metrics beta has ended. This export will be removed in a future release.
+ */
 const metricsDefault
 
  = {
