@@ -465,7 +465,7 @@ function getBreadcrumbLogLevelFromHttpStatusCode(statusCode) {
   }
 }
 
-const SDK_VERSION = '8.37.1';
+const SDK_VERSION = '8.38.0';
 
 /** Get's the global object for the current JavaScript runtime */
 const GLOBAL_OBJ = globalThis ;
@@ -4158,6 +4158,51 @@ function generatePropagationContext() {
   };
 }
 
+const debugIdStackParserCache = new WeakMap();
+
+/**
+ * Returns a map of filenames to debug identifiers.
+ */
+function getFilenameToDebugIdMap(stackParser) {
+  const debugIdMap = GLOBAL_OBJ._sentryDebugIds;
+  if (!debugIdMap) {
+    return {};
+  }
+
+  let debugIdStackFramesCache;
+  const cachedDebugIdStackFrameCache = debugIdStackParserCache.get(stackParser);
+  if (cachedDebugIdStackFrameCache) {
+    debugIdStackFramesCache = cachedDebugIdStackFrameCache;
+  } else {
+    debugIdStackFramesCache = new Map();
+    debugIdStackParserCache.set(stackParser, debugIdStackFramesCache);
+  }
+
+  // Build a map of filename -> debug_id.
+  return Object.keys(debugIdMap).reduce((acc, debugIdStackTrace) => {
+    let parsedStack;
+
+    const cachedParsedStack = debugIdStackFramesCache.get(debugIdStackTrace);
+    if (cachedParsedStack) {
+      parsedStack = cachedParsedStack;
+    } else {
+      parsedStack = stackParser(debugIdStackTrace);
+      debugIdStackFramesCache.set(debugIdStackTrace, parsedStack);
+    }
+
+    for (let i = parsedStack.length - 1; i >= 0; i--) {
+      const stackFrame = parsedStack[i];
+      const file = stackFrame && stackFrame.filename;
+
+      if (stackFrame && file) {
+        acc[file] = debugIdMap[debugIdStackTrace] ;
+        break;
+      }
+    }
+    return acc;
+  }, {});
+}
+
 /**
  * This serves as a build time flag that will be true by default, but false in non-debug builds or if users replace `__SENTRY_DEBUG__` in their generated code.
  *
@@ -7400,51 +7445,12 @@ function applyClientOptions(event, options) {
   }
 }
 
-const debugIdStackParserCache = new WeakMap();
-
 /**
  * Puts debug IDs into the stack frames of an error event.
  */
 function applyDebugIds(event, stackParser) {
-  const debugIdMap = GLOBAL_OBJ._sentryDebugIds;
-
-  if (!debugIdMap) {
-    return;
-  }
-
-  let debugIdStackFramesCache;
-  const cachedDebugIdStackFrameCache = debugIdStackParserCache.get(stackParser);
-  if (cachedDebugIdStackFrameCache) {
-    debugIdStackFramesCache = cachedDebugIdStackFrameCache;
-  } else {
-    debugIdStackFramesCache = new Map();
-    debugIdStackParserCache.set(stackParser, debugIdStackFramesCache);
-  }
-
   // Build a map of filename -> debug_id
-  const filenameDebugIdMap = Object.entries(debugIdMap).reduce(
-    (acc, [debugIdStackTrace, debugIdValue]) => {
-      let parsedStack;
-      const cachedParsedStack = debugIdStackFramesCache.get(debugIdStackTrace);
-      if (cachedParsedStack) {
-        parsedStack = cachedParsedStack;
-      } else {
-        parsedStack = stackParser(debugIdStackTrace);
-        debugIdStackFramesCache.set(debugIdStackTrace, parsedStack);
-      }
-
-      for (let i = parsedStack.length - 1; i >= 0; i--) {
-        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-        const stackFrame = parsedStack[i];
-        if (stackFrame.filename) {
-          acc[stackFrame.filename] = debugIdValue;
-          break;
-        }
-      }
-      return acc;
-    },
-    {},
-  );
+  const filenameDebugIdMap = getFilenameToDebugIdMap(stackParser);
 
   try {
     // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
