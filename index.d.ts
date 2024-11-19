@@ -97,16 +97,10 @@ interface BreadcrumbHint {
     [key: string]: any;
 }
 
-type FeatureFlag = {
-    readonly flag: string;
-    readonly result: boolean;
-};
-
 /**
  * Request data included in an event as sent to Sentry.
- * TODO(v9): Rename this to avoid confusion, because Request is also a native type.
  */
-interface Request {
+interface RequestEventData {
     url?: string;
     method?: string;
     data?: any;
@@ -121,6 +115,11 @@ interface Request {
         [key: string]: string;
     };
 }
+/**
+ * Request data included in an event as sent to Sentry.
+ * @deprecated: This type will be removed in v9. Use `RequestEventData` instead.
+ */
+type Request = RequestEventData;
 type QueryParams = string | {
     [key: string]: string;
 } | Array<[string, string]>;
@@ -466,7 +465,6 @@ interface Contexts extends Record<string, Context | undefined> {
     cloud_resource?: CloudResourceContext;
     state?: StateContext;
     profile?: ProfileContext;
-    flags?: FeatureFlagContext;
 }
 interface StateContext extends Record<string, unknown> {
     state: {
@@ -567,14 +565,6 @@ interface CloudResourceContext extends Record<string, unknown> {
 }
 interface ProfileContext extends Record<string, unknown> {
     profile_id: string;
-}
-/**
- * Used to buffer flag evaluation data on the current scope and attach it to
- * error events. `values` should be initialized as empty ([]), and it should
- * only be modified by @sentry/util "FlagBuffer" functions.
- */
-interface FeatureFlagContext extends Record<string, unknown> {
-    values: FeatureFlag[];
 }
 
 interface CrontabSchedule {
@@ -1307,7 +1297,7 @@ interface Event {
     dist?: string;
     environment?: string;
     sdk?: SdkInfo;
-    request?: Request;
+    request?: RequestEventData;
     transaction?: string;
     modules?: {
         [key: string]: string;
@@ -1331,7 +1321,7 @@ interface Event {
         [key: string]: unknown;
     } & {
         request?: PolymorphicRequest;
-        normalizedRequest?: Request;
+        normalizedRequest?: RequestEventData;
         dynamicSamplingContext?: Partial<DynamicSamplingContext>;
         capturedSpanScope?: Scope$1;
         capturedSpanIsolationScope?: Scope$1;
@@ -2524,6 +2514,7 @@ type AddRequestDataToEventOptions = {
     include?: {
         ip?: boolean;
         request?: boolean | Array<(typeof DEFAULT_REQUEST_INCLUDES)[number]>;
+        /** @deprecated This option will be removed in v9. It does not do anything anymore, the `transcation` is set in other places. */
         transaction?: boolean | TransactionNamingScheme;
         user?: boolean | Array<(typeof DEFAULT_USER_INCLUDES)[number]>;
     };
@@ -2539,6 +2530,9 @@ type AddRequestDataToEventOptions = {
         };
     };
 };
+/**
+ * @deprecated This type will be removed in v9. It is not in use anymore.
+ */
 type TransactionNamingScheme = 'path' | 'methodPath' | 'handler';
 
 /**
@@ -2547,7 +2541,7 @@ type TransactionNamingScheme = 'path' | 'methodPath' | 'handler';
  */
 declare function propagationContextFromHeaders(sentryTrace: string | undefined, baggage: string | number | boolean | string[] | null | undefined): PropagationContext;
 
-declare const SDK_VERSION = "8.39.0-beta.0";
+declare const SDK_VERSION: string;
 
 interface DenoTransportOptions extends BaseTransportOptions {
     /** Custom headers for the transport. Used by the XHRTransport and FetchTransport */
@@ -3314,7 +3308,10 @@ type RequestDataIntegrationOptions = {
             email?: boolean;
         };
     };
-    /** Whether to identify transactions by parameterized path, parameterized path with method, or handler name */
+    /**
+     * Whether to identify transactions by parameterized path, parameterized path with method, or handler name.
+     * @deprecated This option does not do anything anymore, and will be removed in v9.
+     */
     transactionNamingScheme?: TransactionNamingScheme;
 };
 /**
@@ -3918,4 +3915,4 @@ interface BreadcrumbsOptions {
  */
 declare const breadcrumbsIntegration: (options?: Partial<BreadcrumbsOptions> | undefined) => Integration;
 
-export { type AddRequestDataToEventOptions, type Breadcrumb, type BreadcrumbHint, DenoClient, type DenoOptions, type ErrorEvent, type Event, type EventHint, type Exception, type PolymorphicRequest, type Request, SDK_VERSION, SEMANTIC_ATTRIBUTE_SENTRY_OP, SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE, SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, Scope, type SdkInfo, type Session, type SeverityLevel, type Span, type StackFrame, type Stacktrace, type Thread, type User, addBreadcrumb, addEventProcessor, breadcrumbsIntegration, captureCheckIn, captureConsoleIntegration, captureEvent, captureException, captureFeedback, captureMessage, captureSession, close, contextLinesIntegration, continueTrace, createTransport, debugIntegration, dedupeIntegration, denoContextIntegration, denoCronIntegration, endSession, extraErrorDataIntegration, flush, functionToStringIntegration, getActiveSpan, getClient, getCurrentScope, getDefaultIntegrations, getGlobalScope, getIsolationScope, getRootSpan, getSpanStatusFromHttpCode, getTraceData, getTraceMetaTags, globalHandlersIntegration, inboundFiltersIntegration, init, isInitialized, lastEventId, linkedErrorsIntegration, metricsDefault as metrics, normalizePathsIntegration, requestDataIntegration, rewriteFramesIntegration, sessionTimingIntegration, setContext, setCurrentClient, setExtra, setExtras, setHttpStatus, setMeasurement, setTag, setTags, setUser, spanToBaggageHeader, spanToJSON, spanToTraceHeader, startInactiveSpan, startNewTrace, startSession, startSpan, startSpanManual, suppressTracing, withIsolationScope, withMonitor, withScope, zodErrorsIntegration };
+export { type AddRequestDataToEventOptions, type Breadcrumb, type BreadcrumbHint, DenoClient, type DenoOptions, type ErrorEvent, type Event, type EventHint, type Exception, type PolymorphicRequest, type Request, type RequestEventData, SDK_VERSION, SEMANTIC_ATTRIBUTE_SENTRY_OP, SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE, SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, Scope, type SdkInfo, type Session, type SeverityLevel, type Span, type StackFrame, type Stacktrace, type Thread, type User, addBreadcrumb, addEventProcessor, breadcrumbsIntegration, captureCheckIn, captureConsoleIntegration, captureEvent, captureException, captureFeedback, captureMessage, captureSession, close, contextLinesIntegration, continueTrace, createTransport, debugIntegration, dedupeIntegration, denoContextIntegration, denoCronIntegration, endSession, extraErrorDataIntegration, flush, functionToStringIntegration, getActiveSpan, getClient, getCurrentScope, getDefaultIntegrations, getGlobalScope, getIsolationScope, getRootSpan, getSpanStatusFromHttpCode, getTraceData, getTraceMetaTags, globalHandlersIntegration, inboundFiltersIntegration, init, isInitialized, lastEventId, linkedErrorsIntegration, metricsDefault as metrics, normalizePathsIntegration, requestDataIntegration, rewriteFramesIntegration, sessionTimingIntegration, setContext, setCurrentClient, setExtra, setExtras, setHttpStatus, setMeasurement, setTag, setTags, setUser, spanToBaggageHeader, spanToJSON, spanToTraceHeader, startInactiveSpan, startNewTrace, startSession, startSpan, startSpanManual, suppressTracing, withIsolationScope, withMonitor, withScope, zodErrorsIntegration };

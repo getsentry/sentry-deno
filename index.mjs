@@ -465,7 +465,9 @@ function getBreadcrumbLogLevelFromHttpStatusCode(statusCode) {
   }
 }
 
-const SDK_VERSION = '8.39.0-beta.0';
+// This is a magic string replaced by rollup
+
+const SDK_VERSION = "8.39.0" ;
 
 /** Get's the global object for the current JavaScript runtime */
 const GLOBAL_OBJ = globalThis ;
@@ -2762,24 +2764,6 @@ function parseCookie(str) {
   return obj;
 }
 
-/**
- * Parses string form of URL into an object
- * // borrowed from https://tools.ietf.org/html/rfc3986#appendix-B
- * // intentionally using regex and not <a/> href parsing trick because React Native and other
- * // environments where DOM might not be available
- * @returns parsed URL object
- */
-
-/**
- * Strip the query string and fragment off of a given URL or path (if present)
- *
- * @param urlPath Full URL or path, including possible query string and/or fragment
- * @returns URL or path without query string or fragment
- */
-function stripUrlQueryAndFragment(urlPath) {
-  return (urlPath.split(/[?#]/, 1) )[0];
-}
-
 // Vendored / modified from @sergiodxa/remix-utils
 
 // https://github.com/sergiodxa/remix-utils/blob/02af80e12829a53696bfa8f3c2363975cf59f55e/src/server/get-client-ip-address.ts
@@ -2907,80 +2891,10 @@ function isIP(str) {
 const DEFAULT_INCLUDES = {
   ip: false,
   request: true,
-  transaction: true,
   user: true,
 };
 const DEFAULT_REQUEST_INCLUDES = ['cookies', 'data', 'headers', 'method', 'query_string', 'url'];
 const DEFAULT_USER_INCLUDES = ['id', 'username', 'email'];
-
-/**
- * Options deciding what parts of the request to use when enhancing an event
- */
-
-/**
- * Extracts a complete and parameterized path from the request object and uses it to construct transaction name.
- * If the parameterized transaction name cannot be extracted, we fall back to the raw URL.
- *
- * Additionally, this function determines and returns the transaction name source
- *
- * eg. GET /mountpoint/user/:id
- *
- * @param req A request object
- * @param options What to include in the transaction name (method, path, or a custom route name to be
- *                used instead of the request's route)
- *
- * @returns A tuple of the fully constructed transaction name [0] and its source [1] (can be either 'route' or 'url')
- */
-function extractPathForTransaction(
-  req,
-  options = {},
-) {
-  const method = req.method && req.method.toUpperCase();
-
-  let path = '';
-  let source = 'url';
-
-  // Check to see if there's a parameterized route we can use (as there is in Express)
-  if (options.customRoute || req.route) {
-    path = options.customRoute || `${req.baseUrl || ''}${req.route && req.route.path}`;
-    source = 'route';
-  }
-
-  // Otherwise, just take the original URL
-  else if (req.originalUrl || req.url) {
-    path = stripUrlQueryAndFragment(req.originalUrl || req.url || '');
-  }
-
-  let name = '';
-  if (options.method && method) {
-    name += method;
-  }
-  if (options.method && options.path) {
-    name += ' ';
-  }
-  if (options.path && path) {
-    name += path;
-  }
-
-  return [name, source];
-}
-
-function extractTransaction(req, type) {
-  switch (type) {
-    case 'path': {
-      return extractPathForTransaction(req, { path: true })[0];
-    }
-    case 'handler': {
-      return (req.route && req.route.stack && req.route.stack[0] && req.route.stack[0].name) || '<anonymous>';
-    }
-    case 'methodPath':
-    default: {
-      // if exist _reconstructedRoute return that path instead of route.path
-      const customRoute = req._reconstructedRoute ? req._reconstructedRoute : undefined;
-      return extractPathForTransaction(req, { path: true, method: true, customRoute })[0];
-    }
-  }
-}
 
 function extractUserData(
   user
@@ -3241,12 +3155,6 @@ function addRequestDataToEvent(
     }
   }
 
-  if (include.transaction && !event.transaction && event.type === 'transaction') {
-    // TODO do we even need this anymore?
-    // TODO make this work for nextjs
-    event.transaction = extractTransaction(req, include.transaction);
-  }
-
   return event;
 }
 
@@ -3274,7 +3182,10 @@ function extractQueryParams(req) {
   }
 }
 
-function extractNormalizedRequestData(normalizedRequest, { include }) {
+function extractNormalizedRequestData(
+  normalizedRequest,
+  { include },
+) {
   const includeKeys = include ? (Array.isArray(include) ? include : DEFAULT_REQUEST_INCLUDES) : [];
 
   const requestData = {};
@@ -4610,14 +4521,6 @@ class ScopeClass  {
     newScope._tags = { ...this._tags };
     newScope._extra = { ...this._extra };
     newScope._contexts = { ...this._contexts };
-    if (this._contexts.flags) {
-      // We need to copy the `values` array so insertions on a cloned scope
-      // won't affect the original array.
-      newScope._contexts.flags = {
-        values: [...this._contexts.flags.values],
-      };
-    }
-
     newScope._user = this._user;
     newScope._level = this._level;
     newScope._session = this._session;
@@ -7708,14 +7611,6 @@ function normalizeEvent(event, depth, maxBreadth) {
     });
   }
 
-  // event.contexts.flags (FeatureFlagContext) stores context for our feature
-  // flag integrations. It has a greater nesting depth than our other typed
-  // Contexts, so we re-normalize with a fixed depth of 3 here. We do not want
-  // to skip this in case of conflicting, user-provided context.
-  if (event.contexts && event.contexts.flags && normalized.contexts) {
-    normalized.contexts.flags = normalize(event.contexts.flags, 3, maxBreadth);
-  }
-
   return normalized;
 }
 
@@ -10130,6 +10025,7 @@ function convertReqDataIntegrationOptsToAddReqDataOpts(
   integrationOptions,
 ) {
   const {
+    // eslint-disable-next-line deprecation/deprecation
     transactionNamingScheme,
     include: { ip, user, ...requestOptions },
   } = integrationOptions;
