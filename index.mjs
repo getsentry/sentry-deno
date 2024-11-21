@@ -1,4 +1,447 @@
 /// <reference types="./index.d.ts" />
+/**
+ * This serves as a build time flag that will be true by default, but false in non-debug builds or if users replace `__SENTRY_DEBUG__` in their generated code.
+ *
+ * ATTENTION: This constant must never cross package boundaries (i.e. be exported) to guarantee that it can be used for tree shaking.
+ */
+const DEBUG_BUILD$1 = (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__);
+
+// This is a magic string replaced by rollup
+
+const SDK_VERSION = "8.41.0-beta.0" ;
+
+/** Get's the global object for the current JavaScript runtime */
+const GLOBAL_OBJ = globalThis ;
+
+/**
+ * Returns a global singleton contained in the global `__SENTRY__[]` object.
+ *
+ * If the singleton doesn't already exist in `__SENTRY__`, it will be created using the given factory
+ * function and added to the `__SENTRY__` object.
+ *
+ * @param name name of the global singleton on __SENTRY__
+ * @param creator creator Factory function to create the singleton if it doesn't already exist on `__SENTRY__`
+ * @param obj (Optional) The global object on which to look for `__SENTRY__`, if not `GLOBAL_OBJ`'s return value
+ * @returns the singleton
+ */
+function getGlobalSingleton(name, creator, obj) {
+  const gbl = (GLOBAL_OBJ) ;
+  const __SENTRY__ = (gbl.__SENTRY__ = gbl.__SENTRY__ || {});
+  const versionedCarrier = (__SENTRY__[SDK_VERSION] = __SENTRY__[SDK_VERSION] || {});
+  return versionedCarrier[name] || (versionedCarrier[name] = creator());
+}
+
+/**
+ * This serves as a build time flag that will be true by default, but false in non-debug builds or if users replace `__SENTRY_DEBUG__` in their generated code.
+ *
+ * ATTENTION: This constant must never cross package boundaries (i.e. be exported) to guarantee that it can be used for tree shaking.
+ */
+const DEBUG_BUILD = (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__);
+
+/** Prefix for logging strings */
+const PREFIX = 'Sentry Logger ';
+
+const CONSOLE_LEVELS = [
+  'debug',
+  'info',
+  'warn',
+  'error',
+  'log',
+  'assert',
+  'trace',
+] ;
+
+/** This may be mutated by the console instrumentation. */
+const originalConsoleMethods
+
+ = {};
+
+/** JSDoc */
+
+/**
+ * Temporarily disable sentry console instrumentations.
+ *
+ * @param callback The function to run against the original `console` messages
+ * @returns The results of the callback
+ */
+function consoleSandbox(callback) {
+  if (!('console' in GLOBAL_OBJ)) {
+    return callback();
+  }
+
+  const console = GLOBAL_OBJ.console ;
+  const wrappedFuncs = {};
+
+  const wrappedLevels = Object.keys(originalConsoleMethods) ;
+
+  // Restore all wrapped console methods
+  wrappedLevels.forEach(level => {
+    const originalConsoleMethod = originalConsoleMethods[level] ;
+    wrappedFuncs[level] = console[level] ;
+    console[level] = originalConsoleMethod;
+  });
+
+  try {
+    return callback();
+  } finally {
+    // Revert restoration to wrapped state
+    wrappedLevels.forEach(level => {
+      console[level] = wrappedFuncs[level] ;
+    });
+  }
+}
+
+function makeLogger() {
+  let enabled = false;
+  const logger = {
+    enable: () => {
+      enabled = true;
+    },
+    disable: () => {
+      enabled = false;
+    },
+    isEnabled: () => enabled,
+  };
+
+  if (DEBUG_BUILD) {
+    CONSOLE_LEVELS.forEach(name => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      logger[name] = (...args) => {
+        if (enabled) {
+          consoleSandbox(() => {
+            GLOBAL_OBJ.console[name](`${PREFIX}[${name}]:`, ...args);
+          });
+        }
+      };
+    });
+  } else {
+    CONSOLE_LEVELS.forEach(name => {
+      logger[name] = () => undefined;
+    });
+  }
+
+  return logger ;
+}
+
+/**
+ * This is a logger singleton which either logs things or no-ops if logging is not enabled.
+ * The logger is a singleton on the carrier, to ensure that a consistent logger is used throughout the SDK.
+ */
+const logger = getGlobalSingleton('logger', makeLogger);
+
+const STACKTRACE_FRAME_LIMIT = 50;
+const UNKNOWN_FUNCTION = '?';
+// Used to sanitize webpack (error: *) wrapped stack errors
+const WEBPACK_ERROR_REGEXP = /\(error: (.*)\)/;
+const STRIP_FRAME_REGEXP = /captureMessage|captureException/;
+
+/**
+ * Creates a stack parser with the supplied line parsers
+ *
+ * StackFrames are returned in the correct order for Sentry Exception
+ * frames and with Sentry SDK internal frames removed from the top and bottom
+ *
+ */
+function createStackParser(...parsers) {
+  const sortedParsers = parsers.sort((a, b) => a[0] - b[0]).map(p => p[1]);
+
+  return (stack, skipFirstLines = 0, framesToPop = 0) => {
+    const frames = [];
+    const lines = stack.split('\n');
+
+    for (let i = skipFirstLines; i < lines.length; i++) {
+      const line = lines[i] ;
+      // Ignore lines over 1kb as they are unlikely to be stack frames.
+      // Many of the regular expressions use backtracking which results in run time that increases exponentially with
+      // input size. Huge strings can result in hangs/Denial of Service:
+      // https://github.com/getsentry/sentry-javascript/issues/2286
+      if (line.length > 1024) {
+        continue;
+      }
+
+      // https://github.com/getsentry/sentry-javascript/issues/5459
+      // Remove webpack (error: *) wrappers
+      const cleanedLine = WEBPACK_ERROR_REGEXP.test(line) ? line.replace(WEBPACK_ERROR_REGEXP, '$1') : line;
+
+      // https://github.com/getsentry/sentry-javascript/issues/7813
+      // Skip Error: lines
+      if (cleanedLine.match(/\S*Error: /)) {
+        continue;
+      }
+
+      for (const parser of sortedParsers) {
+        const frame = parser(cleanedLine);
+
+        if (frame) {
+          frames.push(frame);
+          break;
+        }
+      }
+
+      if (frames.length >= STACKTRACE_FRAME_LIMIT + framesToPop) {
+        break;
+      }
+    }
+
+    return stripSentryFramesAndReverse(frames.slice(framesToPop));
+  };
+}
+
+/**
+ * Gets a stack parser implementation from Options.stackParser
+ * @see Options
+ *
+ * If options contains an array of line parsers, it is converted into a parser
+ */
+function stackParserFromStackParserOptions(stackParser) {
+  if (Array.isArray(stackParser)) {
+    return createStackParser(...stackParser);
+  }
+  return stackParser;
+}
+
+/**
+ * Removes Sentry frames from the top and bottom of the stack if present and enforces a limit of max number of frames.
+ * Assumes stack input is ordered from top to bottom and returns the reverse representation so call site of the
+ * function that caused the crash is the last frame in the array.
+ * @hidden
+ */
+function stripSentryFramesAndReverse(stack) {
+  if (!stack.length) {
+    return [];
+  }
+
+  const localStack = Array.from(stack);
+
+  // If stack starts with one of our API calls, remove it (starts, meaning it's the top of the stack - aka last call)
+  if (/sentryWrapped/.test(getLastStackFrame(localStack).function || '')) {
+    localStack.pop();
+  }
+
+  // Reversing in the middle of the procedure allows us to just pop the values off the stack
+  localStack.reverse();
+
+  // If stack ends with one of our internal API calls, remove it (ends, meaning it's the bottom of the stack - aka top-most call)
+  if (STRIP_FRAME_REGEXP.test(getLastStackFrame(localStack).function || '')) {
+    localStack.pop();
+
+    // When using synthetic events, we will have a 2 levels deep stack, as `new Error('Sentry syntheticException')`
+    // is produced within the hub itself, making it:
+    //
+    //   Sentry.captureException()
+    //   getCurrentHub().captureException()
+    //
+    // instead of just the top `Sentry` call itself.
+    // This forces us to possibly strip an additional frame in the exact same was as above.
+    if (STRIP_FRAME_REGEXP.test(getLastStackFrame(localStack).function || '')) {
+      localStack.pop();
+    }
+  }
+
+  return localStack.slice(0, STACKTRACE_FRAME_LIMIT).map(frame => ({
+    ...frame,
+    filename: frame.filename || getLastStackFrame(localStack).filename,
+    function: frame.function || UNKNOWN_FUNCTION,
+  }));
+}
+
+function getLastStackFrame(arr) {
+  return arr[arr.length - 1] || {};
+}
+
+const defaultFunctionName = '<anonymous>';
+
+/**
+ * Safely extract function name from itself
+ */
+function getFunctionName(fn) {
+  try {
+    if (!fn || typeof fn !== 'function') {
+      return defaultFunctionName;
+    }
+    return fn.name || defaultFunctionName;
+  } catch (e) {
+    // Just accessing custom props in some Selenium environments
+    // can cause a "Permission denied" exception (see raven-js#495).
+    return defaultFunctionName;
+  }
+}
+
+/**
+ * Get's stack frames from an event without needing to check for undefined properties.
+ */
+function getFramesFromEvent(event) {
+  const exception = event.exception;
+
+  if (exception) {
+    const frames = [];
+    try {
+      // @ts-expect-error Object could be undefined
+      exception.values.forEach(value => {
+        // @ts-expect-error Value could be undefined
+        if (value.stacktrace.frames) {
+          // @ts-expect-error Value could be undefined
+          frames.push(...value.stacktrace.frames);
+        }
+      });
+      return frames;
+    } catch (_oO) {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+// We keep the handlers globally
+const handlers = {};
+const instrumented = {};
+
+/** Add a handler function. */
+function addHandler(type, handler) {
+  handlers[type] = handlers[type] || [];
+  (handlers[type] ).push(handler);
+}
+
+/** Maybe run an instrumentation function, unless it was already called. */
+function maybeInstrument(type, instrumentFn) {
+  if (!instrumented[type]) {
+    instrumented[type] = true;
+    try {
+      instrumentFn();
+    } catch (e) {
+      DEBUG_BUILD && logger.error(`Error while instrumenting ${type}`, e);
+    }
+  }
+}
+
+/** Trigger handlers for a given instrumentation type. */
+function triggerHandlers(type, data) {
+  const typeHandlers = type && handlers[type];
+  if (!typeHandlers) {
+    return;
+  }
+
+  for (const handler of typeHandlers) {
+    try {
+      handler(data);
+    } catch (e) {
+      DEBUG_BUILD &&
+        logger.error(
+          `Error while triggering instrumentation handler.\nType: ${type}\nName: ${getFunctionName(handler)}\nError:`,
+          e,
+        );
+    }
+  }
+}
+
+let _oldOnErrorHandler = null;
+
+/**
+ * Add an instrumentation handler for when an error is captured by the global error handler.
+ *
+ * Use at your own risk, this might break without changelog notice, only used internally.
+ * @hidden
+ */
+function addGlobalErrorInstrumentationHandler(handler) {
+  const type = 'error';
+  addHandler(type, handler);
+  maybeInstrument(type, instrumentError);
+}
+
+function instrumentError() {
+  _oldOnErrorHandler = GLOBAL_OBJ.onerror;
+
+  GLOBAL_OBJ.onerror = function (
+    msg,
+    url,
+    line,
+    column,
+    error,
+  ) {
+    const handlerData = {
+      column,
+      error,
+      line,
+      msg,
+      url,
+    };
+    triggerHandlers('error', handlerData);
+
+    if (_oldOnErrorHandler && !_oldOnErrorHandler.__SENTRY_LOADER__) {
+      // eslint-disable-next-line prefer-rest-params
+      return _oldOnErrorHandler.apply(this, arguments);
+    }
+
+    return false;
+  };
+
+  GLOBAL_OBJ.onerror.__SENTRY_INSTRUMENTED__ = true;
+}
+
+let _oldOnUnhandledRejectionHandler = null;
+
+/**
+ * Add an instrumentation handler for when an unhandled promise rejection is captured.
+ *
+ * Use at your own risk, this might break without changelog notice, only used internally.
+ * @hidden
+ */
+function addGlobalUnhandledRejectionInstrumentationHandler(
+  handler,
+) {
+  const type = 'unhandledrejection';
+  addHandler(type, handler);
+  maybeInstrument(type, instrumentUnhandledRejection);
+}
+
+function instrumentUnhandledRejection() {
+  _oldOnUnhandledRejectionHandler = GLOBAL_OBJ.onunhandledrejection;
+
+  GLOBAL_OBJ.onunhandledrejection = function (e) {
+    const handlerData = e;
+    triggerHandlers('unhandledrejection', handlerData);
+
+    if (_oldOnUnhandledRejectionHandler && !_oldOnUnhandledRejectionHandler.__SENTRY_LOADER__) {
+      // eslint-disable-next-line prefer-rest-params
+      return _oldOnUnhandledRejectionHandler.apply(this, arguments);
+    }
+
+    return true;
+  };
+
+  GLOBAL_OBJ.onunhandledrejection.__SENTRY_INSTRUMENTED__ = true;
+}
+
+/**
+ * An object that contains globally accessible properties and maintains a scope stack.
+ * @hidden
+ */
+
+/**
+ * Returns the global shim registry.
+ *
+ * FIXME: This function is problematic, because despite always returning a valid Carrier,
+ * it has an optional `__SENTRY__` property, which then in turn requires us to always perform an unnecessary check
+ * at the call-site. We always access the carrier through this function, so we can guarantee that `__SENTRY__` is there.
+ **/
+function getMainCarrier() {
+  // This ensures a Sentry carrier exists
+  getSentryCarrier(GLOBAL_OBJ);
+  return GLOBAL_OBJ;
+}
+
+/** Will either get the existing sentry carrier, or create a new one. */
+function getSentryCarrier(carrier) {
+  const __SENTRY__ = (carrier.__SENTRY__ = carrier.__SENTRY__ || {});
+
+  // For now: First SDK that sets the .version property wins
+  __SENTRY__.version = __SENTRY__.version || SDK_VERSION;
+
+  // Intentionally populating and returning the version of "this" SDK instance
+  // rather than what's set in .version so that "this" SDK always gets its carrier
+  return (__SENTRY__[SDK_VERSION] = __SENTRY__[SDK_VERSION] || {});
+}
+
 // eslint-disable-next-line @typescript-eslint/unbound-method
 const objectToString = Object.prototype.toString;
 
@@ -171,6 +614,127 @@ function isVueViewModel(wat) {
   return !!(typeof wat === 'object' && wat !== null && ((wat ).__isVue || (wat )._isVue));
 }
 
+const WINDOW$1 = GLOBAL_OBJ ;
+
+const DEFAULT_MAX_STRING_LENGTH = 80;
+
+/**
+ * Given a child DOM element, returns a query-selector statement describing that
+ * and its ancestors
+ * e.g. [HTMLElement] => body > div > input#foo.btn[name=baz]
+ * @returns generated DOM path
+ */
+function htmlTreeAsString(
+  elem,
+  options = {},
+) {
+  if (!elem) {
+    return '<unknown>';
+  }
+
+  // try/catch both:
+  // - accessing event.target (see getsentry/raven-js#838, #768)
+  // - `htmlTreeAsString` because it's complex, and just accessing the DOM incorrectly
+  // - can throw an exception in some circumstances.
+  try {
+    let currentElem = elem ;
+    const MAX_TRAVERSE_HEIGHT = 5;
+    const out = [];
+    let height = 0;
+    let len = 0;
+    const separator = ' > ';
+    const sepLength = separator.length;
+    let nextStr;
+    const keyAttrs = Array.isArray(options) ? options : options.keyAttrs;
+    const maxStringLength = (!Array.isArray(options) && options.maxStringLength) || DEFAULT_MAX_STRING_LENGTH;
+
+    while (currentElem && height++ < MAX_TRAVERSE_HEIGHT) {
+      nextStr = _htmlElementAsString(currentElem, keyAttrs);
+      // bail out if
+      // - nextStr is the 'html' element
+      // - the length of the string that would be created exceeds maxStringLength
+      //   (ignore this limit if we are on the first iteration)
+      if (nextStr === 'html' || (height > 1 && len + out.length * sepLength + nextStr.length >= maxStringLength)) {
+        break;
+      }
+
+      out.push(nextStr);
+
+      len += nextStr.length;
+      currentElem = currentElem.parentNode;
+    }
+
+    return out.reverse().join(separator);
+  } catch (_oO) {
+    return '<unknown>';
+  }
+}
+
+/**
+ * Returns a simple, query-selector representation of a DOM element
+ * e.g. [HTMLElement] => input#foo.btn[name=baz]
+ * @returns generated DOM path
+ */
+function _htmlElementAsString(el, keyAttrs) {
+  const elem = el
+
+;
+
+  const out = [];
+
+  if (!elem || !elem.tagName) {
+    return '';
+  }
+
+  // @ts-expect-error WINDOW has HTMLElement
+  if (WINDOW$1.HTMLElement) {
+    // If using the component name annotation plugin, this value may be available on the DOM node
+    if (elem instanceof HTMLElement && elem.dataset) {
+      if (elem.dataset['sentryComponent']) {
+        return elem.dataset['sentryComponent'];
+      }
+      if (elem.dataset['sentryElement']) {
+        return elem.dataset['sentryElement'];
+      }
+    }
+  }
+
+  out.push(elem.tagName.toLowerCase());
+
+  // Pairs of attribute keys defined in `serializeAttribute` and their values on element.
+  const keyAttrPairs =
+    keyAttrs && keyAttrs.length
+      ? keyAttrs.filter(keyAttr => elem.getAttribute(keyAttr)).map(keyAttr => [keyAttr, elem.getAttribute(keyAttr)])
+      : null;
+
+  if (keyAttrPairs && keyAttrPairs.length) {
+    keyAttrPairs.forEach(keyAttrPair => {
+      out.push(`[${keyAttrPair[0]}="${keyAttrPair[1]}"]`);
+    });
+  } else {
+    if (elem.id) {
+      out.push(`#${elem.id}`);
+    }
+
+    const className = elem.className;
+    if (className && isString(className)) {
+      const classes = className.split(/\s+/);
+      for (const c of classes) {
+        out.push(`.${c}`);
+      }
+    }
+  }
+  const allowedAttrs = ['aria-label', 'type', 'name', 'title', 'alt'];
+  for (const k of allowedAttrs) {
+    const attr = elem.getAttribute(k);
+    if (attr) {
+      out.push(`[${k}="${attr}"]`);
+    }
+  }
+
+  return out.join('');
+}
+
 /**
  * Truncates given string to the maximum characters count
  *
@@ -309,546 +873,6 @@ function stringMatchesSomePattern(
 }
 
 /**
- * Creates exceptions inside `event.exception.values` for errors that are nested on properties based on the `key` parameter.
- */
-function applyAggregateErrorsToEvent(
-  exceptionFromErrorImplementation,
-  parser,
-  maxValueLimit = 250,
-  key,
-  limit,
-  event,
-  hint,
-) {
-  if (!event.exception || !event.exception.values || !hint || !isInstanceOf(hint.originalException, Error)) {
-    return;
-  }
-
-  // Generally speaking the last item in `event.exception.values` is the exception originating from the original Error
-  const originalException =
-    event.exception.values.length > 0 ? event.exception.values[event.exception.values.length - 1] : undefined;
-
-  // We only create exception grouping if there is an exception in the event.
-  if (originalException) {
-    event.exception.values = truncateAggregateExceptions(
-      aggregateExceptionsFromError(
-        exceptionFromErrorImplementation,
-        parser,
-        limit,
-        hint.originalException ,
-        key,
-        event.exception.values,
-        originalException,
-        0,
-      ),
-      maxValueLimit,
-    );
-  }
-}
-
-function aggregateExceptionsFromError(
-  exceptionFromErrorImplementation,
-  parser,
-  limit,
-  error,
-  key,
-  prevExceptions,
-  exception,
-  exceptionId,
-) {
-  if (prevExceptions.length >= limit + 1) {
-    return prevExceptions;
-  }
-
-  let newExceptions = [...prevExceptions];
-
-  // Recursively call this function in order to walk down a chain of errors
-  if (isInstanceOf(error[key], Error)) {
-    applyExceptionGroupFieldsForParentException(exception, exceptionId);
-    const newException = exceptionFromErrorImplementation(parser, error[key]);
-    const newExceptionId = newExceptions.length;
-    applyExceptionGroupFieldsForChildException(newException, key, newExceptionId, exceptionId);
-    newExceptions = aggregateExceptionsFromError(
-      exceptionFromErrorImplementation,
-      parser,
-      limit,
-      error[key],
-      key,
-      [newException, ...newExceptions],
-      newException,
-      newExceptionId,
-    );
-  }
-
-  // This will create exception grouping for AggregateErrors
-  // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AggregateError
-  if (Array.isArray(error.errors)) {
-    error.errors.forEach((childError, i) => {
-      if (isInstanceOf(childError, Error)) {
-        applyExceptionGroupFieldsForParentException(exception, exceptionId);
-        const newException = exceptionFromErrorImplementation(parser, childError);
-        const newExceptionId = newExceptions.length;
-        applyExceptionGroupFieldsForChildException(newException, `errors[${i}]`, newExceptionId, exceptionId);
-        newExceptions = aggregateExceptionsFromError(
-          exceptionFromErrorImplementation,
-          parser,
-          limit,
-          childError,
-          key,
-          [newException, ...newExceptions],
-          newException,
-          newExceptionId,
-        );
-      }
-    });
-  }
-
-  return newExceptions;
-}
-
-function applyExceptionGroupFieldsForParentException(exception, exceptionId) {
-  // Don't know if this default makes sense. The protocol requires us to set these values so we pick *some* default.
-  exception.mechanism = exception.mechanism || { type: 'generic', handled: true };
-
-  exception.mechanism = {
-    ...exception.mechanism,
-    ...(exception.type === 'AggregateError' && { is_exception_group: true }),
-    exception_id: exceptionId,
-  };
-}
-
-function applyExceptionGroupFieldsForChildException(
-  exception,
-  source,
-  exceptionId,
-  parentId,
-) {
-  // Don't know if this default makes sense. The protocol requires us to set these values so we pick *some* default.
-  exception.mechanism = exception.mechanism || { type: 'generic', handled: true };
-
-  exception.mechanism = {
-    ...exception.mechanism,
-    type: 'chained',
-    source,
-    exception_id: exceptionId,
-    parent_id: parentId,
-  };
-}
-
-/**
- * Truncate the message (exception.value) of all exceptions in the event.
- * Because this event processor is ran after `applyClientOptions`,
- * we need to truncate the message of the added exceptions here.
- */
-function truncateAggregateExceptions(exceptions, maxValueLength) {
-  return exceptions.map(exception => {
-    if (exception.value) {
-      exception.value = truncate(exception.value, maxValueLength);
-    }
-    return exception;
-  });
-}
-
-/**
- * Determine a breadcrumb's log level (only `warning` or `error`) based on an HTTP status code.
- */
-function getBreadcrumbLogLevelFromHttpStatusCode(statusCode) {
-  // NOTE: undefined defaults to 'info' in Sentry
-  if (statusCode === undefined) {
-    return undefined;
-  } else if (statusCode >= 400 && statusCode < 500) {
-    return 'warning';
-  } else if (statusCode >= 500) {
-    return 'error';
-  } else {
-    return undefined;
-  }
-}
-
-// This is a magic string replaced by rollup
-
-const SDK_VERSION = "8.39.0" ;
-
-/** Get's the global object for the current JavaScript runtime */
-const GLOBAL_OBJ = globalThis ;
-
-/**
- * Returns a global singleton contained in the global `__SENTRY__[]` object.
- *
- * If the singleton doesn't already exist in `__SENTRY__`, it will be created using the given factory
- * function and added to the `__SENTRY__` object.
- *
- * @param name name of the global singleton on __SENTRY__
- * @param creator creator Factory function to create the singleton if it doesn't already exist on `__SENTRY__`
- * @param obj (Optional) The global object on which to look for `__SENTRY__`, if not `GLOBAL_OBJ`'s return value
- * @returns the singleton
- */
-function getGlobalSingleton(name, creator, obj) {
-  const gbl = (GLOBAL_OBJ) ;
-  const __SENTRY__ = (gbl.__SENTRY__ = gbl.__SENTRY__ || {});
-  const versionedCarrier = (__SENTRY__[SDK_VERSION] = __SENTRY__[SDK_VERSION] || {});
-  return versionedCarrier[name] || (versionedCarrier[name] = creator());
-}
-
-const WINDOW$1 = GLOBAL_OBJ ;
-
-const DEFAULT_MAX_STRING_LENGTH = 80;
-
-/**
- * Given a child DOM element, returns a query-selector statement describing that
- * and its ancestors
- * e.g. [HTMLElement] => body > div > input#foo.btn[name=baz]
- * @returns generated DOM path
- */
-function htmlTreeAsString(
-  elem,
-  options = {},
-) {
-  if (!elem) {
-    return '<unknown>';
-  }
-
-  // try/catch both:
-  // - accessing event.target (see getsentry/raven-js#838, #768)
-  // - `htmlTreeAsString` because it's complex, and just accessing the DOM incorrectly
-  // - can throw an exception in some circumstances.
-  try {
-    let currentElem = elem ;
-    const MAX_TRAVERSE_HEIGHT = 5;
-    const out = [];
-    let height = 0;
-    let len = 0;
-    const separator = ' > ';
-    const sepLength = separator.length;
-    let nextStr;
-    const keyAttrs = Array.isArray(options) ? options : options.keyAttrs;
-    const maxStringLength = (!Array.isArray(options) && options.maxStringLength) || DEFAULT_MAX_STRING_LENGTH;
-
-    while (currentElem && height++ < MAX_TRAVERSE_HEIGHT) {
-      nextStr = _htmlElementAsString(currentElem, keyAttrs);
-      // bail out if
-      // - nextStr is the 'html' element
-      // - the length of the string that would be created exceeds maxStringLength
-      //   (ignore this limit if we are on the first iteration)
-      if (nextStr === 'html' || (height > 1 && len + out.length * sepLength + nextStr.length >= maxStringLength)) {
-        break;
-      }
-
-      out.push(nextStr);
-
-      len += nextStr.length;
-      currentElem = currentElem.parentNode;
-    }
-
-    return out.reverse().join(separator);
-  } catch (_oO) {
-    return '<unknown>';
-  }
-}
-
-/**
- * Returns a simple, query-selector representation of a DOM element
- * e.g. [HTMLElement] => input#foo.btn[name=baz]
- * @returns generated DOM path
- */
-function _htmlElementAsString(el, keyAttrs) {
-  const elem = el
-
-;
-
-  const out = [];
-
-  if (!elem || !elem.tagName) {
-    return '';
-  }
-
-  // @ts-expect-error WINDOW has HTMLElement
-  if (WINDOW$1.HTMLElement) {
-    // If using the component name annotation plugin, this value may be available on the DOM node
-    if (elem instanceof HTMLElement && elem.dataset) {
-      if (elem.dataset['sentryComponent']) {
-        return elem.dataset['sentryComponent'];
-      }
-      if (elem.dataset['sentryElement']) {
-        return elem.dataset['sentryElement'];
-      }
-    }
-  }
-
-  out.push(elem.tagName.toLowerCase());
-
-  // Pairs of attribute keys defined in `serializeAttribute` and their values on element.
-  const keyAttrPairs =
-    keyAttrs && keyAttrs.length
-      ? keyAttrs.filter(keyAttr => elem.getAttribute(keyAttr)).map(keyAttr => [keyAttr, elem.getAttribute(keyAttr)])
-      : null;
-
-  if (keyAttrPairs && keyAttrPairs.length) {
-    keyAttrPairs.forEach(keyAttrPair => {
-      out.push(`[${keyAttrPair[0]}="${keyAttrPair[1]}"]`);
-    });
-  } else {
-    if (elem.id) {
-      out.push(`#${elem.id}`);
-    }
-
-    const className = elem.className;
-    if (className && isString(className)) {
-      const classes = className.split(/\s+/);
-      for (const c of classes) {
-        out.push(`.${c}`);
-      }
-    }
-  }
-  const allowedAttrs = ['aria-label', 'type', 'name', 'title', 'alt'];
-  for (const k of allowedAttrs) {
-    const attr = elem.getAttribute(k);
-    if (attr) {
-      out.push(`[${k}="${attr}"]`);
-    }
-  }
-
-  return out.join('');
-}
-
-/**
- * This serves as a build time flag that will be true by default, but false in non-debug builds or if users replace `__SENTRY_DEBUG__` in their generated code.
- *
- * ATTENTION: This constant must never cross package boundaries (i.e. be exported) to guarantee that it can be used for tree shaking.
- */
-const DEBUG_BUILD$1 = (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__);
-
-/** Prefix for logging strings */
-const PREFIX = 'Sentry Logger ';
-
-const CONSOLE_LEVELS = [
-  'debug',
-  'info',
-  'warn',
-  'error',
-  'log',
-  'assert',
-  'trace',
-] ;
-
-/** This may be mutated by the console instrumentation. */
-const originalConsoleMethods
-
- = {};
-
-/** JSDoc */
-
-/**
- * Temporarily disable sentry console instrumentations.
- *
- * @param callback The function to run against the original `console` messages
- * @returns The results of the callback
- */
-function consoleSandbox(callback) {
-  if (!('console' in GLOBAL_OBJ)) {
-    return callback();
-  }
-
-  const console = GLOBAL_OBJ.console ;
-  const wrappedFuncs = {};
-
-  const wrappedLevels = Object.keys(originalConsoleMethods) ;
-
-  // Restore all wrapped console methods
-  wrappedLevels.forEach(level => {
-    const originalConsoleMethod = originalConsoleMethods[level] ;
-    wrappedFuncs[level] = console[level] ;
-    console[level] = originalConsoleMethod;
-  });
-
-  try {
-    return callback();
-  } finally {
-    // Revert restoration to wrapped state
-    wrappedLevels.forEach(level => {
-      console[level] = wrappedFuncs[level] ;
-    });
-  }
-}
-
-function makeLogger() {
-  let enabled = false;
-  const logger = {
-    enable: () => {
-      enabled = true;
-    },
-    disable: () => {
-      enabled = false;
-    },
-    isEnabled: () => enabled,
-  };
-
-  if (DEBUG_BUILD$1) {
-    CONSOLE_LEVELS.forEach(name => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      logger[name] = (...args) => {
-        if (enabled) {
-          consoleSandbox(() => {
-            GLOBAL_OBJ.console[name](`${PREFIX}[${name}]:`, ...args);
-          });
-        }
-      };
-    });
-  } else {
-    CONSOLE_LEVELS.forEach(name => {
-      logger[name] = () => undefined;
-    });
-  }
-
-  return logger ;
-}
-
-/**
- * This is a logger singleton which either logs things or no-ops if logging is not enabled.
- * The logger is a singleton on the carrier, to ensure that a consistent logger is used throughout the SDK.
- */
-const logger = getGlobalSingleton('logger', makeLogger);
-
-/** Regular expression used to parse a Dsn. */
-const DSN_REGEX = /^(?:(\w+):)\/\/(?:(\w+)(?::(\w+)?)?@)([\w.-]+)(?::(\d+))?\/(.+)/;
-
-function isValidProtocol(protocol) {
-  return protocol === 'http' || protocol === 'https';
-}
-
-/**
- * Renders the string representation of this Dsn.
- *
- * By default, this will render the public representation without the password
- * component. To get the deprecated private representation, set `withPassword`
- * to true.
- *
- * @param withPassword When set to true, the password will be included.
- */
-function dsnToString(dsn, withPassword = false) {
-  const { host, path, pass, port, projectId, protocol, publicKey } = dsn;
-  return (
-    `${protocol}://${publicKey}${withPassword && pass ? `:${pass}` : ''}` +
-    `@${host}${port ? `:${port}` : ''}/${path ? `${path}/` : path}${projectId}`
-  );
-}
-
-/**
- * Parses a Dsn from a given string.
- *
- * @param str A Dsn as string
- * @returns Dsn as DsnComponents or undefined if @param str is not a valid DSN string
- */
-function dsnFromString(str) {
-  const match = DSN_REGEX.exec(str);
-
-  if (!match) {
-    // This should be logged to the console
-    consoleSandbox(() => {
-      // eslint-disable-next-line no-console
-      console.error(`Invalid Sentry Dsn: ${str}`);
-    });
-    return undefined;
-  }
-
-  const [protocol, publicKey, pass = '', host = '', port = '', lastPath = ''] = match.slice(1);
-  let path = '';
-  let projectId = lastPath;
-
-  const split = projectId.split('/');
-  if (split.length > 1) {
-    path = split.slice(0, -1).join('/');
-    projectId = split.pop() ;
-  }
-
-  if (projectId) {
-    const projectMatch = projectId.match(/^\d+/);
-    if (projectMatch) {
-      projectId = projectMatch[0];
-    }
-  }
-
-  return dsnFromComponents({ host, pass, path, projectId, port, protocol: protocol , publicKey });
-}
-
-function dsnFromComponents(components) {
-  return {
-    protocol: components.protocol,
-    publicKey: components.publicKey || '',
-    pass: components.pass || '',
-    host: components.host,
-    port: components.port || '',
-    path: components.path || '',
-    projectId: components.projectId,
-  };
-}
-
-function validateDsn(dsn) {
-  if (!DEBUG_BUILD$1) {
-    return true;
-  }
-
-  const { port, projectId, protocol } = dsn;
-
-  const requiredComponents = ['protocol', 'publicKey', 'host', 'projectId'];
-  const hasMissingRequiredComponent = requiredComponents.find(component => {
-    if (!dsn[component]) {
-      logger.error(`Invalid Sentry Dsn: ${component} missing`);
-      return true;
-    }
-    return false;
-  });
-
-  if (hasMissingRequiredComponent) {
-    return false;
-  }
-
-  if (!projectId.match(/^\d+$/)) {
-    logger.error(`Invalid Sentry Dsn: Invalid projectId ${projectId}`);
-    return false;
-  }
-
-  if (!isValidProtocol(protocol)) {
-    logger.error(`Invalid Sentry Dsn: Invalid protocol ${protocol}`);
-    return false;
-  }
-
-  if (port && isNaN(parseInt(port, 10))) {
-    logger.error(`Invalid Sentry Dsn: Invalid port ${port}`);
-    return false;
-  }
-
-  return true;
-}
-
-/**
- * Creates a valid Sentry Dsn object, identifying a Sentry instance and project.
- * @returns a valid DsnComponents object or `undefined` if @param from is an invalid DSN source
- */
-function makeDsn(from) {
-  const components = typeof from === 'string' ? dsnFromString(from) : dsnFromComponents(from);
-  if (!components || !validateDsn(components)) {
-    return undefined;
-  }
-  return components;
-}
-
-/** An error emitted by Sentry SDKs and related utilities. */
-class SentryError extends Error {
-  /** Display name of this error instance. */
-
-   constructor( message, logLevel = 'warn') {
-    super(message);this.message = message;
-    this.name = new.target.prototype.constructor.name;
-    // This sets the prototype to be `Error`, not `SentryError`. It's unclear why we do this, but commenting this line
-    // out causes various (seemingly totally unrelated) playwright tests consistently time out. FYI, this makes
-    // instances of `SentryError` fail `obj instanceof SentryError` checks.
-    Object.setPrototypeOf(this, new.target.prototype);
-    this.logLevel = logLevel;
-  }
-}
-
-/**
  * Replace a method in an object with a wrapped version of itself.
  *
  * @param source An object that contains a method to be wrapped.
@@ -873,7 +897,11 @@ function fill(source, name, replacementFactory) {
     markFunctionWrapped(wrapped, original);
   }
 
-  source[name] = wrapped;
+  try {
+    source[name] = wrapped;
+  } catch (e) {
+    DEBUG_BUILD && logger.log(`Failed to replace method "${name}" in object`, source);
+  }
 }
 
 /**
@@ -892,7 +920,7 @@ function addNonEnumerableProperty(obj, name, value) {
       configurable: true,
     });
   } catch (o_O) {
-    DEBUG_BUILD$1 && logger.log(`Failed to add non-enumerable property "${name}" to object`, obj);
+    DEBUG_BUILD && logger.log(`Failed to add non-enumerable property "${name}" to object`, obj);
   }
 }
 
@@ -1097,326 +1125,9 @@ function isPojo(input) {
   try {
     const name = (Object.getPrototypeOf(input) ).constructor.name;
     return !name || name === 'Object';
-  } catch (e) {
+  } catch (e2) {
     return true;
   }
-}
-
-const STACKTRACE_FRAME_LIMIT = 50;
-const UNKNOWN_FUNCTION = '?';
-// Used to sanitize webpack (error: *) wrapped stack errors
-const WEBPACK_ERROR_REGEXP = /\(error: (.*)\)/;
-const STRIP_FRAME_REGEXP = /captureMessage|captureException/;
-
-/**
- * Creates a stack parser with the supplied line parsers
- *
- * StackFrames are returned in the correct order for Sentry Exception
- * frames and with Sentry SDK internal frames removed from the top and bottom
- *
- */
-function createStackParser(...parsers) {
-  const sortedParsers = parsers.sort((a, b) => a[0] - b[0]).map(p => p[1]);
-
-  return (stack, skipFirstLines = 0, framesToPop = 0) => {
-    const frames = [];
-    const lines = stack.split('\n');
-
-    for (let i = skipFirstLines; i < lines.length; i++) {
-      const line = lines[i] ;
-      // Ignore lines over 1kb as they are unlikely to be stack frames.
-      // Many of the regular expressions use backtracking which results in run time that increases exponentially with
-      // input size. Huge strings can result in hangs/Denial of Service:
-      // https://github.com/getsentry/sentry-javascript/issues/2286
-      if (line.length > 1024) {
-        continue;
-      }
-
-      // https://github.com/getsentry/sentry-javascript/issues/5459
-      // Remove webpack (error: *) wrappers
-      const cleanedLine = WEBPACK_ERROR_REGEXP.test(line) ? line.replace(WEBPACK_ERROR_REGEXP, '$1') : line;
-
-      // https://github.com/getsentry/sentry-javascript/issues/7813
-      // Skip Error: lines
-      if (cleanedLine.match(/\S*Error: /)) {
-        continue;
-      }
-
-      for (const parser of sortedParsers) {
-        const frame = parser(cleanedLine);
-
-        if (frame) {
-          frames.push(frame);
-          break;
-        }
-      }
-
-      if (frames.length >= STACKTRACE_FRAME_LIMIT + framesToPop) {
-        break;
-      }
-    }
-
-    return stripSentryFramesAndReverse(frames.slice(framesToPop));
-  };
-}
-
-/**
- * Gets a stack parser implementation from Options.stackParser
- * @see Options
- *
- * If options contains an array of line parsers, it is converted into a parser
- */
-function stackParserFromStackParserOptions(stackParser) {
-  if (Array.isArray(stackParser)) {
-    return createStackParser(...stackParser);
-  }
-  return stackParser;
-}
-
-/**
- * Removes Sentry frames from the top and bottom of the stack if present and enforces a limit of max number of frames.
- * Assumes stack input is ordered from top to bottom and returns the reverse representation so call site of the
- * function that caused the crash is the last frame in the array.
- * @hidden
- */
-function stripSentryFramesAndReverse(stack) {
-  if (!stack.length) {
-    return [];
-  }
-
-  const localStack = Array.from(stack);
-
-  // If stack starts with one of our API calls, remove it (starts, meaning it's the top of the stack - aka last call)
-  if (/sentryWrapped/.test(getLastStackFrame(localStack).function || '')) {
-    localStack.pop();
-  }
-
-  // Reversing in the middle of the procedure allows us to just pop the values off the stack
-  localStack.reverse();
-
-  // If stack ends with one of our internal API calls, remove it (ends, meaning it's the bottom of the stack - aka top-most call)
-  if (STRIP_FRAME_REGEXP.test(getLastStackFrame(localStack).function || '')) {
-    localStack.pop();
-
-    // When using synthetic events, we will have a 2 levels deep stack, as `new Error('Sentry syntheticException')`
-    // is produced within the hub itself, making it:
-    //
-    //   Sentry.captureException()
-    //   getCurrentHub().captureException()
-    //
-    // instead of just the top `Sentry` call itself.
-    // This forces us to possibly strip an additional frame in the exact same was as above.
-    if (STRIP_FRAME_REGEXP.test(getLastStackFrame(localStack).function || '')) {
-      localStack.pop();
-    }
-  }
-
-  return localStack.slice(0, STACKTRACE_FRAME_LIMIT).map(frame => ({
-    ...frame,
-    filename: frame.filename || getLastStackFrame(localStack).filename,
-    function: frame.function || UNKNOWN_FUNCTION,
-  }));
-}
-
-function getLastStackFrame(arr) {
-  return arr[arr.length - 1] || {};
-}
-
-const defaultFunctionName = '<anonymous>';
-
-/**
- * Safely extract function name from itself
- */
-function getFunctionName(fn) {
-  try {
-    if (!fn || typeof fn !== 'function') {
-      return defaultFunctionName;
-    }
-    return fn.name || defaultFunctionName;
-  } catch (e) {
-    // Just accessing custom props in some Selenium environments
-    // can cause a "Permission denied" exception (see raven-js#495).
-    return defaultFunctionName;
-  }
-}
-
-/**
- * Get's stack frames from an event without needing to check for undefined properties.
- */
-function getFramesFromEvent(event) {
-  const exception = event.exception;
-
-  if (exception) {
-    const frames = [];
-    try {
-      // @ts-expect-error Object could be undefined
-      exception.values.forEach(value => {
-        // @ts-expect-error Value could be undefined
-        if (value.stacktrace.frames) {
-          // @ts-expect-error Value could be undefined
-          frames.push(...value.stacktrace.frames);
-        }
-      });
-      return frames;
-    } catch (_oO) {
-      return undefined;
-    }
-  }
-  return undefined;
-}
-
-// We keep the handlers globally
-const handlers = {};
-const instrumented = {};
-
-/** Add a handler function. */
-function addHandler(type, handler) {
-  handlers[type] = handlers[type] || [];
-  (handlers[type] ).push(handler);
-}
-
-/** Maybe run an instrumentation function, unless it was already called. */
-function maybeInstrument(type, instrumentFn) {
-  if (!instrumented[type]) {
-    instrumented[type] = true;
-    try {
-      instrumentFn();
-    } catch (e) {
-      DEBUG_BUILD$1 && logger.error(`Error while instrumenting ${type}`, e);
-    }
-  }
-}
-
-/** Trigger handlers for a given instrumentation type. */
-function triggerHandlers(type, data) {
-  const typeHandlers = type && handlers[type];
-  if (!typeHandlers) {
-    return;
-  }
-
-  for (const handler of typeHandlers) {
-    try {
-      handler(data);
-    } catch (e) {
-      DEBUG_BUILD$1 &&
-        logger.error(
-          `Error while triggering instrumentation handler.\nType: ${type}\nName: ${getFunctionName(handler)}\nError:`,
-          e,
-        );
-    }
-  }
-}
-
-/**
- * Add an instrumentation handler for when a console.xxx method is called.
- *
- * Use at your own risk, this might break without changelog notice, only used internally.
- * @hidden
- */
-function addConsoleInstrumentationHandler(handler) {
-  const type = 'console';
-  addHandler(type, handler);
-  maybeInstrument(type, instrumentConsole);
-}
-
-function instrumentConsole() {
-  if (!('console' in GLOBAL_OBJ)) {
-    return;
-  }
-
-  CONSOLE_LEVELS.forEach(function (level) {
-    if (!(level in GLOBAL_OBJ.console)) {
-      return;
-    }
-
-    fill(GLOBAL_OBJ.console, level, function (originalConsoleMethod) {
-      originalConsoleMethods[level] = originalConsoleMethod;
-
-      return function (...args) {
-        const handlerData = { args, level };
-        triggerHandlers('console', handlerData);
-
-        const log = originalConsoleMethods[level];
-        log && log.apply(GLOBAL_OBJ.console, args);
-      };
-    });
-  });
-}
-
-const WINDOW = GLOBAL_OBJ ;
-
-/**
- * Tells whether current environment supports Fetch API
- * {@link supportsFetch}.
- *
- * @returns Answer to the given question.
- */
-function supportsFetch() {
-  if (!('fetch' in WINDOW)) {
-    return false;
-  }
-
-  try {
-    new Headers();
-    new Request('http://www.example.com');
-    new Response();
-    return true;
-  } catch (e) {
-    return false;
-  }
-}
-
-/**
- * isNative checks if the given function is a native implementation
- */
-// eslint-disable-next-line @typescript-eslint/ban-types
-function isNativeFunction(func) {
-  return func && /^function\s+\w+\(\)\s+\{\s+\[native code\]\s+\}$/.test(func.toString());
-}
-
-/**
- * Tells whether current environment supports Fetch API natively
- * {@link supportsNativeFetch}.
- *
- * @returns true if `window.fetch` is natively implemented, false otherwise
- */
-function supportsNativeFetch() {
-  if (typeof EdgeRuntime === 'string') {
-    return true;
-  }
-
-  if (!supportsFetch()) {
-    return false;
-  }
-
-  // Fast path to avoid DOM I/O
-  // eslint-disable-next-line @typescript-eslint/unbound-method
-  if (isNativeFunction(WINDOW.fetch)) {
-    return true;
-  }
-
-  // window.fetch is implemented, but is polyfilled or already wrapped (e.g: by a chrome extension)
-  // so create a "pure" iframe to see if that has native fetch
-  let result = false;
-  const doc = WINDOW.document;
-  // eslint-disable-next-line deprecation/deprecation
-  if (doc && typeof (doc.createElement ) === 'function') {
-    try {
-      const sandbox = doc.createElement('iframe');
-      sandbox.hidden = true;
-      doc.head.appendChild(sandbox);
-      if (sandbox.contentWindow && sandbox.contentWindow.fetch) {
-        // eslint-disable-next-line @typescript-eslint/unbound-method
-        result = isNativeFunction(sandbox.contentWindow.fetch);
-      }
-      doc.head.removeChild(sandbox);
-    } catch (err) {
-      DEBUG_BUILD$1 &&
-        logger.warn('Could not create sandbox iframe for pure fetch check, bailing to window.fetch: ', err);
-    }
-  }
-
-  return result;
 }
 
 const ONE_SECOND_IN_MS = 1000;
@@ -1523,265 +1234,6 @@ const timestampInSeconds = createUnixTimestampInSecondsFunc();
   }
   return dateNow;
 })();
-
-/**
- * Add an instrumentation handler for when a fetch request happens.
- * The handler function is called once when the request starts and once when it ends,
- * which can be identified by checking if it has an `endTimestamp`.
- *
- * Use at your own risk, this might break without changelog notice, only used internally.
- * @hidden
- */
-function addFetchInstrumentationHandler(
-  handler,
-  skipNativeFetchCheck,
-) {
-  const type = 'fetch';
-  addHandler(type, handler);
-  maybeInstrument(type, () => instrumentFetch(undefined, skipNativeFetchCheck));
-}
-
-function instrumentFetch(onFetchResolved, skipNativeFetchCheck = false) {
-  if (skipNativeFetchCheck && !supportsNativeFetch()) {
-    return;
-  }
-
-  fill(GLOBAL_OBJ, 'fetch', function (originalFetch) {
-    return function (...args) {
-      const { method, url } = parseFetchArgs(args);
-      const handlerData = {
-        args,
-        fetchData: {
-          method,
-          url,
-        },
-        startTimestamp: timestampInSeconds() * 1000,
-      };
-
-      // if there is no callback, fetch is instrumented directly
-      {
-        triggerHandlers('fetch', {
-          ...handlerData,
-        });
-      }
-
-      // We capture the stack right here and not in the Promise error callback because Safari (and probably other
-      // browsers too) will wipe the stack trace up to this point, only leaving us with this file which is useless.
-
-      // NOTE: If you are a Sentry user, and you are seeing this stack frame,
-      //       it means the error, that was caused by your fetch call did not
-      //       have a stack trace, so the SDK backfilled the stack trace so
-      //       you can see which fetch call failed.
-      const virtualStackTrace = new Error().stack;
-
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-      return originalFetch.apply(GLOBAL_OBJ, args).then(
-        async (response) => {
-          {
-            triggerHandlers('fetch', {
-              ...handlerData,
-              endTimestamp: timestampInSeconds() * 1000,
-              response,
-            });
-          }
-
-          return response;
-        },
-        (error) => {
-          triggerHandlers('fetch', {
-            ...handlerData,
-            endTimestamp: timestampInSeconds() * 1000,
-            error,
-          });
-
-          if (isError(error) && error.stack === undefined) {
-            // NOTE: If you are a Sentry user, and you are seeing this stack frame,
-            //       it means the error, that was caused by your fetch call did not
-            //       have a stack trace, so the SDK backfilled the stack trace so
-            //       you can see which fetch call failed.
-            error.stack = virtualStackTrace;
-            addNonEnumerableProperty(error, 'framesToPop', 1);
-          }
-
-          // NOTE: If you are a Sentry user, and you are seeing this stack frame,
-          //       it means the sentry.javascript SDK caught an error invoking your application code.
-          //       This is expected behavior and NOT indicative of a bug with sentry.javascript.
-          throw error;
-        },
-      );
-    };
-  });
-}
-
-function hasProp(obj, prop) {
-  return !!obj && typeof obj === 'object' && !!(obj )[prop];
-}
-
-function getUrlFromResource(resource) {
-  if (typeof resource === 'string') {
-    return resource;
-  }
-
-  if (!resource) {
-    return '';
-  }
-
-  if (hasProp(resource, 'url')) {
-    return resource.url;
-  }
-
-  if (resource.toString) {
-    return resource.toString();
-  }
-
-  return '';
-}
-
-/**
- * Parses the fetch arguments to find the used Http method and the url of the request.
- * Exported for tests only.
- */
-function parseFetchArgs(fetchArgs) {
-  if (fetchArgs.length === 0) {
-    return { method: 'GET', url: '' };
-  }
-
-  if (fetchArgs.length === 2) {
-    const [url, options] = fetchArgs ;
-
-    return {
-      url: getUrlFromResource(url),
-      method: hasProp(options, 'method') ? String(options.method).toUpperCase() : 'GET',
-    };
-  }
-
-  const arg = fetchArgs[0];
-  return {
-    url: getUrlFromResource(arg ),
-    method: hasProp(arg, 'method') ? String(arg.method).toUpperCase() : 'GET',
-  };
-}
-
-let _oldOnErrorHandler = null;
-
-/**
- * Add an instrumentation handler for when an error is captured by the global error handler.
- *
- * Use at your own risk, this might break without changelog notice, only used internally.
- * @hidden
- */
-function addGlobalErrorInstrumentationHandler(handler) {
-  const type = 'error';
-  addHandler(type, handler);
-  maybeInstrument(type, instrumentError);
-}
-
-function instrumentError() {
-  _oldOnErrorHandler = GLOBAL_OBJ.onerror;
-
-  GLOBAL_OBJ.onerror = function (
-    msg,
-    url,
-    line,
-    column,
-    error,
-  ) {
-    const handlerData = {
-      column,
-      error,
-      line,
-      msg,
-      url,
-    };
-    triggerHandlers('error', handlerData);
-
-    if (_oldOnErrorHandler && !_oldOnErrorHandler.__SENTRY_LOADER__) {
-      // eslint-disable-next-line prefer-rest-params
-      return _oldOnErrorHandler.apply(this, arguments);
-    }
-
-    return false;
-  };
-
-  GLOBAL_OBJ.onerror.__SENTRY_INSTRUMENTED__ = true;
-}
-
-let _oldOnUnhandledRejectionHandler = null;
-
-/**
- * Add an instrumentation handler for when an unhandled promise rejection is captured.
- *
- * Use at your own risk, this might break without changelog notice, only used internally.
- * @hidden
- */
-function addGlobalUnhandledRejectionInstrumentationHandler(
-  handler,
-) {
-  const type = 'unhandledrejection';
-  addHandler(type, handler);
-  maybeInstrument(type, instrumentUnhandledRejection);
-}
-
-function instrumentUnhandledRejection() {
-  _oldOnUnhandledRejectionHandler = GLOBAL_OBJ.onunhandledrejection;
-
-  GLOBAL_OBJ.onunhandledrejection = function (e) {
-    const handlerData = e;
-    triggerHandlers('unhandledrejection', handlerData);
-
-    if (_oldOnUnhandledRejectionHandler && !_oldOnUnhandledRejectionHandler.__SENTRY_LOADER__) {
-      // eslint-disable-next-line prefer-rest-params
-      return _oldOnUnhandledRejectionHandler.apply(this, arguments);
-    }
-
-    return true;
-  };
-
-  GLOBAL_OBJ.onunhandledrejection.__SENTRY_INSTRUMENTED__ = true;
-}
-
-/* eslint-disable @typescript-eslint/no-unsafe-member-access */
-/* eslint-disable @typescript-eslint/no-explicit-any */
-
-/**
- * Helper to decycle json objects
- */
-function memoBuilder() {
-  const hasWeakSet = typeof WeakSet === 'function';
-  const inner = hasWeakSet ? new WeakSet() : [];
-  function memoize(obj) {
-    if (hasWeakSet) {
-      if (inner.has(obj)) {
-        return true;
-      }
-      inner.add(obj);
-      return false;
-    }
-    // eslint-disable-next-line @typescript-eslint/prefer-for-of
-    for (let i = 0; i < inner.length; i++) {
-      const value = inner[i];
-      if (value === obj) {
-        return true;
-      }
-    }
-    inner.push(obj);
-    return false;
-  }
-
-  function unmemoize(obj) {
-    if (hasWeakSet) {
-      inner.delete(obj);
-    } else {
-      for (let i = 0; i < inner.length; i++) {
-        if (inner[i] === obj) {
-          inner.splice(i, 1);
-          break;
-        }
-      }
-    }
-  }
-  return [memoize, unmemoize];
-}
 
 /**
  * UUID4 generator
@@ -1955,449 +1407,6 @@ function checkOrSetAlreadyCaught(exception) {
   }
 
   return false;
-}
-
-/**
- * Checks whether the given input is already an array, and if it isn't, wraps it in one.
- *
- * @param maybeArray Input to turn into an array, if necessary
- * @returns The input, if already an array, or an array with the input as the only element, if not
- */
-function arrayify(maybeArray) {
-  return Array.isArray(maybeArray) ? maybeArray : [maybeArray];
-}
-
-/**
- * Recursively normalizes the given object.
- *
- * - Creates a copy to prevent original input mutation
- * - Skips non-enumerable properties
- * - When stringifying, calls `toJSON` if implemented
- * - Removes circular references
- * - Translates non-serializable values (`undefined`/`NaN`/functions) to serializable format
- * - Translates known global objects/classes to a string representations
- * - Takes care of `Error` object serialization
- * - Optionally limits depth of final output
- * - Optionally limits number of properties/elements included in any single object/array
- *
- * @param input The object to be normalized.
- * @param depth The max depth to which to normalize the object. (Anything deeper stringified whole.)
- * @param maxProperties The max number of elements or properties to be included in any single array or
- * object in the normalized output.
- * @returns A normalized version of the object, or `"**non-serializable**"` if any errors are thrown during normalization.
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function normalize(input, depth = 100, maxProperties = +Infinity) {
-  try {
-    // since we're at the outermost level, we don't provide a key
-    return visit('', input, depth, maxProperties);
-  } catch (err) {
-    return { ERROR: `**non-serializable** (${err})` };
-  }
-}
-
-/** JSDoc */
-function normalizeToSize(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  object,
-  // Default Node.js REPL depth
-  depth = 3,
-  // 100kB, as 200kB is max payload size, so half sounds reasonable
-  maxSize = 100 * 1024,
-) {
-  const normalized = normalize(object, depth);
-
-  if (jsonSize(normalized) > maxSize) {
-    return normalizeToSize(object, depth - 1, maxSize);
-  }
-
-  return normalized ;
-}
-
-/**
- * Visits a node to perform normalization on it
- *
- * @param key The key corresponding to the given node
- * @param value The node to be visited
- * @param depth Optional number indicating the maximum recursion depth
- * @param maxProperties Optional maximum number of properties/elements included in any single object/array
- * @param memo Optional Memo class handling decycling
- */
-function visit(
-  key,
-  value,
-  depth = +Infinity,
-  maxProperties = +Infinity,
-  memo = memoBuilder(),
-) {
-  const [memoize, unmemoize] = memo;
-
-  // Get the simple cases out of the way first
-  if (
-    value == null || // this matches null and undefined -> eqeq not eqeqeq
-    ['boolean', 'string'].includes(typeof value) ||
-    (typeof value === 'number' && Number.isFinite(value))
-  ) {
-    return value ;
-  }
-
-  const stringified = stringifyValue(key, value);
-
-  // Anything we could potentially dig into more (objects or arrays) will have come back as `"[object XXXX]"`.
-  // Everything else will have already been serialized, so if we don't see that pattern, we're done.
-  if (!stringified.startsWith('[object ')) {
-    return stringified;
-  }
-
-  // From here on, we can assert that `value` is either an object or an array.
-
-  // Do not normalize objects that we know have already been normalized. As a general rule, the
-  // "__sentry_skip_normalization__" property should only be used sparingly and only should only be set on objects that
-  // have already been normalized.
-  if ((value )['__sentry_skip_normalization__']) {
-    return value ;
-  }
-
-  // We can set `__sentry_override_normalization_depth__` on an object to ensure that from there
-  // We keep a certain amount of depth.
-  // This should be used sparingly, e.g. we use it for the redux integration to ensure we get a certain amount of state.
-  const remainingDepth =
-    typeof (value )['__sentry_override_normalization_depth__'] === 'number'
-      ? ((value )['__sentry_override_normalization_depth__'] )
-      : depth;
-
-  // We're also done if we've reached the max depth
-  if (remainingDepth === 0) {
-    // At this point we know `serialized` is a string of the form `"[object XXXX]"`. Clean it up so it's just `"[XXXX]"`.
-    return stringified.replace('object ', '');
-  }
-
-  // If we've already visited this branch, bail out, as it's circular reference. If not, note that we're seeing it now.
-  if (memoize(value)) {
-    return '[Circular ~]';
-  }
-
-  // If the value has a `toJSON` method, we call it to extract more information
-  const valueWithToJSON = value ;
-  if (valueWithToJSON && typeof valueWithToJSON.toJSON === 'function') {
-    try {
-      const jsonValue = valueWithToJSON.toJSON();
-      // We need to normalize the return value of `.toJSON()` in case it has circular references
-      return visit('', jsonValue, remainingDepth - 1, maxProperties, memo);
-    } catch (err) {
-      // pass (The built-in `toJSON` failed, but we can still try to do it ourselves)
-    }
-  }
-
-  // At this point we know we either have an object or an array, we haven't seen it before, and we're going to recurse
-  // because we haven't yet reached the max depth. Create an accumulator to hold the results of visiting each
-  // property/entry, and keep track of the number of items we add to it.
-  const normalized = (Array.isArray(value) ? [] : {}) ;
-  let numAdded = 0;
-
-  // Before we begin, convert`Error` and`Event` instances into plain objects, since some of each of their relevant
-  // properties are non-enumerable and otherwise would get missed.
-  const visitable = convertToPlainObject(value );
-
-  for (const visitKey in visitable) {
-    // Avoid iterating over fields in the prototype if they've somehow been exposed to enumeration.
-    if (!Object.prototype.hasOwnProperty.call(visitable, visitKey)) {
-      continue;
-    }
-
-    if (numAdded >= maxProperties) {
-      normalized[visitKey] = '[MaxProperties ~]';
-      break;
-    }
-
-    // Recursively visit all the child nodes
-    const visitValue = visitable[visitKey];
-    normalized[visitKey] = visit(visitKey, visitValue, remainingDepth - 1, maxProperties, memo);
-
-    numAdded++;
-  }
-
-  // Once we've visited all the branches, remove the parent from memo storage
-  unmemoize(value);
-
-  // Return accumulated values
-  return normalized;
-}
-
-/* eslint-disable complexity */
-/**
- * Stringify the given value. Handles various known special values and types.
- *
- * Not meant to be used on simple primitives which already have a string representation, as it will, for example, turn
- * the number 1231 into "[Object Number]", nor on `null`, as it will throw.
- *
- * @param value The value to stringify
- * @returns A stringified representation of the given value
- */
-function stringifyValue(
-  key,
-  // this type is a tiny bit of a cheat, since this function does handle NaN (which is technically a number), but for
-  // our internal use, it'll do
-  value,
-) {
-  try {
-    if (key === 'domain' && value && typeof value === 'object' && (value )._events) {
-      return '[Domain]';
-    }
-
-    if (key === 'domainEmitter') {
-      return '[DomainEmitter]';
-    }
-
-    // It's safe to use `global`, `window`, and `document` here in this manner, as we are asserting using `typeof` first
-    // which won't throw if they are not present.
-
-    if (typeof global !== 'undefined' && value === global) {
-      return '[Global]';
-    }
-
-    // eslint-disable-next-line no-restricted-globals
-    if (typeof window !== 'undefined' && value === window) {
-      return '[Window]';
-    }
-
-    // eslint-disable-next-line no-restricted-globals
-    if (typeof document !== 'undefined' && value === document) {
-      return '[Document]';
-    }
-
-    if (isVueViewModel(value)) {
-      return '[VueViewModel]';
-    }
-
-    // React's SyntheticEvent thingy
-    if (isSyntheticEvent(value)) {
-      return '[SyntheticEvent]';
-    }
-
-    if (typeof value === 'number' && !Number.isFinite(value)) {
-      return `[${value}]`;
-    }
-
-    if (typeof value === 'function') {
-      return `[Function: ${getFunctionName(value)}]`;
-    }
-
-    if (typeof value === 'symbol') {
-      return `[${String(value)}]`;
-    }
-
-    // stringified BigInts are indistinguishable from regular numbers, so we need to label them to avoid confusion
-    if (typeof value === 'bigint') {
-      return `[BigInt: ${String(value)}]`;
-    }
-
-    // Now that we've knocked out all the special cases and the primitives, all we have left are objects. Simply casting
-    // them to strings means that instances of classes which haven't defined their `toStringTag` will just come out as
-    // `"[object Object]"`. If we instead look at the constructor's name (which is the same as the name of the class),
-    // we can make sure that only plain objects come out that way.
-    const objName = getConstructorName(value);
-
-    // Handle HTML Elements
-    if (/^HTML(\w*)Element$/.test(objName)) {
-      return `[HTMLElement: ${objName}]`;
-    }
-
-    return `[object ${objName}]`;
-  } catch (err) {
-    return `**non-serializable** (${err})`;
-  }
-}
-/* eslint-enable complexity */
-
-function getConstructorName(value) {
-  const prototype = Object.getPrototypeOf(value);
-
-  return prototype ? prototype.constructor.name : 'null prototype';
-}
-
-/** Calculates bytes size of input string */
-function utf8Length(value) {
-  // eslint-disable-next-line no-bitwise
-  return ~-encodeURI(value).split(/%..|./).length;
-}
-
-/** Calculates bytes size of input object */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function jsonSize(value) {
-  return utf8Length(JSON.stringify(value));
-}
-
-// Slightly modified (no IE8 support, ES6) and transcribed to TypeScript
-// https://github.com/calvinmetcalf/rollup-plugin-node-builtins/blob/63ab8aacd013767445ca299e468d9a60a95328d7/src/es6/path.js
-//
-// Copyright Joyent, Inc.and other Node contributors.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the
-// "Software"), to deal in the Software without restriction, including
-// without limitation the rights to use, copy, modify, merge, publish,
-// distribute, sublicense, and/or sell copies of the Software, and to permit
-// persons to whom the Software is furnished to do so, subject to the
-// following conditions:
-//
-// The above copyright notice and this permission notice shall be included
-// in all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
-// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
-// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
-// USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-/** JSDoc */
-function normalizeArray(parts, allowAboveRoot) {
-  // if the path tries to go above the root, `up` ends up > 0
-  let up = 0;
-  for (let i = parts.length - 1; i >= 0; i--) {
-    const last = parts[i];
-    if (last === '.') {
-      parts.splice(i, 1);
-    } else if (last === '..') {
-      parts.splice(i, 1);
-      up++;
-    } else if (up) {
-      parts.splice(i, 1);
-      up--;
-    }
-  }
-
-  // if the path is allowed to go above the root, restore leading ..s
-  if (allowAboveRoot) {
-    for (; up--; up) {
-      parts.unshift('..');
-    }
-  }
-
-  return parts;
-}
-
-// Split a filename into [root, dir, basename, ext], unix version
-// 'root' is just a slash, or nothing.
-const splitPathRe = /^(\S+:\\|\/?)([\s\S]*?)((?:\.{1,2}|[^/\\]+?|)(\.[^./\\]*|))(?:[/\\]*)$/;
-/** JSDoc */
-function splitPath(filename) {
-  // Truncate files names greater than 1024 characters to avoid regex dos
-  // https://github.com/getsentry/sentry-javascript/pull/8737#discussion_r1285719172
-  const truncated = filename.length > 1024 ? `<truncated>${filename.slice(-1024)}` : filename;
-  const parts = splitPathRe.exec(truncated);
-  return parts ? parts.slice(1) : [];
-}
-
-// path.resolve([from ...], to)
-// posix version
-/** JSDoc */
-function resolve(...args) {
-  let resolvedPath = '';
-  let resolvedAbsolute = false;
-
-  for (let i = args.length - 1; i >= -1 && !resolvedAbsolute; i--) {
-    const path = i >= 0 ? args[i] : '/';
-
-    // Skip empty entries
-    if (!path) {
-      continue;
-    }
-
-    resolvedPath = `${path}/${resolvedPath}`;
-    resolvedAbsolute = path.charAt(0) === '/';
-  }
-
-  // At this point the path should be resolved to a full absolute path, but
-  // handle relative paths to be safe (might happen when process.cwd() fails)
-
-  // Normalize the path
-  resolvedPath = normalizeArray(
-    resolvedPath.split('/').filter(p => !!p),
-    !resolvedAbsolute,
-  ).join('/');
-
-  return (resolvedAbsolute ? '/' : '') + resolvedPath || '.';
-}
-
-/** JSDoc */
-function trim(arr) {
-  let start = 0;
-  for (; start < arr.length; start++) {
-    if (arr[start] !== '') {
-      break;
-    }
-  }
-
-  let end = arr.length - 1;
-  for (; end >= 0; end--) {
-    if (arr[end] !== '') {
-      break;
-    }
-  }
-
-  if (start > end) {
-    return [];
-  }
-  return arr.slice(start, end - start + 1);
-}
-
-// path.relative(from, to)
-// posix version
-/** JSDoc */
-function relative(from, to) {
-  /* eslint-disable no-param-reassign */
-  from = resolve(from).slice(1);
-  to = resolve(to).slice(1);
-  /* eslint-enable no-param-reassign */
-
-  const fromParts = trim(from.split('/'));
-  const toParts = trim(to.split('/'));
-
-  const length = Math.min(fromParts.length, toParts.length);
-  let samePartsLength = length;
-  for (let i = 0; i < length; i++) {
-    if (fromParts[i] !== toParts[i]) {
-      samePartsLength = i;
-      break;
-    }
-  }
-
-  let outputParts = [];
-  for (let i = samePartsLength; i < fromParts.length; i++) {
-    outputParts.push('..');
-  }
-
-  outputParts = outputParts.concat(toParts.slice(samePartsLength));
-
-  return outputParts.join('/');
-}
-
-/** JSDoc */
-function dirname(path) {
-  const result = splitPath(path);
-  const root = result[0] || '';
-  let dir = result[1];
-
-  if (!root && !dir) {
-    // No dirname whatsoever
-    return '.';
-  }
-
-  if (dir) {
-    // It has a dirname, strip trailing slash
-    dir = dir.slice(0, dir.length - 1);
-  }
-
-  return root + dir;
-}
-
-/** JSDoc */
-function basename(path, ext) {
-  let f = splitPath(path)[2] || '';
-  return f;
 }
 
 /* eslint-disable @typescript-eslint/explicit-function-return-type */
@@ -2589,1684 +1598,6 @@ class SyncPromise {
 }
 
 /**
- * Creates an new PromiseBuffer object with the specified limit
- * @param limit max number of promises that can be stored in the buffer
- */
-function makePromiseBuffer(limit) {
-  const buffer = [];
-
-  function isReady() {
-    return limit === undefined || buffer.length < limit;
-  }
-
-  /**
-   * Remove a promise from the queue.
-   *
-   * @param task Can be any PromiseLike<T>
-   * @returns Removed promise.
-   */
-  function remove(task) {
-    return buffer.splice(buffer.indexOf(task), 1)[0] || Promise.resolve(undefined);
-  }
-
-  /**
-   * Add a promise (representing an in-flight action) to the queue, and set it to remove itself on fulfillment.
-   *
-   * @param taskProducer A function producing any PromiseLike<T>; In previous versions this used to be `task:
-   *        PromiseLike<T>`, but under that model, Promises were instantly created on the call-site and their executor
-   *        functions therefore ran immediately. Thus, even if the buffer was full, the action still happened. By
-   *        requiring the promise to be wrapped in a function, we can defer promise creation until after the buffer
-   *        limit check.
-   * @returns The original promise.
-   */
-  function add(taskProducer) {
-    if (!isReady()) {
-      return rejectedSyncPromise(new SentryError('Not adding Promise because buffer limit was reached.'));
-    }
-
-    // start the task and add its promise to the queue
-    const task = taskProducer();
-    if (buffer.indexOf(task) === -1) {
-      buffer.push(task);
-    }
-    void task
-      .then(() => remove(task))
-      // Use `then(null, rejectionHandler)` rather than `catch(rejectionHandler)` so that we can use `PromiseLike`
-      // rather than `Promise`. `PromiseLike` doesn't have a `.catch` method, making its polyfill smaller. (ES5 didn't
-      // have promises, so TS has to polyfill when down-compiling.)
-      .then(null, () =>
-        remove(task).then(null, () => {
-          // We have to add another catch here because `remove()` starts a new promise chain.
-        }),
-      );
-    return task;
-  }
-
-  /**
-   * Wait for all promises in the queue to resolve or for timeout to expire, whichever comes first.
-   *
-   * @param timeout The time, in ms, after which to resolve to `false` if the queue is still non-empty. Passing `0` (or
-   * not passing anything) will make the promise wait as long as it takes for the queue to drain before resolving to
-   * `true`.
-   * @returns A promise which will resolve to `true` if the queue is already empty or drains before the timeout, and
-   * `false` otherwise
-   */
-  function drain(timeout) {
-    return new SyncPromise((resolve, reject) => {
-      let counter = buffer.length;
-
-      if (!counter) {
-        return resolve(true);
-      }
-
-      // wait for `timeout` ms and then resolve to `false` (if not cancelled first)
-      const capturedSetTimeout = setTimeout(() => {
-        if (timeout && timeout > 0) {
-          resolve(false);
-        }
-      }, timeout);
-
-      // if all promises resolve in time, cancel the timer and resolve to `true`
-      buffer.forEach(item => {
-        void resolvedSyncPromise(item).then(() => {
-          if (!--counter) {
-            clearTimeout(capturedSetTimeout);
-            resolve(true);
-          }
-        }, reject);
-      });
-    });
-  }
-
-  return {
-    $: buffer,
-    add,
-    drain,
-  };
-}
-
-/**
- * This code was originally copied from the 'cookie` module at v0.5.0 and was simplified for our use case.
- * https://github.com/jshttp/cookie/blob/a0c84147aab6266bdb3996cf4062e93907c0b0fc/index.js
- * It had the following license:
- *
- * (The MIT License)
- *
- * Copyright (c) 2012-2014 Roman Shtylman <shtylman@gmail.com>
- * Copyright (c) 2015 Douglas Christopher Wilson <doug@somethingdoug.com>
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files (the
- * 'Software'), to deal in the Software without restriction, including
- * without limitation the rights to use, copy, modify, merge, publish,
- * distribute, sublicense, and/or sell copies of the Software, and to
- * permit persons to whom the Software is furnished to do so, subject to
- * the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
- * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- */
-
-/**
- * Parses a cookie string
- */
-function parseCookie(str) {
-  const obj = {};
-  let index = 0;
-
-  while (index < str.length) {
-    const eqIdx = str.indexOf('=', index);
-
-    // no more cookie pairs
-    if (eqIdx === -1) {
-      break;
-    }
-
-    let endIdx = str.indexOf(';', index);
-
-    if (endIdx === -1) {
-      endIdx = str.length;
-    } else if (endIdx < eqIdx) {
-      // backtrack on prior semicolon
-      index = str.lastIndexOf(';', eqIdx - 1) + 1;
-      continue;
-    }
-
-    const key = str.slice(index, eqIdx).trim();
-
-    // only assign once
-    if (undefined === obj[key]) {
-      let val = str.slice(eqIdx + 1, endIdx).trim();
-
-      // quoted values
-      if (val.charCodeAt(0) === 0x22) {
-        val = val.slice(1, -1);
-      }
-
-      try {
-        obj[key] = val.indexOf('%') !== -1 ? decodeURIComponent(val) : val;
-      } catch (e) {
-        obj[key] = val;
-      }
-    }
-
-    index = endIdx + 1;
-  }
-
-  return obj;
-}
-
-// Vendored / modified from @sergiodxa/remix-utils
-
-// https://github.com/sergiodxa/remix-utils/blob/02af80e12829a53696bfa8f3c2363975cf59f55e/src/server/get-client-ip-address.ts
-// MIT License
-
-// Copyright (c) 2021 Sergio Xalambrí
-
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
-
-// The above copyright notice and this permission notice shall be included in all
-// copies or substantial portions of the Software.
-
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-// SOFTWARE.
-
-// The headers to check, in priority order
-const ipHeaderNames = [
-  'X-Client-IP',
-  'X-Forwarded-For',
-  'Fly-Client-IP',
-  'CF-Connecting-IP',
-  'Fastly-Client-Ip',
-  'True-Client-Ip',
-  'X-Real-IP',
-  'X-Cluster-Client-IP',
-  'X-Forwarded',
-  'Forwarded-For',
-  'Forwarded',
-  'X-Vercel-Forwarded-For',
-];
-
-/**
- * Get the IP address of the client sending a request.
- *
- * It receives a Request headers object and use it to get the
- * IP address from one of the following headers in order.
- *
- * If the IP address is valid, it will be returned. Otherwise, null will be
- * returned.
- *
- * If the header values contains more than one IP address, the first valid one
- * will be returned.
- */
-function getClientIPAddress(headers) {
-  // This will end up being Array<string | string[] | undefined | null> because of the various possible values a header
-  // can take
-  const headerValues = ipHeaderNames.map((headerName) => {
-    const rawValue = headers[headerName];
-    const value = Array.isArray(rawValue) ? rawValue.join(';') : rawValue;
-
-    if (headerName === 'Forwarded') {
-      return parseForwardedHeader(value);
-    }
-
-    return value && value.split(',').map((v) => v.trim());
-  });
-
-  // Flatten the array and filter out any falsy entries
-  const flattenedHeaderValues = headerValues.reduce((acc, val) => {
-    if (!val) {
-      return acc;
-    }
-
-    return acc.concat(val);
-  }, []);
-
-  // Find the first value which is a valid IP address, if any
-  const ipAddress = flattenedHeaderValues.find(ip => ip !== null && isIP(ip));
-
-  return ipAddress || null;
-}
-
-function parseForwardedHeader(value) {
-  if (!value) {
-    return null;
-  }
-
-  for (const part of value.split(';')) {
-    if (part.startsWith('for=')) {
-      return part.slice(4);
-    }
-  }
-
-  return null;
-}
-
-//
-/**
- * Custom method instead of importing this from `net` package, as this only exists in node
- * Accepts:
- * 127.0.0.1
- * 192.168.1.1
- * 192.168.1.255
- * 255.255.255.255
- * 10.1.1.1
- * 0.0.0.0
- * 2b01:cb19:8350:ed00:d0dd:fa5b:de31:8be5
- *
- * Rejects:
- * 1.1.1.01
- * 30.168.1.255.1
- * 127.1
- * 192.168.1.256
- * -1.2.3.4
- * 1.1.1.1.
- * 3...3
- * 192.168.1.099
- */
-function isIP(str) {
-  const regex =
-    /(?:^(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)){3}$)|(?:^(?:(?:[a-fA-F\d]{1,4}:){7}(?:[a-fA-F\d]{1,4}|:)|(?:[a-fA-F\d]{1,4}:){6}(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)(?:\\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)){3}|:[a-fA-F\d]{1,4}|:)|(?:[a-fA-F\d]{1,4}:){5}(?::(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)(?:\\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)){3}|(?::[a-fA-F\d]{1,4}){1,2}|:)|(?:[a-fA-F\d]{1,4}:){4}(?:(?::[a-fA-F\d]{1,4}){0,1}:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)(?:\\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)){3}|(?::[a-fA-F\d]{1,4}){1,3}|:)|(?:[a-fA-F\d]{1,4}:){3}(?:(?::[a-fA-F\d]{1,4}){0,2}:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)(?:\\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)){3}|(?::[a-fA-F\d]{1,4}){1,4}|:)|(?:[a-fA-F\d]{1,4}:){2}(?:(?::[a-fA-F\d]{1,4}){0,3}:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)(?:\\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)){3}|(?::[a-fA-F\d]{1,4}){1,5}|:)|(?:[a-fA-F\d]{1,4}:){1}(?:(?::[a-fA-F\d]{1,4}){0,4}:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)(?:\\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)){3}|(?::[a-fA-F\d]{1,4}){1,6}|:)|(?::(?:(?::[a-fA-F\d]{1,4}){0,5}:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)(?:\\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)){3}|(?::[a-fA-F\d]{1,4}){1,7}|:)))(?:%[0-9a-zA-Z]{1,})?$)/;
-  return regex.test(str);
-}
-
-const DEFAULT_INCLUDES = {
-  ip: false,
-  request: true,
-  user: true,
-};
-const DEFAULT_REQUEST_INCLUDES = ['cookies', 'data', 'headers', 'method', 'query_string', 'url'];
-const DEFAULT_USER_INCLUDES = ['id', 'username', 'email'];
-
-function extractUserData(
-  user
-
-,
-  keys,
-) {
-  const extractedUser = {};
-  const attributes = Array.isArray(keys) ? keys : DEFAULT_USER_INCLUDES;
-
-  attributes.forEach(key => {
-    if (user && key in user) {
-      extractedUser[key] = user[key];
-    }
-  });
-
-  return extractedUser;
-}
-
-/**
- * Normalize data from the request object, accounting for framework differences.
- *
- * @param req The request object from which to extract data
- * @param options.include An optional array of keys to include in the normalized data. Defaults to
- * DEFAULT_REQUEST_INCLUDES if not provided.
- * @param options.deps Injected, platform-specific dependencies
- * @returns An object containing normalized request data
- */
-function extractRequestData(
-  req,
-  options
-
- = {},
-) {
-  const { include = DEFAULT_REQUEST_INCLUDES } = options;
-  const requestData = {};
-
-  // headers:
-  //   node, express, koa, nextjs: req.headers
-  const headers = (req.headers || {})
-
-;
-  // method:
-  //   node, express, koa, nextjs: req.method
-  const method = req.method;
-  // host:
-  //   express: req.hostname in > 4 and req.host in < 4
-  //   koa: req.host
-  //   node, nextjs: req.headers.host
-  // Express 4 mistakenly strips off port number from req.host / req.hostname so we can't rely on them
-  // See: https://github.com/expressjs/express/issues/3047#issuecomment-236653223
-  // Also: https://github.com/getsentry/sentry-javascript/issues/1917
-  const host = headers.host || req.hostname || req.host || '<no host>';
-  // protocol:
-  //   node, nextjs: <n/a>
-  //   express, koa: req.protocol
-  const protocol = req.protocol === 'https' || (req.socket && req.socket.encrypted) ? 'https' : 'http';
-  // url (including path and query string):
-  //   node, express: req.originalUrl
-  //   koa, nextjs: req.url
-  const originalUrl = req.originalUrl || req.url || '';
-  // absolute url
-  const absoluteUrl = originalUrl.startsWith(protocol) ? originalUrl : `${protocol}://${host}${originalUrl}`;
-  include.forEach(key => {
-    switch (key) {
-      case 'headers': {
-        requestData.headers = headers;
-
-        // Remove the Cookie header in case cookie data should not be included in the event
-        if (!include.includes('cookies')) {
-          delete (requestData.headers ).cookie;
-        }
-
-        // Remove IP headers in case IP data should not be included in the event
-        if (!include.includes('ip')) {
-          ipHeaderNames.forEach(ipHeaderName => {
-            // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
-            delete (requestData.headers )[ipHeaderName];
-          });
-        }
-
-        break;
-      }
-      case 'method': {
-        requestData.method = method;
-        break;
-      }
-      case 'url': {
-        requestData.url = absoluteUrl;
-        break;
-      }
-      case 'cookies': {
-        // cookies:
-        //   node, express, koa: req.headers.cookie
-        //   vercel, sails.js, express (w/ cookie middleware), nextjs: req.cookies
-        requestData.cookies =
-          // TODO (v8 / #5257): We're only sending the empty object for backwards compatibility, so the last bit can
-          // come off in v8
-          req.cookies || (headers.cookie && parseCookie(headers.cookie)) || {};
-        break;
-      }
-      case 'query_string': {
-        // query string:
-        //   node: req.url (raw)
-        //   express, koa, nextjs: req.query
-        requestData.query_string = extractQueryParams(req);
-        break;
-      }
-      case 'data': {
-        if (method === 'GET' || method === 'HEAD') {
-          break;
-        }
-        // NOTE: As of v8, request is (unless a user sets this manually) ALWAYS a http request
-        // Which does not have a body by default
-        // However, in our http instrumentation, we patch the request to capture the body and store it on the
-        // request as `.body` anyhow
-        // In v9, we may update requestData to only work with plain http requests
-        // body data:
-        //   express, koa, nextjs: req.body
-        //
-        //   when using node by itself, you have to read the incoming stream(see
-        //   https://nodejs.dev/learn/get-http-request-body-data-using-nodejs); if a user is doing that, we can't know
-        //   where they're going to store the final result, so they'll have to capture this data themselves
-        const body = req.body;
-        if (body !== undefined) {
-          const stringBody = isString(body)
-            ? body
-            : isPlainObject(body)
-              ? JSON.stringify(normalize(body))
-              : truncate(`${body}`, 1024);
-          if (stringBody) {
-            requestData.data = stringBody;
-          }
-        }
-        break;
-      }
-      default: {
-        if ({}.hasOwnProperty.call(req, key)) {
-          requestData[key] = (req )[key];
-        }
-      }
-    }
-  });
-
-  return requestData;
-}
-
-/**
- * Add already normalized request data to an event.
- * This mutates the passed in event.
- */
-function addNormalizedRequestDataToEvent(
-  event,
-  req,
-  // This is non-standard data that is not part of the regular HTTP request
-  additionalData,
-  options,
-) {
-  const include = {
-    ...DEFAULT_INCLUDES,
-    ...(options && options.include),
-  };
-
-  if (include.request) {
-    const includeRequest = Array.isArray(include.request) ? [...include.request] : [...DEFAULT_REQUEST_INCLUDES];
-    if (include.ip) {
-      includeRequest.push('ip');
-    }
-
-    const extractedRequestData = extractNormalizedRequestData(req, { include: includeRequest });
-
-    event.request = {
-      ...event.request,
-      ...extractedRequestData,
-    };
-  }
-
-  if (include.user) {
-    const extractedUser =
-      additionalData.user && isPlainObject(additionalData.user)
-        ? extractUserData(additionalData.user, include.user)
-        : {};
-
-    if (Object.keys(extractedUser).length) {
-      event.user = {
-        ...event.user,
-        ...extractedUser,
-      };
-    }
-  }
-
-  if (include.ip) {
-    const ip = (req.headers && getClientIPAddress(req.headers)) || additionalData.ipAddress;
-    if (ip) {
-      event.user = {
-        ...event.user,
-        ip_address: ip,
-      };
-    }
-  }
-}
-
-/**
- * Add data from the given request to the given event
- *
- * @param event The event to which the request data will be added
- * @param req Request object
- * @param options.include Flags to control what data is included
- * @param options.deps Injected platform-specific dependencies
- * @returns The mutated `Event` object
- */
-function addRequestDataToEvent(
-  event,
-  req,
-  options,
-) {
-  const include = {
-    ...DEFAULT_INCLUDES,
-    ...(options && options.include),
-  };
-
-  if (include.request) {
-    const includeRequest = Array.isArray(include.request) ? [...include.request] : [...DEFAULT_REQUEST_INCLUDES];
-    if (include.ip) {
-      includeRequest.push('ip');
-    }
-
-    const extractedRequestData = extractRequestData(req, { include: includeRequest });
-
-    event.request = {
-      ...event.request,
-      ...extractedRequestData,
-    };
-  }
-
-  if (include.user) {
-    const extractedUser = req.user && isPlainObject(req.user) ? extractUserData(req.user, include.user) : {};
-
-    if (Object.keys(extractedUser).length) {
-      event.user = {
-        ...event.user,
-        ...extractedUser,
-      };
-    }
-  }
-
-  // client ip:
-  //   node, nextjs: req.socket.remoteAddress
-  //   express, koa: req.ip
-  //   It may also be sent by proxies as specified in X-Forwarded-For or similar headers
-  if (include.ip) {
-    const ip = (req.headers && getClientIPAddress(req.headers)) || req.ip || (req.socket && req.socket.remoteAddress);
-    if (ip) {
-      event.user = {
-        ...event.user,
-        ip_address: ip,
-      };
-    }
-  }
-
-  return event;
-}
-
-function extractQueryParams(req) {
-  // url (including path and query string):
-  //   node, express: req.originalUrl
-  //   koa, nextjs: req.url
-  let originalUrl = req.originalUrl || req.url || '';
-
-  if (!originalUrl) {
-    return;
-  }
-
-  // The `URL` constructor can't handle internal URLs of the form `/some/path/here`, so stick a dummy protocol and
-  // hostname on the beginning. Since the point here is just to grab the query string, it doesn't matter what we use.
-  if (originalUrl.startsWith('/')) {
-    originalUrl = `http://dogs.are.great${originalUrl}`;
-  }
-
-  try {
-    const queryParams = req.query || new URL(originalUrl).search.slice(1);
-    return queryParams.length ? queryParams : undefined;
-  } catch (e2) {
-    return undefined;
-  }
-}
-
-function extractNormalizedRequestData(
-  normalizedRequest,
-  { include },
-) {
-  const includeKeys = include ? (Array.isArray(include) ? include : DEFAULT_REQUEST_INCLUDES) : [];
-
-  const requestData = {};
-  const headers = { ...normalizedRequest.headers };
-
-  if (includeKeys.includes('headers')) {
-    requestData.headers = headers;
-
-    // Remove the Cookie header in case cookie data should not be included in the event
-    if (!include.includes('cookies')) {
-      delete (headers ).cookie;
-    }
-
-    // Remove IP headers in case IP data should not be included in the event
-    if (!include.includes('ip')) {
-      ipHeaderNames.forEach(ipHeaderName => {
-        // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
-        delete (headers )[ipHeaderName];
-      });
-    }
-  }
-
-  if (includeKeys.includes('method')) {
-    requestData.method = normalizedRequest.method;
-  }
-
-  if (includeKeys.includes('url')) {
-    requestData.url = normalizedRequest.url;
-  }
-
-  if (includeKeys.includes('cookies')) {
-    const cookies = normalizedRequest.cookies || (headers && headers.cookie ? parseCookie(headers.cookie) : undefined);
-    requestData.cookies = cookies || {};
-  }
-
-  if (includeKeys.includes('query_string')) {
-    requestData.query_string = normalizedRequest.query_string;
-  }
-
-  if (includeKeys.includes('data')) {
-    requestData.data = normalizedRequest.data;
-  }
-
-  return requestData;
-}
-
-// Note: Ideally the `SeverityLevel` type would be derived from `validSeverityLevels`, but that would mean either
-//
-// a) moving `validSeverityLevels` to `@sentry/types`,
-// b) moving the`SeverityLevel` type here, or
-// c) importing `validSeverityLevels` from here into `@sentry/types`.
-//
-// Option A would make `@sentry/types` a runtime dependency of `@sentry/utils` (not good), and options B and C would
-// create a circular dependency between `@sentry/types` and `@sentry/utils` (also not good). So a TODO accompanying the
-// type, reminding anyone who changes it to change this list also, will have to do.
-
-const validSeverityLevels = ['fatal', 'error', 'warning', 'log', 'info', 'debug'];
-
-/**
- * Converts a string-based level into a `SeverityLevel`, normalizing it along the way.
- *
- * @param level String representation of desired `SeverityLevel`.
- * @returns The `SeverityLevel` corresponding to the given string, or 'log' if the string isn't a valid level.
- */
-function severityLevelFromString(level) {
-  return (level === 'warn' ? 'warning' : validSeverityLevels.includes(level) ? level : 'log') ;
-}
-
-/**
- * Does this filename look like it's part of the app code?
- */
-function filenameIsInApp(filename, isNative = false) {
-  const isInternal =
-    isNative ||
-    (filename &&
-      // It's not internal if it's an absolute linux path
-      !filename.startsWith('/') &&
-      // It's not internal if it's an absolute windows path
-      !filename.match(/^[A-Z]:/) &&
-      // It's not internal if the path is starting with a dot
-      !filename.startsWith('.') &&
-      // It's not internal if the frame has a protocol. In node, this is usually the case if the file got pre-processed with a bundler like webpack
-      !filename.match(/^[a-zA-Z]([a-zA-Z0-9.\-+])*:\/\//)); // Schema from: https://stackoverflow.com/a/3641782
-
-  // in_app is all that's not an internal Node function or a module within node_modules
-  // note that isNative appears to return true even for node core libraries
-  // see https://github.com/getsentry/raven-node/issues/176
-
-  return !isInternal && filename !== undefined && !filename.includes('node_modules/');
-}
-
-/** Node Stack line parser */
-function node(getModule) {
-  const FILENAME_MATCH = /^\s*[-]{4,}$/;
-  const FULL_MATCH = /at (?:async )?(?:(.+?)\s+\()?(?:(.+):(\d+):(\d+)?|([^)]+))\)?/;
-
-  // eslint-disable-next-line complexity
-  return (line) => {
-    const lineMatch = line.match(FULL_MATCH);
-
-    if (lineMatch) {
-      let object;
-      let method;
-      let functionName;
-      let typeName;
-      let methodName;
-
-      if (lineMatch[1]) {
-        functionName = lineMatch[1];
-
-        let methodStart = functionName.lastIndexOf('.');
-        if (functionName[methodStart - 1] === '.') {
-          methodStart--;
-        }
-
-        if (methodStart > 0) {
-          object = functionName.slice(0, methodStart);
-          method = functionName.slice(methodStart + 1);
-          const objectEnd = object.indexOf('.Module');
-          if (objectEnd > 0) {
-            functionName = functionName.slice(objectEnd + 1);
-            object = object.slice(0, objectEnd);
-          }
-        }
-        typeName = undefined;
-      }
-
-      if (method) {
-        typeName = object;
-        methodName = method;
-      }
-
-      if (method === '<anonymous>') {
-        methodName = undefined;
-        functionName = undefined;
-      }
-
-      if (functionName === undefined) {
-        methodName = methodName || UNKNOWN_FUNCTION;
-        functionName = typeName ? `${typeName}.${methodName}` : methodName;
-      }
-
-      let filename = lineMatch[2] && lineMatch[2].startsWith('file://') ? lineMatch[2].slice(7) : lineMatch[2];
-      const isNative = lineMatch[5] === 'native';
-
-      // If it's a Windows path, trim the leading slash so that `/C:/foo` becomes `C:/foo`
-      if (filename && filename.match(/\/[A-Z]:/)) {
-        filename = filename.slice(1);
-      }
-
-      if (!filename && lineMatch[5] && !isNative) {
-        filename = lineMatch[5];
-      }
-
-      return {
-        filename,
-        module: getModule ? getModule(filename) : undefined,
-        function: functionName,
-        lineno: _parseIntOrUndefined(lineMatch[3]),
-        colno: _parseIntOrUndefined(lineMatch[4]),
-        in_app: filenameIsInApp(filename || '', isNative),
-      };
-    }
-
-    if (line.match(FILENAME_MATCH)) {
-      return {
-        filename: line,
-      };
-    }
-
-    return undefined;
-  };
-}
-
-/**
- * Node.js stack line parser
- *
- * This is in @sentry/utils so it can be used from the Electron SDK in the browser for when `nodeIntegration == true`.
- * This allows it to be used without referencing or importing any node specific code which causes bundlers to complain
- */
-function nodeStackLineParser(getModule) {
-  return [90, node(getModule)];
-}
-
-function _parseIntOrUndefined(input) {
-  return parseInt(input || '', 10) || undefined;
-}
-
-const SENTRY_BAGGAGE_KEY_PREFIX = 'sentry-';
-
-const SENTRY_BAGGAGE_KEY_PREFIX_REGEX = /^sentry-/;
-
-/**
- * Max length of a serialized baggage string
- *
- * https://www.w3.org/TR/baggage/#limits
- */
-const MAX_BAGGAGE_STRING_LENGTH = 8192;
-
-/**
- * Takes a baggage header and turns it into Dynamic Sampling Context, by extracting all the "sentry-" prefixed values
- * from it.
- *
- * @param baggageHeader A very bread definition of a baggage header as it might appear in various frameworks.
- * @returns The Dynamic Sampling Context that was found on `baggageHeader`, if there was any, `undefined` otherwise.
- */
-function baggageHeaderToDynamicSamplingContext(
-  // Very liberal definition of what any incoming header might look like
-  baggageHeader,
-) {
-  const baggageObject = parseBaggageHeader(baggageHeader);
-
-  if (!baggageObject) {
-    return undefined;
-  }
-
-  // Read all "sentry-" prefixed values out of the baggage object and put it onto a dynamic sampling context object.
-  const dynamicSamplingContext = Object.entries(baggageObject).reduce((acc, [key, value]) => {
-    if (key.match(SENTRY_BAGGAGE_KEY_PREFIX_REGEX)) {
-      const nonPrefixedKey = key.slice(SENTRY_BAGGAGE_KEY_PREFIX.length);
-      acc[nonPrefixedKey] = value;
-    }
-    return acc;
-  }, {});
-
-  // Only return a dynamic sampling context object if there are keys in it.
-  // A keyless object means there were no sentry values on the header, which means that there is no DSC.
-  if (Object.keys(dynamicSamplingContext).length > 0) {
-    return dynamicSamplingContext ;
-  } else {
-    return undefined;
-  }
-}
-
-/**
- * Turns a Dynamic Sampling Object into a baggage header by prefixing all the keys on the object with "sentry-".
- *
- * @param dynamicSamplingContext The Dynamic Sampling Context to turn into a header. For convenience and compatibility
- * with the `getDynamicSamplingContext` method on the Transaction class ,this argument can also be `undefined`. If it is
- * `undefined` the function will return `undefined`.
- * @returns a baggage header, created from `dynamicSamplingContext`, or `undefined` either if `dynamicSamplingContext`
- * was `undefined`, or if `dynamicSamplingContext` didn't contain any values.
- */
-function dynamicSamplingContextToSentryBaggageHeader(
-  // this also takes undefined for convenience and bundle size in other places
-  dynamicSamplingContext,
-) {
-  if (!dynamicSamplingContext) {
-    return undefined;
-  }
-
-  // Prefix all DSC keys with "sentry-" and put them into a new object
-  const sentryPrefixedDSC = Object.entries(dynamicSamplingContext).reduce(
-    (acc, [dscKey, dscValue]) => {
-      if (dscValue) {
-        acc[`${SENTRY_BAGGAGE_KEY_PREFIX}${dscKey}`] = dscValue;
-      }
-      return acc;
-    },
-    {},
-  );
-
-  return objectToBaggageHeader(sentryPrefixedDSC);
-}
-
-/**
- * Take a baggage header and parse it into an object.
- */
-function parseBaggageHeader(
-  baggageHeader,
-) {
-  if (!baggageHeader || (!isString(baggageHeader) && !Array.isArray(baggageHeader))) {
-    return undefined;
-  }
-
-  if (Array.isArray(baggageHeader)) {
-    // Combine all baggage headers into one object containing the baggage values so we can later read the Sentry-DSC-values from it
-    return baggageHeader.reduce((acc, curr) => {
-      const currBaggageObject = baggageHeaderToObject(curr);
-      Object.entries(currBaggageObject).forEach(([key, value]) => {
-        acc[key] = value;
-      });
-      return acc;
-    }, {});
-  }
-
-  return baggageHeaderToObject(baggageHeader);
-}
-
-/**
- * Will parse a baggage header, which is a simple key-value map, into a flat object.
- *
- * @param baggageHeader The baggage header to parse.
- * @returns a flat object containing all the key-value pairs from `baggageHeader`.
- */
-function baggageHeaderToObject(baggageHeader) {
-  return baggageHeader
-    .split(',')
-    .map(baggageEntry => baggageEntry.split('=').map(keyOrValue => decodeURIComponent(keyOrValue.trim())))
-    .reduce((acc, [key, value]) => {
-      if (key && value) {
-        acc[key] = value;
-      }
-      return acc;
-    }, {});
-}
-
-/**
- * Turns a flat object (key-value pairs) into a baggage header, which is also just key-value pairs.
- *
- * @param object The object to turn into a baggage header.
- * @returns a baggage header string, or `undefined` if the object didn't have any values, since an empty baggage header
- * is not spec compliant.
- */
-function objectToBaggageHeader(object) {
-  if (Object.keys(object).length === 0) {
-    // An empty baggage header is not spec compliant: We return undefined.
-    return undefined;
-  }
-
-  return Object.entries(object).reduce((baggageHeader, [objectKey, objectValue], currentIndex) => {
-    const baggageEntry = `${encodeURIComponent(objectKey)}=${encodeURIComponent(objectValue)}`;
-    const newBaggageHeader = currentIndex === 0 ? baggageEntry : `${baggageHeader},${baggageEntry}`;
-    if (newBaggageHeader.length > MAX_BAGGAGE_STRING_LENGTH) {
-      DEBUG_BUILD$1 &&
-        logger.warn(
-          `Not adding key: ${objectKey} with val: ${objectValue} to baggage header due to exceeding baggage size limits.`,
-        );
-      return baggageHeader;
-    } else {
-      return newBaggageHeader;
-    }
-  }, '');
-}
-
-// eslint-disable-next-line @sentry-internal/sdk/no-regexp-constructor -- RegExp is used for readability here
-const TRACEPARENT_REGEXP = new RegExp(
-  '^[ \\t]*' + // whitespace
-    '([0-9a-f]{32})?' + // trace_id
-    '-?([0-9a-f]{16})?' + // span_id
-    '-?([01])?' + // sampled
-    '[ \\t]*$', // whitespace
-);
-
-/**
- * Extract transaction context data from a `sentry-trace` header.
- *
- * @param traceparent Traceparent string
- *
- * @returns Object containing data from the header, or undefined if traceparent string is malformed
- */
-function extractTraceparentData(traceparent) {
-  if (!traceparent) {
-    return undefined;
-  }
-
-  const matches = traceparent.match(TRACEPARENT_REGEXP);
-  if (!matches) {
-    return undefined;
-  }
-
-  let parentSampled;
-  if (matches[3] === '1') {
-    parentSampled = true;
-  } else if (matches[3] === '0') {
-    parentSampled = false;
-  }
-
-  return {
-    traceId: matches[1],
-    parentSampled,
-    parentSpanId: matches[2],
-  };
-}
-
-/**
- * Create a propagation context from incoming headers or
- * creates a minimal new one if the headers are undefined.
- */
-function propagationContextFromHeaders(
-  sentryTrace,
-  baggage,
-) {
-  const traceparentData = extractTraceparentData(sentryTrace);
-  const dynamicSamplingContext = baggageHeaderToDynamicSamplingContext(baggage);
-
-  const { traceId, parentSpanId, parentSampled } = traceparentData || {};
-
-  if (!traceparentData) {
-    return {
-      traceId: traceId || uuid4(),
-      spanId: uuid4().substring(16),
-    };
-  } else {
-    return {
-      traceId: traceId || uuid4(),
-      parentSpanId: parentSpanId || uuid4().substring(16),
-      spanId: uuid4().substring(16),
-      sampled: parentSampled,
-      dsc: dynamicSamplingContext || {}, // If we have traceparent data but no DSC it means we are not head of trace and we must freeze it
-    };
-  }
-}
-
-/**
- * Create sentry-trace header from span context values.
- */
-function generateSentryTraceHeader(
-  traceId = uuid4(),
-  spanId = uuid4().substring(16),
-  sampled,
-) {
-  let sampledString = '';
-  if (sampled !== undefined) {
-    sampledString = sampled ? '-1' : '-0';
-  }
-  return `${traceId}-${spanId}${sampledString}`;
-}
-
-/**
- * Creates an envelope.
- * Make sure to always explicitly provide the generic to this function
- * so that the envelope types resolve correctly.
- */
-function createEnvelope(headers, items = []) {
-  return [headers, items] ;
-}
-
-/**
- * Add an item to an envelope.
- * Make sure to always explicitly provide the generic to this function
- * so that the envelope types resolve correctly.
- */
-function addItemToEnvelope(envelope, newItem) {
-  const [headers, items] = envelope;
-  return [headers, [...items, newItem]] ;
-}
-
-/**
- * Convenience function to loop through the items and item types of an envelope.
- * (This function was mostly created because working with envelope types is painful at the moment)
- *
- * If the callback returns true, the rest of the items will be skipped.
- */
-function forEachEnvelopeItem(
-  envelope,
-  callback,
-) {
-  const envelopeItems = envelope[1];
-
-  for (const envelopeItem of envelopeItems) {
-    const envelopeItemType = envelopeItem[0].type;
-    const result = callback(envelopeItem, envelopeItemType);
-
-    if (result) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-/**
- * Encode a string to UTF8 array.
- */
-function encodeUTF8(input) {
-  return GLOBAL_OBJ.__SENTRY__ && GLOBAL_OBJ.__SENTRY__.encodePolyfill
-    ? GLOBAL_OBJ.__SENTRY__.encodePolyfill(input)
-    : new TextEncoder().encode(input);
-}
-
-/**
- * Serializes an envelope.
- */
-function serializeEnvelope(envelope) {
-  const [envHeaders, items] = envelope;
-
-  // Initially we construct our envelope as a string and only convert to binary chunks if we encounter binary data
-  let parts = JSON.stringify(envHeaders);
-
-  function append(next) {
-    if (typeof parts === 'string') {
-      parts = typeof next === 'string' ? parts + next : [encodeUTF8(parts), next];
-    } else {
-      parts.push(typeof next === 'string' ? encodeUTF8(next) : next);
-    }
-  }
-
-  for (const item of items) {
-    const [itemHeaders, payload] = item;
-
-    append(`\n${JSON.stringify(itemHeaders)}\n`);
-
-    if (typeof payload === 'string' || payload instanceof Uint8Array) {
-      append(payload);
-    } else {
-      let stringifiedPayload;
-      try {
-        stringifiedPayload = JSON.stringify(payload);
-      } catch (e) {
-        // In case, despite all our efforts to keep `payload` circular-dependency-free, `JSON.stringify()` still
-        // fails, we try again after normalizing it again with infinite normalization depth. This of course has a
-        // performance impact but in this case a performance hit is better than throwing.
-        stringifiedPayload = JSON.stringify(normalize(payload));
-      }
-      append(stringifiedPayload);
-    }
-  }
-
-  return typeof parts === 'string' ? parts : concatBuffers(parts);
-}
-
-function concatBuffers(buffers) {
-  const totalLength = buffers.reduce((acc, buf) => acc + buf.length, 0);
-
-  const merged = new Uint8Array(totalLength);
-  let offset = 0;
-  for (const buffer of buffers) {
-    merged.set(buffer, offset);
-    offset += buffer.length;
-  }
-
-  return merged;
-}
-
-/**
- * Creates envelope item for a single span
- */
-function createSpanEnvelopeItem(spanJson) {
-  const spanHeaders = {
-    type: 'span',
-  };
-
-  return [spanHeaders, spanJson];
-}
-
-/**
- * Creates attachment envelope items
- */
-function createAttachmentEnvelopeItem(attachment) {
-  const buffer = typeof attachment.data === 'string' ? encodeUTF8(attachment.data) : attachment.data;
-
-  return [
-    dropUndefinedKeys({
-      type: 'attachment',
-      length: buffer.length,
-      filename: attachment.filename,
-      content_type: attachment.contentType,
-      attachment_type: attachment.attachmentType,
-    }),
-    buffer,
-  ];
-}
-
-const ITEM_TYPE_TO_DATA_CATEGORY_MAP = {
-  session: 'session',
-  sessions: 'session',
-  attachment: 'attachment',
-  transaction: 'transaction',
-  event: 'error',
-  client_report: 'internal',
-  user_report: 'default',
-  profile: 'profile',
-  profile_chunk: 'profile',
-  replay_event: 'replay',
-  replay_recording: 'replay',
-  check_in: 'monitor',
-  feedback: 'feedback',
-  span: 'span',
-  statsd: 'metric_bucket',
-};
-
-/**
- * Maps the type of an envelope item to a data category.
- */
-function envelopeItemTypeToDataCategory(type) {
-  return ITEM_TYPE_TO_DATA_CATEGORY_MAP[type];
-}
-
-/** Extracts the minimal SDK info from the metadata or an events */
-function getSdkMetadataForEnvelopeHeader(metadataOrEvent) {
-  if (!metadataOrEvent || !metadataOrEvent.sdk) {
-    return;
-  }
-  const { name, version } = metadataOrEvent.sdk;
-  return { name, version };
-}
-
-/**
- * Creates event envelope headers, based on event, sdk info and tunnel
- * Note: This function was extracted from the core package to make it available in Replay
- */
-function createEventEnvelopeHeaders(
-  event,
-  sdkInfo,
-  tunnel,
-  dsn,
-) {
-  const dynamicSamplingContext = event.sdkProcessingMetadata && event.sdkProcessingMetadata.dynamicSamplingContext;
-  return {
-    event_id: event.event_id ,
-    sent_at: new Date().toISOString(),
-    ...(sdkInfo && { sdk: sdkInfo }),
-    ...(!!tunnel && dsn && { dsn: dsnToString(dsn) }),
-    ...(dynamicSamplingContext && {
-      trace: dropUndefinedKeys({ ...dynamicSamplingContext }),
-    }),
-  };
-}
-
-/**
- * Creates client report envelope
- * @param discarded_events An array of discard events
- * @param dsn A DSN that can be set on the header. Optional.
- */
-function createClientReportEnvelope(
-  discarded_events,
-  dsn,
-  timestamp,
-) {
-  const clientReportItem = [
-    { type: 'client_report' },
-    {
-      timestamp: dateTimestampInSeconds(),
-      discarded_events,
-    },
-  ];
-  return createEnvelope(dsn ? { dsn } : {}, [clientReportItem]);
-}
-
-// Intentionally keeping the key broad, as we don't know for sure what rate limit headers get returned from backend
-
-const DEFAULT_RETRY_AFTER = 60 * 1000; // 60 seconds
-
-/**
- * Extracts Retry-After value from the request header or returns default value
- * @param header string representation of 'Retry-After' header
- * @param now current unix timestamp
- *
- */
-function parseRetryAfterHeader(header, now = Date.now()) {
-  const headerDelay = parseInt(`${header}`, 10);
-  if (!isNaN(headerDelay)) {
-    return headerDelay * 1000;
-  }
-
-  const headerDate = Date.parse(`${header}`);
-  if (!isNaN(headerDate)) {
-    return headerDate - now;
-  }
-
-  return DEFAULT_RETRY_AFTER;
-}
-
-/**
- * Gets the time that the given category is disabled until for rate limiting.
- * In case no category-specific limit is set but a general rate limit across all categories is active,
- * that time is returned.
- *
- * @return the time in ms that the category is disabled until or 0 if there's no active rate limit.
- */
-function disabledUntil(limits, dataCategory) {
-  return limits[dataCategory] || limits.all || 0;
-}
-
-/**
- * Checks if a category is rate limited
- */
-function isRateLimited(limits, dataCategory, now = Date.now()) {
-  return disabledUntil(limits, dataCategory) > now;
-}
-
-/**
- * Update ratelimits from incoming headers.
- *
- * @return the updated RateLimits object.
- */
-function updateRateLimits(
-  limits,
-  { statusCode, headers },
-  now = Date.now(),
-) {
-  const updatedRateLimits = {
-    ...limits,
-  };
-
-  // "The name is case-insensitive."
-  // https://developer.mozilla.org/en-US/docs/Web/API/Headers/get
-  const rateLimitHeader = headers && headers['x-sentry-rate-limits'];
-  const retryAfterHeader = headers && headers['retry-after'];
-
-  if (rateLimitHeader) {
-    /**
-     * rate limit headers are of the form
-     *     <header>,<header>,..
-     * where each <header> is of the form
-     *     <retry_after>: <categories>: <scope>: <reason_code>: <namespaces>
-     * where
-     *     <retry_after> is a delay in seconds
-     *     <categories> is the event type(s) (error, transaction, etc) being rate limited and is of the form
-     *         <category>;<category>;...
-     *     <scope> is what's being limited (org, project, or key) - ignored by SDK
-     *     <reason_code> is an arbitrary string like "org_quota" - ignored by SDK
-     *     <namespaces> Semicolon-separated list of metric namespace identifiers. Defines which namespace(s) will be affected.
-     *         Only present if rate limit applies to the metric_bucket data category.
-     */
-    for (const limit of rateLimitHeader.trim().split(',')) {
-      const [retryAfter, categories, , , namespaces] = limit.split(':', 5) ;
-      const headerDelay = parseInt(retryAfter, 10);
-      const delay = (!isNaN(headerDelay) ? headerDelay : 60) * 1000; // 60sec default
-      if (!categories) {
-        updatedRateLimits.all = now + delay;
-      } else {
-        for (const category of categories.split(';')) {
-          if (category === 'metric_bucket') {
-            // namespaces will be present when category === 'metric_bucket'
-            if (!namespaces || namespaces.split(';').includes('custom')) {
-              updatedRateLimits[category] = now + delay;
-            }
-          } else {
-            updatedRateLimits[category] = now + delay;
-          }
-        }
-      }
-    }
-  } else if (retryAfterHeader) {
-    updatedRateLimits.all = now + parseRetryAfterHeader(retryAfterHeader, now);
-  } else if (statusCode === 429) {
-    updatedRateLimits.all = now + 60 * 1000;
-  }
-
-  return updatedRateLimits;
-}
-
-/**
- * Extracts stack frames from the error.stack string
- */
-function parseStackFrames(stackParser, error) {
-  return stackParser(error.stack || '', 1);
-}
-
-/**
- * Extracts stack frames from the error and builds a Sentry Exception
- */
-function exceptionFromError(stackParser, error) {
-  const exception = {
-    type: error.name || error.constructor.name,
-    value: error.message,
-  };
-
-  const frames = parseStackFrames(stackParser, error);
-  if (frames.length) {
-    exception.stacktrace = { frames };
-  }
-
-  return exception;
-}
-
-/** If a plain object has a property that is an `Error`, return this error. */
-function getErrorPropertyFromObject(obj) {
-  for (const prop in obj) {
-    if (Object.prototype.hasOwnProperty.call(obj, prop)) {
-      const value = obj[prop];
-      if (value instanceof Error) {
-        return value;
-      }
-    }
-  }
-
-  return undefined;
-}
-
-function getMessageForObject(exception) {
-  if ('name' in exception && typeof exception.name === 'string') {
-    let message = `'${exception.name}' captured as exception`;
-
-    if ('message' in exception && typeof exception.message === 'string') {
-      message += ` with message '${exception.message}'`;
-    }
-
-    return message;
-  } else if ('message' in exception && typeof exception.message === 'string') {
-    return exception.message;
-  }
-
-  const keys = extractExceptionKeysForMessage(exception);
-
-  // Some ErrorEvent instances do not have an `error` property, which is why they are not handled before
-  // We still want to try to get a decent message for these cases
-  if (isErrorEvent$1(exception)) {
-    return `Event \`ErrorEvent\` captured as exception with message \`${exception.message}\``;
-  }
-
-  const className = getObjectClassName(exception);
-
-  return `${
-    className && className !== 'Object' ? `'${className}'` : 'Object'
-  } captured as exception with keys: ${keys}`;
-}
-
-function getObjectClassName(obj) {
-  try {
-    const prototype = Object.getPrototypeOf(obj);
-    return prototype ? prototype.constructor.name : undefined;
-  } catch (e) {
-    // ignore errors here
-  }
-}
-
-function getException(
-  client,
-  mechanism,
-  exception,
-  hint,
-) {
-  if (isError(exception)) {
-    return [exception, undefined];
-  }
-
-  // Mutate this!
-  mechanism.synthetic = true;
-
-  if (isPlainObject(exception)) {
-    const normalizeDepth = client && client.getOptions().normalizeDepth;
-    const extras = { ['__serialized__']: normalizeToSize(exception , normalizeDepth) };
-
-    const errorFromProp = getErrorPropertyFromObject(exception);
-    if (errorFromProp) {
-      return [errorFromProp, extras];
-    }
-
-    const message = getMessageForObject(exception);
-    const ex = (hint && hint.syntheticException) || new Error(message);
-    ex.message = message;
-
-    return [ex, extras];
-  }
-
-  // This handles when someone does: `throw "something awesome";`
-  // We use synthesized Error here so we can extract a (rough) stack trace.
-  const ex = (hint && hint.syntheticException) || new Error(exception );
-  ex.message = `${exception}`;
-
-  return [ex, undefined];
-}
-
-/**
- * Builds and Event from a Exception
- * @hidden
- */
-function eventFromUnknownInput(
-  client,
-  stackParser,
-  exception,
-  hint,
-) {
-  const providedMechanism =
-    hint && hint.data && (hint.data ).mechanism;
-  const mechanism = providedMechanism || {
-    handled: true,
-    type: 'generic',
-  };
-
-  const [ex, extras] = getException(client, mechanism, exception, hint);
-
-  const event = {
-    exception: {
-      values: [exceptionFromError(stackParser, ex)],
-    },
-  };
-
-  if (extras) {
-    event.extra = extras;
-  }
-
-  addExceptionTypeValue(event);
-  addExceptionMechanism(event, mechanism);
-
-  return {
-    ...event,
-    event_id: hint && hint.event_id,
-  };
-}
-
-/**
- * Builds and Event from a Message
- * @hidden
- */
-function eventFromMessage(
-  stackParser,
-  message,
-  level = 'info',
-  hint,
-  attachStacktrace,
-) {
-  const event = {
-    event_id: hint && hint.event_id,
-    level,
-  };
-
-  if (attachStacktrace && hint && hint.syntheticException) {
-    const frames = parseStackFrames(stackParser, hint.syntheticException);
-    if (frames.length) {
-      event.exception = {
-        values: [
-          {
-            value: message,
-            stacktrace: { frames },
-          },
-        ],
-      };
-    }
-  }
-
-  if (isParameterizedString(message)) {
-    const { __sentry_template_string__, __sentry_template_values__ } = message;
-
-    event.logentry = {
-      message: __sentry_template_string__,
-      params: __sentry_template_values__,
-    };
-    return event;
-  }
-
-  event.message = message;
-  return event;
-}
-
-/** A simple Least Recently Used map */
-class LRUMap {
-
-   constructor(  _maxSize) {this._maxSize = _maxSize;
-    this._cache = new Map();
-  }
-
-  /** Get the current size of the cache */
-   get size() {
-    return this._cache.size;
-  }
-
-  /** Get an entry or undefined if it was not in the cache. Re-inserts to update the recently used order */
-   get(key) {
-    const value = this._cache.get(key);
-    if (value === undefined) {
-      return undefined;
-    }
-    // Remove and re-insert to update the order
-    this._cache.delete(key);
-    this._cache.set(key, value);
-    return value;
-  }
-
-  /** Insert an entry and evict an older entry if we've reached maxSize */
-   set(key, value) {
-    if (this._cache.size >= this._maxSize) {
-      // keys() returns an iterator in insertion order so keys().next() gives us the oldest key
-      this._cache.delete(this._cache.keys().next().value);
-    }
-    this._cache.set(key, value);
-  }
-
-  /** Remove an entry and return the entry if it was in the cache */
-   remove(key) {
-    const value = this._cache.get(key);
-    if (value) {
-      this._cache.delete(key);
-    }
-    return value;
-  }
-
-  /** Clear all entries */
-   clear() {
-    this._cache.clear();
-  }
-
-  /** Get all the keys */
-   keys() {
-    return Array.from(this._cache.keys());
-  }
-
-  /** Get all the values */
-   values() {
-    const values = [];
-    this._cache.forEach(value => values.push(value));
-    return values;
-  }
-}
-
-/**
- * Returns a new minimal propagation context
- */
-function generatePropagationContext() {
-  return {
-    traceId: uuid4(),
-    spanId: uuid4().substring(16),
-  };
-}
-
-const debugIdStackParserCache = new WeakMap();
-
-/**
- * Returns a map of filenames to debug identifiers.
- */
-function getFilenameToDebugIdMap(stackParser) {
-  const debugIdMap = GLOBAL_OBJ._sentryDebugIds;
-  if (!debugIdMap) {
-    return {};
-  }
-
-  let debugIdStackFramesCache;
-  const cachedDebugIdStackFrameCache = debugIdStackParserCache.get(stackParser);
-  if (cachedDebugIdStackFrameCache) {
-    debugIdStackFramesCache = cachedDebugIdStackFrameCache;
-  } else {
-    debugIdStackFramesCache = new Map();
-    debugIdStackParserCache.set(stackParser, debugIdStackFramesCache);
-  }
-
-  // Build a map of filename -> debug_id.
-  return Object.keys(debugIdMap).reduce((acc, debugIdStackTrace) => {
-    let parsedStack;
-
-    const cachedParsedStack = debugIdStackFramesCache.get(debugIdStackTrace);
-    if (cachedParsedStack) {
-      parsedStack = cachedParsedStack;
-    } else {
-      parsedStack = stackParser(debugIdStackTrace);
-      debugIdStackFramesCache.set(debugIdStackTrace, parsedStack);
-    }
-
-    for (let i = parsedStack.length - 1; i >= 0; i--) {
-      const stackFrame = parsedStack[i];
-      const file = stackFrame && stackFrame.filename;
-
-      if (stackFrame && file) {
-        acc[file] = debugIdMap[debugIdStackTrace] ;
-        break;
-      }
-    }
-    return acc;
-  }, {});
-}
-
-/**
- * This serves as a build time flag that will be true by default, but false in non-debug builds or if users replace `__SENTRY_DEBUG__` in their generated code.
- *
- * ATTENTION: This constant must never cross package boundaries (i.e. be exported) to guarantee that it can be used for tree shaking.
- */
-const DEBUG_BUILD = (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG__);
-
-/**
- * An object that contains globally accessible properties and maintains a scope stack.
- * @hidden
- */
-
-/**
- * Returns the global shim registry.
- *
- * FIXME: This function is problematic, because despite always returning a valid Carrier,
- * it has an optional `__SENTRY__` property, which then in turn requires us to always perform an unnecessary check
- * at the call-site. We always access the carrier through this function, so we can guarantee that `__SENTRY__` is there.
- **/
-function getMainCarrier() {
-  // This ensures a Sentry carrier exists
-  getSentryCarrier(GLOBAL_OBJ);
-  return GLOBAL_OBJ;
-}
-
-/** Will either get the existing sentry carrier, or create a new one. */
-function getSentryCarrier(carrier) {
-  const __SENTRY__ = (carrier.__SENTRY__ = carrier.__SENTRY__ || {});
-
-  // For now: First SDK that sets the .version property wins
-  __SENTRY__.version = __SENTRY__.version || SDK_VERSION;
-
-  // Intentionally populating and returning the version of "this" SDK instance
-  // rather than what's set in .version so that "this" SDK always gets its carrier
-  return (__SENTRY__[SDK_VERSION] = __SENTRY__[SDK_VERSION] || {});
-}
-
-/**
  * Creates a new `Session` object by setting certain default parameters. If optional @param context
  * is passed, the passed properties are applied to the session object.
  *
@@ -4420,6 +1751,48 @@ function sessionToJSON(session) {
   });
 }
 
+/**
+ * Returns a new minimal propagation context
+ */
+function generatePropagationContext() {
+  return {
+    traceId: uuid4(),
+    spanId: uuid4().substring(16),
+  };
+}
+
+/**
+ * Shallow merge two objects.
+ * Does not mutate the passed in objects.
+ * Undefined/empty values in the merge object will overwrite existing values.
+ *
+ * By default, this merges 2 levels deep.
+ */
+function merge(initialObj, mergeObj, levels = 2) {
+  // If the merge value is not an object, or we have no merge levels left,
+  // we just set the value to the merge value
+  if (!mergeObj || typeof mergeObj !== 'object' || levels <= 0) {
+    return mergeObj;
+  }
+
+  // If the merge object is an empty object, and the initial object is not undefined, we return the initial object
+  if (initialObj && mergeObj && Object.keys(mergeObj).length === 0) {
+    return initialObj;
+  }
+
+  // Clone object
+  const output = { ...initialObj };
+
+  // Merge values into output, resursively
+  for (const key in mergeObj) {
+    if (Object.prototype.hasOwnProperty.call(mergeObj, key)) {
+      output[key] = merge(output[key], mergeObj[key], levels - 1);
+    }
+  }
+
+  return output;
+}
+
 const SCOPE_SPAN_FIELD = '_sentrySpan';
 
 /**
@@ -4521,6 +1894,14 @@ class ScopeClass  {
     newScope._tags = { ...this._tags };
     newScope._extra = { ...this._extra };
     newScope._contexts = { ...this._contexts };
+    if (this._contexts.flags) {
+      // We need to copy the `values` array so insertions on a cloned scope
+      // won't affect the original array.
+      newScope._contexts.flags = {
+        values: [...this._contexts.flags.values],
+      };
+    }
+
     newScope._user = this._user;
     newScope._level = this._level;
     newScope._session = this._session;
@@ -4878,8 +2259,7 @@ class ScopeClass  {
    * @inheritDoc
    */
    setSDKProcessingMetadata(newData) {
-    this._sdkProcessingMetadata = { ...this._sdkProcessingMetadata, ...newData };
-
+    this._sdkProcessingMetadata = merge(this._sdkProcessingMetadata, newData, 2);
     return this;
   }
 
@@ -5443,6 +2823,237 @@ function setHttpStatus(span, httpStatus) {
   }
 }
 
+const SENTRY_BAGGAGE_KEY_PREFIX = 'sentry-';
+
+const SENTRY_BAGGAGE_KEY_PREFIX_REGEX = /^sentry-/;
+
+/**
+ * Max length of a serialized baggage string
+ *
+ * https://www.w3.org/TR/baggage/#limits
+ */
+const MAX_BAGGAGE_STRING_LENGTH = 8192;
+
+/**
+ * Takes a baggage header and turns it into Dynamic Sampling Context, by extracting all the "sentry-" prefixed values
+ * from it.
+ *
+ * @param baggageHeader A very bread definition of a baggage header as it might appear in various frameworks.
+ * @returns The Dynamic Sampling Context that was found on `baggageHeader`, if there was any, `undefined` otherwise.
+ */
+function baggageHeaderToDynamicSamplingContext(
+  // Very liberal definition of what any incoming header might look like
+  baggageHeader,
+) {
+  const baggageObject = parseBaggageHeader(baggageHeader);
+
+  if (!baggageObject) {
+    return undefined;
+  }
+
+  // Read all "sentry-" prefixed values out of the baggage object and put it onto a dynamic sampling context object.
+  const dynamicSamplingContext = Object.entries(baggageObject).reduce((acc, [key, value]) => {
+    if (key.match(SENTRY_BAGGAGE_KEY_PREFIX_REGEX)) {
+      const nonPrefixedKey = key.slice(SENTRY_BAGGAGE_KEY_PREFIX.length);
+      acc[nonPrefixedKey] = value;
+    }
+    return acc;
+  }, {});
+
+  // Only return a dynamic sampling context object if there are keys in it.
+  // A keyless object means there were no sentry values on the header, which means that there is no DSC.
+  if (Object.keys(dynamicSamplingContext).length > 0) {
+    return dynamicSamplingContext ;
+  } else {
+    return undefined;
+  }
+}
+
+/**
+ * Turns a Dynamic Sampling Object into a baggage header by prefixing all the keys on the object with "sentry-".
+ *
+ * @param dynamicSamplingContext The Dynamic Sampling Context to turn into a header. For convenience and compatibility
+ * with the `getDynamicSamplingContext` method on the Transaction class ,this argument can also be `undefined`. If it is
+ * `undefined` the function will return `undefined`.
+ * @returns a baggage header, created from `dynamicSamplingContext`, or `undefined` either if `dynamicSamplingContext`
+ * was `undefined`, or if `dynamicSamplingContext` didn't contain any values.
+ */
+function dynamicSamplingContextToSentryBaggageHeader(
+  // this also takes undefined for convenience and bundle size in other places
+  dynamicSamplingContext,
+) {
+  if (!dynamicSamplingContext) {
+    return undefined;
+  }
+
+  // Prefix all DSC keys with "sentry-" and put them into a new object
+  const sentryPrefixedDSC = Object.entries(dynamicSamplingContext).reduce(
+    (acc, [dscKey, dscValue]) => {
+      if (dscValue) {
+        acc[`${SENTRY_BAGGAGE_KEY_PREFIX}${dscKey}`] = dscValue;
+      }
+      return acc;
+    },
+    {},
+  );
+
+  return objectToBaggageHeader(sentryPrefixedDSC);
+}
+
+/**
+ * Take a baggage header and parse it into an object.
+ */
+function parseBaggageHeader(
+  baggageHeader,
+) {
+  if (!baggageHeader || (!isString(baggageHeader) && !Array.isArray(baggageHeader))) {
+    return undefined;
+  }
+
+  if (Array.isArray(baggageHeader)) {
+    // Combine all baggage headers into one object containing the baggage values so we can later read the Sentry-DSC-values from it
+    return baggageHeader.reduce((acc, curr) => {
+      const currBaggageObject = baggageHeaderToObject(curr);
+      Object.entries(currBaggageObject).forEach(([key, value]) => {
+        acc[key] = value;
+      });
+      return acc;
+    }, {});
+  }
+
+  return baggageHeaderToObject(baggageHeader);
+}
+
+/**
+ * Will parse a baggage header, which is a simple key-value map, into a flat object.
+ *
+ * @param baggageHeader The baggage header to parse.
+ * @returns a flat object containing all the key-value pairs from `baggageHeader`.
+ */
+function baggageHeaderToObject(baggageHeader) {
+  return baggageHeader
+    .split(',')
+    .map(baggageEntry => baggageEntry.split('=').map(keyOrValue => decodeURIComponent(keyOrValue.trim())))
+    .reduce((acc, [key, value]) => {
+      if (key && value) {
+        acc[key] = value;
+      }
+      return acc;
+    }, {});
+}
+
+/**
+ * Turns a flat object (key-value pairs) into a baggage header, which is also just key-value pairs.
+ *
+ * @param object The object to turn into a baggage header.
+ * @returns a baggage header string, or `undefined` if the object didn't have any values, since an empty baggage header
+ * is not spec compliant.
+ */
+function objectToBaggageHeader(object) {
+  if (Object.keys(object).length === 0) {
+    // An empty baggage header is not spec compliant: We return undefined.
+    return undefined;
+  }
+
+  return Object.entries(object).reduce((baggageHeader, [objectKey, objectValue], currentIndex) => {
+    const baggageEntry = `${encodeURIComponent(objectKey)}=${encodeURIComponent(objectValue)}`;
+    const newBaggageHeader = currentIndex === 0 ? baggageEntry : `${baggageHeader},${baggageEntry}`;
+    if (newBaggageHeader.length > MAX_BAGGAGE_STRING_LENGTH) {
+      DEBUG_BUILD &&
+        logger.warn(
+          `Not adding key: ${objectKey} with val: ${objectValue} to baggage header due to exceeding baggage size limits.`,
+        );
+      return baggageHeader;
+    } else {
+      return newBaggageHeader;
+    }
+  }, '');
+}
+
+// eslint-disable-next-line @sentry-internal/sdk/no-regexp-constructor -- RegExp is used for readability here
+const TRACEPARENT_REGEXP = new RegExp(
+  '^[ \\t]*' + // whitespace
+    '([0-9a-f]{32})?' + // trace_id
+    '-?([0-9a-f]{16})?' + // span_id
+    '-?([01])?' + // sampled
+    '[ \\t]*$', // whitespace
+);
+
+/**
+ * Extract transaction context data from a `sentry-trace` header.
+ *
+ * @param traceparent Traceparent string
+ *
+ * @returns Object containing data from the header, or undefined if traceparent string is malformed
+ */
+function extractTraceparentData(traceparent) {
+  if (!traceparent) {
+    return undefined;
+  }
+
+  const matches = traceparent.match(TRACEPARENT_REGEXP);
+  if (!matches) {
+    return undefined;
+  }
+
+  let parentSampled;
+  if (matches[3] === '1') {
+    parentSampled = true;
+  } else if (matches[3] === '0') {
+    parentSampled = false;
+  }
+
+  return {
+    traceId: matches[1],
+    parentSampled,
+    parentSpanId: matches[2],
+  };
+}
+
+/**
+ * Create a propagation context from incoming headers or
+ * creates a minimal new one if the headers are undefined.
+ */
+function propagationContextFromHeaders(
+  sentryTrace,
+  baggage,
+) {
+  const traceparentData = extractTraceparentData(sentryTrace);
+  const dynamicSamplingContext = baggageHeaderToDynamicSamplingContext(baggage);
+
+  const { traceId, parentSpanId, parentSampled } = traceparentData || {};
+
+  if (!traceparentData) {
+    return {
+      traceId: traceId || uuid4(),
+      spanId: uuid4().substring(16),
+    };
+  } else {
+    return {
+      traceId: traceId || uuid4(),
+      parentSpanId: parentSpanId || uuid4().substring(16),
+      spanId: uuid4().substring(16),
+      sampled: parentSampled,
+      dsc: dynamicSamplingContext || {}, // If we have traceparent data but no DSC it means we are not head of trace and we must freeze it
+    };
+  }
+}
+
+/**
+ * Create sentry-trace header from span context values.
+ */
+function generateSentryTraceHeader(
+  traceId = uuid4(),
+  spanId = uuid4().substring(16),
+  sampled,
+) {
+  let sampledString = '';
+  if (sampled !== undefined) {
+    sampledString = sampled ? '-1' : '-0';
+  }
+  return `${traceId}-${spanId}${sampledString}`;
+}
+
 // These are aligned with OpenTelemetry trace flags
 const TRACE_FLAG_NONE = 0x0;
 const TRACE_FLAG_SAMPLED = 0x1;
@@ -5705,7 +3316,7 @@ function errorCallback() {
   const rootSpan = activeSpan && getRootSpan(activeSpan);
   if (rootSpan) {
     const message = 'internal_error';
-    DEBUG_BUILD && logger.log(`[Tracing] Root span: ${message} -> Global error occurred`);
+    DEBUG_BUILD$1 && logger.log(`[Tracing] Root span: ${message} -> Global error occurred`);
     rootSpan.setStatus({ code: SPAN_STATUS_ERROR, message });
   }
 }
@@ -6021,7 +3632,7 @@ function spanToBaggageHeader(span) {
  * Print a log message for a started span.
  */
 function logSpanStart(span) {
-  if (!DEBUG_BUILD) return;
+  if (!DEBUG_BUILD$1) return;
 
   const { description = '< unknown name >', op = '< unknown op >', parent_span_id: parentSpanId } = spanToJSON(span);
   const { spanId } = span.spanContext();
@@ -6057,7 +3668,7 @@ function logSpanStart(span) {
  * Print a log message for an ended span.
  */
 function logSpanEnd(span) {
-  if (!DEBUG_BUILD) return;
+  if (!DEBUG_BUILD$1) return;
 
   const { description = '< unknown name >', op = '< unknown op >' } = spanToJSON(span);
   const { spanId } = span.spanContext();
@@ -6082,7 +3693,7 @@ function parseSampleRate(sampleRate) {
 
   const rate = typeof sampleRate === 'string' ? parseFloat(sampleRate) : sampleRate;
   if (typeof rate !== 'number' || isNaN(rate) || rate < 0 || rate > 1) {
-    DEBUG_BUILD &&
+    DEBUG_BUILD$1 &&
       logger.warn(
         `[Tracing] Given sample rate is invalid. Sample rate must be a boolean or a number between 0 and 1. Got ${JSON.stringify(
           sampleRate,
@@ -6128,13 +3739,13 @@ function sampleSpan(
   const parsedSampleRate = parseSampleRate(sampleRate);
 
   if (parsedSampleRate === undefined) {
-    DEBUG_BUILD && logger.warn('[Tracing] Discarding transaction because of invalid sample rate.');
+    DEBUG_BUILD$1 && logger.warn('[Tracing] Discarding transaction because of invalid sample rate.');
     return [false];
   }
 
   // if the function returned 0 (or false), or if `tracesSampleRate` is 0, it's a sign the transaction should be dropped
   if (!parsedSampleRate) {
-    DEBUG_BUILD &&
+    DEBUG_BUILD$1 &&
       logger.log(
         `[Tracing] Discarding transaction because ${
           typeof options.tracesSampler === 'function'
@@ -6151,7 +3762,7 @@ function sampleSpan(
 
   // if we're not going to keep it, we're done
   if (!shouldSample) {
-    DEBUG_BUILD &&
+    DEBUG_BUILD$1 &&
       logger.log(
         `[Tracing] Discarding transaction because it's not included in the random sample (sampling rate = ${Number(
           sampleRate,
@@ -6161,6 +3772,625 @@ function sampleSpan(
   }
 
   return [true, parsedSampleRate];
+}
+
+/** Regular expression used to parse a Dsn. */
+const DSN_REGEX = /^(?:(\w+):)\/\/(?:(\w+)(?::(\w+)?)?@)([\w.-]+)(?::(\d+))?\/(.+)/;
+
+function isValidProtocol(protocol) {
+  return protocol === 'http' || protocol === 'https';
+}
+
+/**
+ * Renders the string representation of this Dsn.
+ *
+ * By default, this will render the public representation without the password
+ * component. To get the deprecated private representation, set `withPassword`
+ * to true.
+ *
+ * @param withPassword When set to true, the password will be included.
+ */
+function dsnToString(dsn, withPassword = false) {
+  const { host, path, pass, port, projectId, protocol, publicKey } = dsn;
+  return (
+    `${protocol}://${publicKey}${withPassword && pass ? `:${pass}` : ''}` +
+    `@${host}${port ? `:${port}` : ''}/${path ? `${path}/` : path}${projectId}`
+  );
+}
+
+/**
+ * Parses a Dsn from a given string.
+ *
+ * @param str A Dsn as string
+ * @returns Dsn as DsnComponents or undefined if @param str is not a valid DSN string
+ */
+function dsnFromString(str) {
+  const match = DSN_REGEX.exec(str);
+
+  if (!match) {
+    // This should be logged to the console
+    consoleSandbox(() => {
+      // eslint-disable-next-line no-console
+      console.error(`Invalid Sentry Dsn: ${str}`);
+    });
+    return undefined;
+  }
+
+  const [protocol, publicKey, pass = '', host = '', port = '', lastPath = ''] = match.slice(1);
+  let path = '';
+  let projectId = lastPath;
+
+  const split = projectId.split('/');
+  if (split.length > 1) {
+    path = split.slice(0, -1).join('/');
+    projectId = split.pop() ;
+  }
+
+  if (projectId) {
+    const projectMatch = projectId.match(/^\d+/);
+    if (projectMatch) {
+      projectId = projectMatch[0];
+    }
+  }
+
+  return dsnFromComponents({ host, pass, path, projectId, port, protocol: protocol , publicKey });
+}
+
+function dsnFromComponents(components) {
+  return {
+    protocol: components.protocol,
+    publicKey: components.publicKey || '',
+    pass: components.pass || '',
+    host: components.host,
+    port: components.port || '',
+    path: components.path || '',
+    projectId: components.projectId,
+  };
+}
+
+function validateDsn(dsn) {
+  if (!DEBUG_BUILD) {
+    return true;
+  }
+
+  const { port, projectId, protocol } = dsn;
+
+  const requiredComponents = ['protocol', 'publicKey', 'host', 'projectId'];
+  const hasMissingRequiredComponent = requiredComponents.find(component => {
+    if (!dsn[component]) {
+      logger.error(`Invalid Sentry Dsn: ${component} missing`);
+      return true;
+    }
+    return false;
+  });
+
+  if (hasMissingRequiredComponent) {
+    return false;
+  }
+
+  if (!projectId.match(/^\d+$/)) {
+    logger.error(`Invalid Sentry Dsn: Invalid projectId ${projectId}`);
+    return false;
+  }
+
+  if (!isValidProtocol(protocol)) {
+    logger.error(`Invalid Sentry Dsn: Invalid protocol ${protocol}`);
+    return false;
+  }
+
+  if (port && isNaN(parseInt(port, 10))) {
+    logger.error(`Invalid Sentry Dsn: Invalid port ${port}`);
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Creates a valid Sentry Dsn object, identifying a Sentry instance and project.
+ * @returns a valid DsnComponents object or `undefined` if @param from is an invalid DSN source
+ */
+function makeDsn(from) {
+  const components = typeof from === 'string' ? dsnFromString(from) : dsnFromComponents(from);
+  if (!components || !validateDsn(components)) {
+    return undefined;
+  }
+  return components;
+}
+
+/* eslint-disable @typescript-eslint/no-unsafe-member-access */
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
+/**
+ * Helper to decycle json objects
+ */
+function memoBuilder() {
+  const hasWeakSet = typeof WeakSet === 'function';
+  const inner = hasWeakSet ? new WeakSet() : [];
+  function memoize(obj) {
+    if (hasWeakSet) {
+      if (inner.has(obj)) {
+        return true;
+      }
+      inner.add(obj);
+      return false;
+    }
+    // eslint-disable-next-line @typescript-eslint/prefer-for-of
+    for (let i = 0; i < inner.length; i++) {
+      const value = inner[i];
+      if (value === obj) {
+        return true;
+      }
+    }
+    inner.push(obj);
+    return false;
+  }
+
+  function unmemoize(obj) {
+    if (hasWeakSet) {
+      inner.delete(obj);
+    } else {
+      for (let i = 0; i < inner.length; i++) {
+        if (inner[i] === obj) {
+          inner.splice(i, 1);
+          break;
+        }
+      }
+    }
+  }
+  return [memoize, unmemoize];
+}
+
+/**
+ * Recursively normalizes the given object.
+ *
+ * - Creates a copy to prevent original input mutation
+ * - Skips non-enumerable properties
+ * - When stringifying, calls `toJSON` if implemented
+ * - Removes circular references
+ * - Translates non-serializable values (`undefined`/`NaN`/functions) to serializable format
+ * - Translates known global objects/classes to a string representations
+ * - Takes care of `Error` object serialization
+ * - Optionally limits depth of final output
+ * - Optionally limits number of properties/elements included in any single object/array
+ *
+ * @param input The object to be normalized.
+ * @param depth The max depth to which to normalize the object. (Anything deeper stringified whole.)
+ * @param maxProperties The max number of elements or properties to be included in any single array or
+ * object in the normalized output.
+ * @returns A normalized version of the object, or `"**non-serializable**"` if any errors are thrown during normalization.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function normalize(input, depth = 100, maxProperties = +Infinity) {
+  try {
+    // since we're at the outermost level, we don't provide a key
+    return visit('', input, depth, maxProperties);
+  } catch (err) {
+    return { ERROR: `**non-serializable** (${err})` };
+  }
+}
+
+/** JSDoc */
+function normalizeToSize(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  object,
+  // Default Node.js REPL depth
+  depth = 3,
+  // 100kB, as 200kB is max payload size, so half sounds reasonable
+  maxSize = 100 * 1024,
+) {
+  const normalized = normalize(object, depth);
+
+  if (jsonSize(normalized) > maxSize) {
+    return normalizeToSize(object, depth - 1, maxSize);
+  }
+
+  return normalized ;
+}
+
+/**
+ * Visits a node to perform normalization on it
+ *
+ * @param key The key corresponding to the given node
+ * @param value The node to be visited
+ * @param depth Optional number indicating the maximum recursion depth
+ * @param maxProperties Optional maximum number of properties/elements included in any single object/array
+ * @param memo Optional Memo class handling decycling
+ */
+function visit(
+  key,
+  value,
+  depth = +Infinity,
+  maxProperties = +Infinity,
+  memo = memoBuilder(),
+) {
+  const [memoize, unmemoize] = memo;
+
+  // Get the simple cases out of the way first
+  if (
+    value == null || // this matches null and undefined -> eqeq not eqeqeq
+    ['boolean', 'string'].includes(typeof value) ||
+    (typeof value === 'number' && Number.isFinite(value))
+  ) {
+    return value ;
+  }
+
+  const stringified = stringifyValue(key, value);
+
+  // Anything we could potentially dig into more (objects or arrays) will have come back as `"[object XXXX]"`.
+  // Everything else will have already been serialized, so if we don't see that pattern, we're done.
+  if (!stringified.startsWith('[object ')) {
+    return stringified;
+  }
+
+  // From here on, we can assert that `value` is either an object or an array.
+
+  // Do not normalize objects that we know have already been normalized. As a general rule, the
+  // "__sentry_skip_normalization__" property should only be used sparingly and only should only be set on objects that
+  // have already been normalized.
+  if ((value )['__sentry_skip_normalization__']) {
+    return value ;
+  }
+
+  // We can set `__sentry_override_normalization_depth__` on an object to ensure that from there
+  // We keep a certain amount of depth.
+  // This should be used sparingly, e.g. we use it for the redux integration to ensure we get a certain amount of state.
+  const remainingDepth =
+    typeof (value )['__sentry_override_normalization_depth__'] === 'number'
+      ? ((value )['__sentry_override_normalization_depth__'] )
+      : depth;
+
+  // We're also done if we've reached the max depth
+  if (remainingDepth === 0) {
+    // At this point we know `serialized` is a string of the form `"[object XXXX]"`. Clean it up so it's just `"[XXXX]"`.
+    return stringified.replace('object ', '');
+  }
+
+  // If we've already visited this branch, bail out, as it's circular reference. If not, note that we're seeing it now.
+  if (memoize(value)) {
+    return '[Circular ~]';
+  }
+
+  // If the value has a `toJSON` method, we call it to extract more information
+  const valueWithToJSON = value ;
+  if (valueWithToJSON && typeof valueWithToJSON.toJSON === 'function') {
+    try {
+      const jsonValue = valueWithToJSON.toJSON();
+      // We need to normalize the return value of `.toJSON()` in case it has circular references
+      return visit('', jsonValue, remainingDepth - 1, maxProperties, memo);
+    } catch (err) {
+      // pass (The built-in `toJSON` failed, but we can still try to do it ourselves)
+    }
+  }
+
+  // At this point we know we either have an object or an array, we haven't seen it before, and we're going to recurse
+  // because we haven't yet reached the max depth. Create an accumulator to hold the results of visiting each
+  // property/entry, and keep track of the number of items we add to it.
+  const normalized = (Array.isArray(value) ? [] : {}) ;
+  let numAdded = 0;
+
+  // Before we begin, convert`Error` and`Event` instances into plain objects, since some of each of their relevant
+  // properties are non-enumerable and otherwise would get missed.
+  const visitable = convertToPlainObject(value );
+
+  for (const visitKey in visitable) {
+    // Avoid iterating over fields in the prototype if they've somehow been exposed to enumeration.
+    if (!Object.prototype.hasOwnProperty.call(visitable, visitKey)) {
+      continue;
+    }
+
+    if (numAdded >= maxProperties) {
+      normalized[visitKey] = '[MaxProperties ~]';
+      break;
+    }
+
+    // Recursively visit all the child nodes
+    const visitValue = visitable[visitKey];
+    normalized[visitKey] = visit(visitKey, visitValue, remainingDepth - 1, maxProperties, memo);
+
+    numAdded++;
+  }
+
+  // Once we've visited all the branches, remove the parent from memo storage
+  unmemoize(value);
+
+  // Return accumulated values
+  return normalized;
+}
+
+/* eslint-disable complexity */
+/**
+ * Stringify the given value. Handles various known special values and types.
+ *
+ * Not meant to be used on simple primitives which already have a string representation, as it will, for example, turn
+ * the number 1231 into "[Object Number]", nor on `null`, as it will throw.
+ *
+ * @param value The value to stringify
+ * @returns A stringified representation of the given value
+ */
+function stringifyValue(
+  key,
+  // this type is a tiny bit of a cheat, since this function does handle NaN (which is technically a number), but for
+  // our internal use, it'll do
+  value,
+) {
+  try {
+    if (key === 'domain' && value && typeof value === 'object' && (value )._events) {
+      return '[Domain]';
+    }
+
+    if (key === 'domainEmitter') {
+      return '[DomainEmitter]';
+    }
+
+    // It's safe to use `global`, `window`, and `document` here in this manner, as we are asserting using `typeof` first
+    // which won't throw if they are not present.
+
+    if (typeof global !== 'undefined' && value === global) {
+      return '[Global]';
+    }
+
+    // eslint-disable-next-line no-restricted-globals
+    if (typeof window !== 'undefined' && value === window) {
+      return '[Window]';
+    }
+
+    // eslint-disable-next-line no-restricted-globals
+    if (typeof document !== 'undefined' && value === document) {
+      return '[Document]';
+    }
+
+    if (isVueViewModel(value)) {
+      return '[VueViewModel]';
+    }
+
+    // React's SyntheticEvent thingy
+    if (isSyntheticEvent(value)) {
+      return '[SyntheticEvent]';
+    }
+
+    if (typeof value === 'number' && !Number.isFinite(value)) {
+      return `[${value}]`;
+    }
+
+    if (typeof value === 'function') {
+      return `[Function: ${getFunctionName(value)}]`;
+    }
+
+    if (typeof value === 'symbol') {
+      return `[${String(value)}]`;
+    }
+
+    // stringified BigInts are indistinguishable from regular numbers, so we need to label them to avoid confusion
+    if (typeof value === 'bigint') {
+      return `[BigInt: ${String(value)}]`;
+    }
+
+    // Now that we've knocked out all the special cases and the primitives, all we have left are objects. Simply casting
+    // them to strings means that instances of classes which haven't defined their `toStringTag` will just come out as
+    // `"[object Object]"`. If we instead look at the constructor's name (which is the same as the name of the class),
+    // we can make sure that only plain objects come out that way.
+    const objName = getConstructorName(value);
+
+    // Handle HTML Elements
+    if (/^HTML(\w*)Element$/.test(objName)) {
+      return `[HTMLElement: ${objName}]`;
+    }
+
+    return `[object ${objName}]`;
+  } catch (err) {
+    return `**non-serializable** (${err})`;
+  }
+}
+/* eslint-enable complexity */
+
+function getConstructorName(value) {
+  const prototype = Object.getPrototypeOf(value);
+
+  return prototype ? prototype.constructor.name : 'null prototype';
+}
+
+/** Calculates bytes size of input string */
+function utf8Length(value) {
+  // eslint-disable-next-line no-bitwise
+  return ~-encodeURI(value).split(/%..|./).length;
+}
+
+/** Calculates bytes size of input object */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function jsonSize(value) {
+  return utf8Length(JSON.stringify(value));
+}
+
+/**
+ * Creates an envelope.
+ * Make sure to always explicitly provide the generic to this function
+ * so that the envelope types resolve correctly.
+ */
+function createEnvelope(headers, items = []) {
+  return [headers, items] ;
+}
+
+/**
+ * Add an item to an envelope.
+ * Make sure to always explicitly provide the generic to this function
+ * so that the envelope types resolve correctly.
+ */
+function addItemToEnvelope(envelope, newItem) {
+  const [headers, items] = envelope;
+  return [headers, [...items, newItem]] ;
+}
+
+/**
+ * Convenience function to loop through the items and item types of an envelope.
+ * (This function was mostly created because working with envelope types is painful at the moment)
+ *
+ * If the callback returns true, the rest of the items will be skipped.
+ */
+function forEachEnvelopeItem(
+  envelope,
+  callback,
+) {
+  const envelopeItems = envelope[1];
+
+  for (const envelopeItem of envelopeItems) {
+    const envelopeItemType = envelopeItem[0].type;
+    const result = callback(envelopeItem, envelopeItemType);
+
+    if (result) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Encode a string to UTF8 array.
+ */
+function encodeUTF8(input) {
+  return GLOBAL_OBJ.__SENTRY__ && GLOBAL_OBJ.__SENTRY__.encodePolyfill
+    ? GLOBAL_OBJ.__SENTRY__.encodePolyfill(input)
+    : new TextEncoder().encode(input);
+}
+
+/**
+ * Serializes an envelope.
+ */
+function serializeEnvelope(envelope) {
+  const [envHeaders, items] = envelope;
+
+  // Initially we construct our envelope as a string and only convert to binary chunks if we encounter binary data
+  let parts = JSON.stringify(envHeaders);
+
+  function append(next) {
+    if (typeof parts === 'string') {
+      parts = typeof next === 'string' ? parts + next : [encodeUTF8(parts), next];
+    } else {
+      parts.push(typeof next === 'string' ? encodeUTF8(next) : next);
+    }
+  }
+
+  for (const item of items) {
+    const [itemHeaders, payload] = item;
+
+    append(`\n${JSON.stringify(itemHeaders)}\n`);
+
+    if (typeof payload === 'string' || payload instanceof Uint8Array) {
+      append(payload);
+    } else {
+      let stringifiedPayload;
+      try {
+        stringifiedPayload = JSON.stringify(payload);
+      } catch (e) {
+        // In case, despite all our efforts to keep `payload` circular-dependency-free, `JSON.stringify()` still
+        // fails, we try again after normalizing it again with infinite normalization depth. This of course has a
+        // performance impact but in this case a performance hit is better than throwing.
+        stringifiedPayload = JSON.stringify(normalize(payload));
+      }
+      append(stringifiedPayload);
+    }
+  }
+
+  return typeof parts === 'string' ? parts : concatBuffers(parts);
+}
+
+function concatBuffers(buffers) {
+  const totalLength = buffers.reduce((acc, buf) => acc + buf.length, 0);
+
+  const merged = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const buffer of buffers) {
+    merged.set(buffer, offset);
+    offset += buffer.length;
+  }
+
+  return merged;
+}
+
+/**
+ * Creates envelope item for a single span
+ */
+function createSpanEnvelopeItem(spanJson) {
+  const spanHeaders = {
+    type: 'span',
+  };
+
+  return [spanHeaders, spanJson];
+}
+
+/**
+ * Creates attachment envelope items
+ */
+function createAttachmentEnvelopeItem(attachment) {
+  const buffer = typeof attachment.data === 'string' ? encodeUTF8(attachment.data) : attachment.data;
+
+  return [
+    dropUndefinedKeys({
+      type: 'attachment',
+      length: buffer.length,
+      filename: attachment.filename,
+      content_type: attachment.contentType,
+      attachment_type: attachment.attachmentType,
+    }),
+    buffer,
+  ];
+}
+
+const ITEM_TYPE_TO_DATA_CATEGORY_MAP = {
+  session: 'session',
+  sessions: 'session',
+  attachment: 'attachment',
+  transaction: 'transaction',
+  event: 'error',
+  client_report: 'internal',
+  user_report: 'default',
+  profile: 'profile',
+  profile_chunk: 'profile',
+  replay_event: 'replay',
+  replay_recording: 'replay',
+  check_in: 'monitor',
+  feedback: 'feedback',
+  span: 'span',
+  statsd: 'metric_bucket',
+};
+
+/**
+ * Maps the type of an envelope item to a data category.
+ */
+function envelopeItemTypeToDataCategory(type) {
+  return ITEM_TYPE_TO_DATA_CATEGORY_MAP[type];
+}
+
+/** Extracts the minimal SDK info from the metadata or an events */
+function getSdkMetadataForEnvelopeHeader(metadataOrEvent) {
+  if (!metadataOrEvent || !metadataOrEvent.sdk) {
+    return;
+  }
+  const { name, version } = metadataOrEvent.sdk;
+  return { name, version };
+}
+
+/**
+ * Creates event envelope headers, based on event, sdk info and tunnel
+ * Note: This function was extracted from the core package to make it available in Replay
+ */
+function createEventEnvelopeHeaders(
+  event,
+  sdkInfo,
+  tunnel,
+  dsn,
+) {
+  const dynamicSamplingContext = event.sdkProcessingMetadata && event.sdkProcessingMetadata.dynamicSamplingContext;
+  return {
+    event_id: event.event_id ,
+    sent_at: new Date().toISOString(),
+    ...(sdkInfo && { sdk: sdkInfo }),
+    ...(!!tunnel && dsn && { dsn: dsnToString(dsn) }),
+    ...(dynamicSamplingContext && {
+      trace: dropUndefinedKeys({ ...dynamicSamplingContext }),
+    }),
+  };
 }
 
 /**
@@ -6514,7 +4744,7 @@ class SentrySpan  {
     attributesOrStartTime,
     startTime,
   ) {
-    DEBUG_BUILD && logger.log('[Tracing] Adding an event to span:', name);
+    DEBUG_BUILD$1 && logger.log('[Tracing] Adding an event to span:', name);
 
     const time = isSpanTimeInput(attributesOrStartTime) ? attributesOrStartTime : startTime || timestampInSeconds();
     const attributes = isSpanTimeInput(attributesOrStartTime) ? {} : attributesOrStartTime || {};
@@ -6563,7 +4793,7 @@ class SentrySpan  {
       if (this._sampled) {
         sendSpanEnvelope(createSpanEnvelope([this], client));
       } else {
-        DEBUG_BUILD &&
+        DEBUG_BUILD$1 &&
           logger.log('[Tracing] Discarding standalone span because its trace was not chosen to be sampled.');
         if (client) {
           client.recordDroppedEvent('sample_rate', 'span');
@@ -6589,7 +4819,7 @@ class SentrySpan  {
     }
 
     if (!this._name) {
-      DEBUG_BUILD && logger.warn('Transaction has no name, falling back to `<unlabeled transaction>`.');
+      DEBUG_BUILD$1 && logger.warn('Transaction has no name, falling back to `<unlabeled transaction>`.');
       this._name = '<unlabeled transaction>';
     }
 
@@ -6599,7 +4829,7 @@ class SentrySpan  {
 
     if (this._sampled !== true) {
       // At this point if `sampled !== true` we want to discard the transaction.
-      DEBUG_BUILD && logger.log('[Tracing] Discarding transaction because its trace was not chosen to be sampled.');
+      DEBUG_BUILD$1 && logger.log('[Tracing] Discarding transaction because its trace was not chosen to be sampled.');
 
       if (client) {
         client.recordDroppedEvent('sample_rate', 'transaction');
@@ -6648,7 +4878,7 @@ class SentrySpan  {
     const hasMeasurements = measurements && Object.keys(measurements).length;
 
     if (hasMeasurements) {
-      DEBUG_BUILD &&
+      DEBUG_BUILD$1 &&
         logger.log(
           '[Measurements] Adding measurements to transaction event',
           JSON.stringify(measurements, undefined, 2),
@@ -6933,7 +5163,7 @@ function suppressTracing(callback) {
 function startNewTrace(callback) {
   return withScope(scope => {
     scope.setPropagationContext(generatePropagationContext());
-    DEBUG_BUILD && logger.info(`Starting a new trace with id ${scope.getPropagationContext().traceId}`);
+    DEBUG_BUILD$1 && logger.info(`Starting a new trace with id ${scope.getPropagationContext().traceId}`);
     return withActiveSpan(null, callback);
   });
 }
@@ -7140,7 +5370,7 @@ function notifyEventProcessors(
     } else {
       const result = processor({ ...event }, hint) ;
 
-      DEBUG_BUILD && processor.id && result === null && logger.log(`Event processor "${processor.id}" dropped event`);
+      DEBUG_BUILD$1 && processor.id && result === null && logger.log(`Event processor "${processor.id}" dropped event`);
 
       if (isThenable(result)) {
         void result
@@ -7153,6 +5383,51 @@ function notifyEventProcessors(
       }
     }
   });
+}
+
+const debugIdStackParserCache = new WeakMap();
+
+/**
+ * Returns a map of filenames to debug identifiers.
+ */
+function getFilenameToDebugIdMap(stackParser) {
+  const debugIdMap = GLOBAL_OBJ._sentryDebugIds;
+  if (!debugIdMap) {
+    return {};
+  }
+
+  let debugIdStackFramesCache;
+  const cachedDebugIdStackFrameCache = debugIdStackParserCache.get(stackParser);
+  if (cachedDebugIdStackFrameCache) {
+    debugIdStackFramesCache = cachedDebugIdStackFrameCache;
+  } else {
+    debugIdStackFramesCache = new Map();
+    debugIdStackParserCache.set(stackParser, debugIdStackFramesCache);
+  }
+
+  // Build a map of filename -> debug_id.
+  return Object.keys(debugIdMap).reduce((acc, debugIdStackTrace) => {
+    let parsedStack;
+
+    const cachedParsedStack = debugIdStackFramesCache.get(debugIdStackTrace);
+    if (cachedParsedStack) {
+      parsedStack = cachedParsedStack;
+    } else {
+      parsedStack = stackParser(debugIdStackTrace);
+      debugIdStackFramesCache.set(debugIdStackTrace, parsedStack);
+    }
+
+    for (let i = parsedStack.length - 1; i >= 0; i--) {
+      const stackFrame = parsedStack[i];
+      const file = stackFrame && stackFrame.filename;
+
+      if (stackFrame && file) {
+        acc[file] = debugIdMap[debugIdStackTrace] ;
+        break;
+      }
+    }
+    return acc;
+  }, {});
 }
 
 /**
@@ -7198,7 +5473,8 @@ function mergeScopeData(data, mergeData) {
   mergeAndOverwriteScopeData(data, 'tags', tags);
   mergeAndOverwriteScopeData(data, 'user', user);
   mergeAndOverwriteScopeData(data, 'contexts', contexts);
-  mergeAndOverwriteScopeData(data, 'sdkProcessingMetadata', sdkProcessingMetadata);
+
+  data.sdkProcessingMetadata = merge(data.sdkProcessingMetadata, sdkProcessingMetadata, 2);
 
   if (level) {
     data.level = level;
@@ -7238,15 +5514,7 @@ function mergeScopeData(data, mergeData) {
 function mergeAndOverwriteScopeData
 
 (data, prop, mergeVal) {
-  if (mergeVal && Object.keys(mergeVal).length) {
-    // Clone object
-    data[prop] = { ...data[prop] };
-    for (const key in mergeVal) {
-      if (Object.prototype.hasOwnProperty.call(mergeVal, key)) {
-        data[prop][key] = mergeVal[key];
-      }
-    }
-  }
+  data[prop] = merge(data[prop], mergeVal, 1);
 }
 
 function applyDataToEvent(event, data) {
@@ -7318,7 +5586,11 @@ function applySpanToEvent(event, span) {
  */
 function applyFingerprintToEvent(event, fingerprint) {
   // Make sure it's an array first and we actually have something in place
-  event.fingerprint = event.fingerprint ? arrayify(event.fingerprint) : [];
+  event.fingerprint = event.fingerprint
+    ? Array.isArray(event.fingerprint)
+      ? event.fingerprint
+      : [event.fingerprint]
+    : [];
 
   // If we have something on the scope, then merge it with event
   if (fingerprint) {
@@ -7611,6 +5883,14 @@ function normalizeEvent(event, depth, maxBreadth) {
     });
   }
 
+  // event.contexts.flags (FeatureFlagContext) stores context for our feature
+  // flag integrations. It has a greater nesting depth than our other typed
+  // Contexts, so we re-normalize with a fixed depth of 3 here. We do not want
+  // to skip this in case of conflicting, user-provided context.
+  if (event.contexts && event.contexts.flags && normalized.contexts) {
+    normalized.contexts.flags = normalize(event.contexts.flags, 3, maxBreadth);
+  }
+
   return normalized;
 }
 
@@ -7796,9 +6076,9 @@ function captureCheckIn(checkIn, upsertMonitorConfig) {
   const scope = getCurrentScope();
   const client = getClient();
   if (!client) {
-    DEBUG_BUILD && logger.warn('Cannot capture check-in. No client defined.');
+    DEBUG_BUILD$1 && logger.warn('Cannot capture check-in. No client defined.');
   } else if (!client.captureCheckIn) {
-    DEBUG_BUILD && logger.warn('Cannot capture check-in. Client does not support sending check-ins.');
+    DEBUG_BUILD$1 && logger.warn('Cannot capture check-in. Client does not support sending check-ins.');
   } else {
     return client.captureCheckIn(checkIn, upsertMonitorConfig, scope);
   }
@@ -7865,7 +6145,7 @@ async function flush(timeout) {
   if (client) {
     return client.flush(timeout);
   }
-  DEBUG_BUILD && logger.warn('Cannot flush events. No client defined.');
+  DEBUG_BUILD$1 && logger.warn('Cannot flush events. No client defined.');
   return Promise.resolve(false);
 }
 
@@ -7882,7 +6162,7 @@ async function close(timeout) {
   if (client) {
     return client.close(timeout);
   }
-  DEBUG_BUILD && logger.warn('Cannot flush events and disable SDK. No client defined.');
+  DEBUG_BUILD$1 && logger.warn('Cannot flush events and disable SDK. No client defined.');
   return Promise.resolve(false);
 }
 
@@ -8186,7 +6466,8 @@ function getIntegrationsToSetup(options) {
   if (Array.isArray(userIntegrations)) {
     integrations = [...defaultIntegrations, ...userIntegrations];
   } else if (typeof userIntegrations === 'function') {
-    integrations = arrayify(userIntegrations(defaultIntegrations));
+    const resolvedUserIntegrations = userIntegrations(defaultIntegrations);
+    integrations = Array.isArray(resolvedUserIntegrations) ? resolvedUserIntegrations : [resolvedUserIntegrations];
   } else {
     integrations = defaultIntegrations;
   }
@@ -8240,7 +6521,7 @@ function afterSetupIntegrations(client, integrations) {
 /** Setup a single integration.  */
 function setupIntegration(client, integration, integrationIndex) {
   if (integrationIndex[integration.name]) {
-    DEBUG_BUILD && logger.log(`Integration skipped because it was already installed: ${integration.name}`);
+    DEBUG_BUILD$1 && logger.log(`Integration skipped because it was already installed: ${integration.name}`);
     return;
   }
   integrationIndex[integration.name] = integration;
@@ -8271,7 +6552,7 @@ function setupIntegration(client, integration, integrationIndex) {
     client.addEventProcessor(processor);
   }
 
-  DEBUG_BUILD && logger.log(`Integration installed: ${integration.name}`);
+  DEBUG_BUILD$1 && logger.log(`Integration installed: ${integration.name}`);
 }
 
 /**
@@ -8280,6 +6561,41 @@ function setupIntegration(client, integration, integrationIndex) {
  */
 function defineIntegration(fn) {
   return fn;
+}
+
+/**
+ * Creates client report envelope
+ * @param discarded_events An array of discard events
+ * @param dsn A DSN that can be set on the header. Optional.
+ */
+function createClientReportEnvelope(
+  discarded_events,
+  dsn,
+  timestamp,
+) {
+  const clientReportItem = [
+    { type: 'client_report' },
+    {
+      timestamp: dateTimestampInSeconds(),
+      discarded_events,
+    },
+  ];
+  return createEnvelope(dsn ? { dsn } : {}, [clientReportItem]);
+}
+
+/** An error emitted by Sentry SDKs and related utilities. */
+class SentryError extends Error {
+  /** Display name of this error instance. */
+
+   constructor( message, logLevel = 'warn') {
+    super(message);this.message = message;
+    this.name = new.target.prototype.constructor.name;
+    // This sets the prototype to be `Error`, not `SentryError`. It's unclear why we do this, but commenting this line
+    // out causes various (seemingly totally unrelated) playwright tests consistently time out. FYI, this makes
+    // instances of `SentryError` fail `obj instanceof SentryError` checks.
+    Object.setPrototypeOf(this, new.target.prototype);
+    this.logLevel = logLevel;
+  }
 }
 
 const ALREADY_SEEN_ERROR = "Not capturing exception because it's already been captured.";
@@ -8344,7 +6660,7 @@ class BaseClient {
     if (options.dsn) {
       this._dsn = makeDsn(options.dsn);
     } else {
-      DEBUG_BUILD && logger.warn('No DSN provided, client will not send events.');
+      DEBUG_BUILD$1 && logger.warn('No DSN provided, client will not send events.');
     }
 
     if (this._dsn) {
@@ -8371,7 +6687,7 @@ class BaseClient {
 
     // ensure we haven't captured this very object before
     if (checkOrSetAlreadyCaught(exception)) {
-      DEBUG_BUILD && logger.log(ALREADY_SEEN_ERROR);
+      DEBUG_BUILD$1 && logger.log(ALREADY_SEEN_ERROR);
       return eventId;
     }
 
@@ -8422,7 +6738,7 @@ class BaseClient {
 
     // ensure we haven't captured this very object before
     if (hint && hint.originalException && checkOrSetAlreadyCaught(hint.originalException)) {
-      DEBUG_BUILD && logger.log(ALREADY_SEEN_ERROR);
+      DEBUG_BUILD$1 && logger.log(ALREADY_SEEN_ERROR);
       return eventId;
     }
 
@@ -8444,7 +6760,7 @@ class BaseClient {
    */
    captureSession(session) {
     if (!(typeof session.release === 'string')) {
-      DEBUG_BUILD && logger.warn('Discarded session because of missing or non-string release');
+      DEBUG_BUILD$1 && logger.warn('Discarded session because of missing or non-string release');
     } else {
       this.sendSession(session);
       // After sending, we set init false to indicate it's not the first occurrence
@@ -8601,7 +6917,7 @@ class BaseClient {
       // would be `Partial<Record<SentryRequestType, Partial<Record<Outcome, number>>>>`
       // With typescript 4.1 we could even use template literal types
       const key = `${reason}:${category}`;
-      DEBUG_BUILD && logger.log(`Recording outcome: "${key}"${count > 1 ? ` (${count} times)` : ''}`);
+      DEBUG_BUILD$1 && logger.log(`Recording outcome: "${key}"${count > 1 ? ` (${count} times)` : ''}`);
       this._outcomes[key] = (this._outcomes[key] || 0) + count;
     }
   }
@@ -8649,12 +6965,12 @@ class BaseClient {
 
     if (this._isEnabled() && this._transport) {
       return this._transport.send(envelope).then(null, reason => {
-        DEBUG_BUILD && logger.error('Error while sending envelope:', reason);
+        DEBUG_BUILD$1 && logger.error('Error while sending envelope:', reason);
         return reason;
       });
     }
 
-    DEBUG_BUILD && logger.error('Transport disabled');
+    DEBUG_BUILD$1 && logger.error('Transport disabled');
 
     return resolvedSyncPromise({});
   }
@@ -8813,7 +7129,7 @@ class BaseClient {
         return finalEvent.event_id;
       },
       reason => {
-        if (DEBUG_BUILD) {
+        if (DEBUG_BUILD$1) {
           // If something's gone wrong, log the error as a warning. If it's just us having used a `SentryError` for
           // control flow, log just the message (no stack) as a log-level log.
           const sentryError = reason ;
@@ -8982,22 +7298,22 @@ class BaseClient {
    * Sends client reports as an envelope.
    */
    _flushOutcomes() {
-    DEBUG_BUILD && logger.log('Flushing outcomes...');
+    DEBUG_BUILD$1 && logger.log('Flushing outcomes...');
 
     const outcomes = this._clearOutcomes();
 
     if (outcomes.length === 0) {
-      DEBUG_BUILD && logger.log('No outcomes to send');
+      DEBUG_BUILD$1 && logger.log('No outcomes to send');
       return;
     }
 
     // This is really the only place where we want to check for a DSN and only send outcomes then
     if (!this._dsn) {
-      DEBUG_BUILD && logger.log('No dsn provided, will not send outcomes');
+      DEBUG_BUILD$1 && logger.log('No dsn provided, will not send outcomes');
       return;
     }
 
-    DEBUG_BUILD && logger.log('Sending outcomes:', outcomes);
+    DEBUG_BUILD$1 && logger.log('Sending outcomes:', outcomes);
 
     const envelope = createClientReportEnvelope(outcomes, this._options.tunnel && dsnToString(this._dsn));
 
@@ -9134,6 +7450,200 @@ function createCheckInEnvelopeItem(checkIn) {
 }
 
 /**
+ * Extracts stack frames from the error.stack string
+ */
+function parseStackFrames(stackParser, error) {
+  return stackParser(error.stack || '', 1);
+}
+
+/**
+ * Extracts stack frames from the error and builds a Sentry Exception
+ */
+function exceptionFromError(stackParser, error) {
+  const exception = {
+    type: error.name || error.constructor.name,
+    value: error.message,
+  };
+
+  const frames = parseStackFrames(stackParser, error);
+  if (frames.length) {
+    exception.stacktrace = { frames };
+  }
+
+  return exception;
+}
+
+/** If a plain object has a property that is an `Error`, return this error. */
+function getErrorPropertyFromObject(obj) {
+  for (const prop in obj) {
+    if (Object.prototype.hasOwnProperty.call(obj, prop)) {
+      const value = obj[prop];
+      if (value instanceof Error) {
+        return value;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function getMessageForObject(exception) {
+  if ('name' in exception && typeof exception.name === 'string') {
+    let message = `'${exception.name}' captured as exception`;
+
+    if ('message' in exception && typeof exception.message === 'string') {
+      message += ` with message '${exception.message}'`;
+    }
+
+    return message;
+  } else if ('message' in exception && typeof exception.message === 'string') {
+    return exception.message;
+  }
+
+  const keys = extractExceptionKeysForMessage(exception);
+
+  // Some ErrorEvent instances do not have an `error` property, which is why they are not handled before
+  // We still want to try to get a decent message for these cases
+  if (isErrorEvent$1(exception)) {
+    return `Event \`ErrorEvent\` captured as exception with message \`${exception.message}\``;
+  }
+
+  const className = getObjectClassName(exception);
+
+  return `${
+    className && className !== 'Object' ? `'${className}'` : 'Object'
+  } captured as exception with keys: ${keys}`;
+}
+
+function getObjectClassName(obj) {
+  try {
+    const prototype = Object.getPrototypeOf(obj);
+    return prototype ? prototype.constructor.name : undefined;
+  } catch (e) {
+    // ignore errors here
+  }
+}
+
+function getException(
+  client,
+  mechanism,
+  exception,
+  hint,
+) {
+  if (isError(exception)) {
+    return [exception, undefined];
+  }
+
+  // Mutate this!
+  mechanism.synthetic = true;
+
+  if (isPlainObject(exception)) {
+    const normalizeDepth = client && client.getOptions().normalizeDepth;
+    const extras = { ['__serialized__']: normalizeToSize(exception , normalizeDepth) };
+
+    const errorFromProp = getErrorPropertyFromObject(exception);
+    if (errorFromProp) {
+      return [errorFromProp, extras];
+    }
+
+    const message = getMessageForObject(exception);
+    const ex = (hint && hint.syntheticException) || new Error(message);
+    ex.message = message;
+
+    return [ex, extras];
+  }
+
+  // This handles when someone does: `throw "something awesome";`
+  // We use synthesized Error here so we can extract a (rough) stack trace.
+  const ex = (hint && hint.syntheticException) || new Error(exception );
+  ex.message = `${exception}`;
+
+  return [ex, undefined];
+}
+
+/**
+ * Builds and Event from a Exception
+ * @hidden
+ */
+function eventFromUnknownInput(
+  client,
+  stackParser,
+  exception,
+  hint,
+) {
+  const providedMechanism =
+    hint && hint.data && (hint.data ).mechanism;
+  const mechanism = providedMechanism || {
+    handled: true,
+    type: 'generic',
+  };
+
+  const [ex, extras] = getException(client, mechanism, exception, hint);
+
+  const event = {
+    exception: {
+      values: [exceptionFromError(stackParser, ex)],
+    },
+  };
+
+  if (extras) {
+    event.extra = extras;
+  }
+
+  addExceptionTypeValue(event);
+  addExceptionMechanism(event, mechanism);
+
+  return {
+    ...event,
+    event_id: hint && hint.event_id,
+  };
+}
+
+/**
+ * Builds and Event from a Message
+ * @hidden
+ */
+function eventFromMessage(
+  stackParser,
+  message,
+  level = 'info',
+  hint,
+  attachStacktrace,
+) {
+  const event = {
+    event_id: hint && hint.event_id,
+    level,
+  };
+
+  if (attachStacktrace && hint && hint.syntheticException) {
+    const frames = parseStackFrames(stackParser, hint.syntheticException);
+    if (frames.length) {
+      event.exception = {
+        values: [
+          {
+            value: message,
+            stacktrace: { frames },
+          },
+        ],
+      };
+    }
+  }
+
+  if (isParameterizedString(message)) {
+    const { __sentry_template_string__, __sentry_template_values__ } = message;
+
+    event.logentry = {
+      message: __sentry_template_string__,
+      params: __sentry_template_values__,
+    };
+    return event;
+  }
+
+  event.message = message;
+  return event;
+}
+
+/**
  * The Sentry Server Runtime Client SDK.
  */
 class ServerRuntimeClient
@@ -9234,7 +7744,7 @@ class ServerRuntimeClient
    initSessionFlusher() {
     const { release, environment } = this._options;
     if (!release) {
-      DEBUG_BUILD && logger.warn('Cannot initialise an instance of SessionFlusher if no release is provided!');
+      DEBUG_BUILD$1 && logger.warn('Cannot initialise an instance of SessionFlusher if no release is provided!');
     } else {
       this._sessionFlusher = new SessionFlusher(this, {
         release,
@@ -9253,7 +7763,7 @@ class ServerRuntimeClient
    captureCheckIn(checkIn, monitorConfig, scope) {
     const id = 'checkInId' in checkIn && checkIn.checkInId ? checkIn.checkInId : uuid4();
     if (!this._isEnabled()) {
-      DEBUG_BUILD && logger.warn('SDK not enabled, will not capture checkin.');
+      DEBUG_BUILD$1 && logger.warn('SDK not enabled, will not capture checkin.');
       return id;
     }
 
@@ -9298,7 +7808,7 @@ class ServerRuntimeClient
       this.getDsn(),
     );
 
-    DEBUG_BUILD && logger.info('Sending checkin:', checkIn.monitorSlug, checkIn.status);
+    DEBUG_BUILD$1 && logger.info('Sending checkin:', checkIn.monitorSlug, checkIn.status);
 
     // sendEnvelope should not throw
     // eslint-disable-next-line @typescript-eslint/no-floating-promises
@@ -9313,7 +7823,7 @@ class ServerRuntimeClient
    */
    _captureRequestSession() {
     if (!this._sessionFlusher) {
-      DEBUG_BUILD && logger.warn('Discarded request mode session because autoSessionTracking option was disabled');
+      DEBUG_BUILD$1 && logger.warn('Discarded request mode session because autoSessionTracking option was disabled');
     } else {
       this._sessionFlusher.incrementSessionStatusCount();
     }
@@ -9389,7 +7899,7 @@ function initAndBind(
   options,
 ) {
   if (options.debug === true) {
-    if (DEBUG_BUILD) {
+    if (DEBUG_BUILD$1) {
       logger.enable();
     } else {
       // use `console.warn` rather than `logger.warn` since by non-debug bundles have all `logger.x` statements stripped
@@ -9413,6 +7923,207 @@ function initAndBind(
  */
 function setCurrentClient(client) {
   getCurrentScope().setClient(client);
+}
+
+/**
+ * Creates an new PromiseBuffer object with the specified limit
+ * @param limit max number of promises that can be stored in the buffer
+ */
+function makePromiseBuffer(limit) {
+  const buffer = [];
+
+  function isReady() {
+    return limit === undefined || buffer.length < limit;
+  }
+
+  /**
+   * Remove a promise from the queue.
+   *
+   * @param task Can be any PromiseLike<T>
+   * @returns Removed promise.
+   */
+  function remove(task) {
+    return buffer.splice(buffer.indexOf(task), 1)[0] || Promise.resolve(undefined);
+  }
+
+  /**
+   * Add a promise (representing an in-flight action) to the queue, and set it to remove itself on fulfillment.
+   *
+   * @param taskProducer A function producing any PromiseLike<T>; In previous versions this used to be `task:
+   *        PromiseLike<T>`, but under that model, Promises were instantly created on the call-site and their executor
+   *        functions therefore ran immediately. Thus, even if the buffer was full, the action still happened. By
+   *        requiring the promise to be wrapped in a function, we can defer promise creation until after the buffer
+   *        limit check.
+   * @returns The original promise.
+   */
+  function add(taskProducer) {
+    if (!isReady()) {
+      return rejectedSyncPromise(new SentryError('Not adding Promise because buffer limit was reached.'));
+    }
+
+    // start the task and add its promise to the queue
+    const task = taskProducer();
+    if (buffer.indexOf(task) === -1) {
+      buffer.push(task);
+    }
+    void task
+      .then(() => remove(task))
+      // Use `then(null, rejectionHandler)` rather than `catch(rejectionHandler)` so that we can use `PromiseLike`
+      // rather than `Promise`. `PromiseLike` doesn't have a `.catch` method, making its polyfill smaller. (ES5 didn't
+      // have promises, so TS has to polyfill when down-compiling.)
+      .then(null, () =>
+        remove(task).then(null, () => {
+          // We have to add another catch here because `remove()` starts a new promise chain.
+        }),
+      );
+    return task;
+  }
+
+  /**
+   * Wait for all promises in the queue to resolve or for timeout to expire, whichever comes first.
+   *
+   * @param timeout The time, in ms, after which to resolve to `false` if the queue is still non-empty. Passing `0` (or
+   * not passing anything) will make the promise wait as long as it takes for the queue to drain before resolving to
+   * `true`.
+   * @returns A promise which will resolve to `true` if the queue is already empty or drains before the timeout, and
+   * `false` otherwise
+   */
+  function drain(timeout) {
+    return new SyncPromise((resolve, reject) => {
+      let counter = buffer.length;
+
+      if (!counter) {
+        return resolve(true);
+      }
+
+      // wait for `timeout` ms and then resolve to `false` (if not cancelled first)
+      const capturedSetTimeout = setTimeout(() => {
+        if (timeout && timeout > 0) {
+          resolve(false);
+        }
+      }, timeout);
+
+      // if all promises resolve in time, cancel the timer and resolve to `true`
+      buffer.forEach(item => {
+        void resolvedSyncPromise(item).then(() => {
+          if (!--counter) {
+            clearTimeout(capturedSetTimeout);
+            resolve(true);
+          }
+        }, reject);
+      });
+    });
+  }
+
+  return {
+    $: buffer,
+    add,
+    drain,
+  };
+}
+
+// Intentionally keeping the key broad, as we don't know for sure what rate limit headers get returned from backend
+
+const DEFAULT_RETRY_AFTER = 60 * 1000; // 60 seconds
+
+/**
+ * Extracts Retry-After value from the request header or returns default value
+ * @param header string representation of 'Retry-After' header
+ * @param now current unix timestamp
+ *
+ */
+function parseRetryAfterHeader(header, now = Date.now()) {
+  const headerDelay = parseInt(`${header}`, 10);
+  if (!isNaN(headerDelay)) {
+    return headerDelay * 1000;
+  }
+
+  const headerDate = Date.parse(`${header}`);
+  if (!isNaN(headerDate)) {
+    return headerDate - now;
+  }
+
+  return DEFAULT_RETRY_AFTER;
+}
+
+/**
+ * Gets the time that the given category is disabled until for rate limiting.
+ * In case no category-specific limit is set but a general rate limit across all categories is active,
+ * that time is returned.
+ *
+ * @return the time in ms that the category is disabled until or 0 if there's no active rate limit.
+ */
+function disabledUntil(limits, dataCategory) {
+  return limits[dataCategory] || limits.all || 0;
+}
+
+/**
+ * Checks if a category is rate limited
+ */
+function isRateLimited(limits, dataCategory, now = Date.now()) {
+  return disabledUntil(limits, dataCategory) > now;
+}
+
+/**
+ * Update ratelimits from incoming headers.
+ *
+ * @return the updated RateLimits object.
+ */
+function updateRateLimits(
+  limits,
+  { statusCode, headers },
+  now = Date.now(),
+) {
+  const updatedRateLimits = {
+    ...limits,
+  };
+
+  // "The name is case-insensitive."
+  // https://developer.mozilla.org/en-US/docs/Web/API/Headers/get
+  const rateLimitHeader = headers && headers['x-sentry-rate-limits'];
+  const retryAfterHeader = headers && headers['retry-after'];
+
+  if (rateLimitHeader) {
+    /**
+     * rate limit headers are of the form
+     *     <header>,<header>,..
+     * where each <header> is of the form
+     *     <retry_after>: <categories>: <scope>: <reason_code>: <namespaces>
+     * where
+     *     <retry_after> is a delay in seconds
+     *     <categories> is the event type(s) (error, transaction, etc) being rate limited and is of the form
+     *         <category>;<category>;...
+     *     <scope> is what's being limited (org, project, or key) - ignored by SDK
+     *     <reason_code> is an arbitrary string like "org_quota" - ignored by SDK
+     *     <namespaces> Semicolon-separated list of metric namespace identifiers. Defines which namespace(s) will be affected.
+     *         Only present if rate limit applies to the metric_bucket data category.
+     */
+    for (const limit of rateLimitHeader.trim().split(',')) {
+      const [retryAfter, categories, , , namespaces] = limit.split(':', 5) ;
+      const headerDelay = parseInt(retryAfter, 10);
+      const delay = (!isNaN(headerDelay) ? headerDelay : 60) * 1000; // 60sec default
+      if (!categories) {
+        updatedRateLimits.all = now + delay;
+      } else {
+        for (const category of categories.split(';')) {
+          if (category === 'metric_bucket') {
+            // namespaces will be present when category === 'metric_bucket'
+            if (!namespaces || namespaces.split(';').includes('custom')) {
+              updatedRateLimits[category] = now + delay;
+            }
+          } else {
+            updatedRateLimits[category] = now + delay;
+          }
+        }
+      }
+    }
+  } else if (retryAfterHeader) {
+    updatedRateLimits.all = now + parseRetryAfterHeader(retryAfterHeader, now);
+  } else if (statusCode === 429) {
+    updatedRateLimits.all = now + 60 * 1000;
+  }
+
+  return updatedRateLimits;
 }
 
 const DEFAULT_TRANSPORT_BUFFER_SIZE = 64;
@@ -9468,7 +8179,7 @@ function createTransport(
         response => {
           // We don't want to throw on NOK responses, but we want to at least log them
           if (response.statusCode !== undefined && (response.statusCode < 200 || response.statusCode >= 300)) {
-            DEBUG_BUILD && logger.warn(`Sentry responded with status code ${response.statusCode} to sent event.`);
+            DEBUG_BUILD$1 && logger.warn(`Sentry responded with status code ${response.statusCode} to sent event.`);
           }
 
           rateLimits = updateRateLimits(rateLimits, response);
@@ -9484,7 +8195,7 @@ function createTransport(
       result => result,
       error => {
         if (error instanceof SentryError) {
-          DEBUG_BUILD && logger.error('Skipped sending event because buffer is full.');
+          DEBUG_BUILD$1 && logger.error('Skipped sending event because buffer is full.');
           recordEnvelopeLoss('queue_overflow');
           return resolvedSyncPromise({});
         } else {
@@ -9746,19 +8457,19 @@ function _mergeOptions(
 
 function _shouldDropEvent$1(event, options) {
   if (options.ignoreInternal && _isSentryError(event)) {
-    DEBUG_BUILD &&
+    DEBUG_BUILD$1 &&
       logger.warn(`Event dropped due to being internal Sentry Error.\nEvent: ${getEventDescription(event)}`);
     return true;
   }
   if (_isIgnoredError(event, options.ignoreErrors)) {
-    DEBUG_BUILD &&
+    DEBUG_BUILD$1 &&
       logger.warn(
         `Event dropped due to being matched by \`ignoreErrors\` option.\nEvent: ${getEventDescription(event)}`,
       );
     return true;
   }
   if (_isUselessError(event)) {
-    DEBUG_BUILD &&
+    DEBUG_BUILD$1 &&
       logger.warn(
         `Event dropped due to not having an error message, error type or stacktrace.\nEvent: ${getEventDescription(
           event,
@@ -9767,14 +8478,14 @@ function _shouldDropEvent$1(event, options) {
     return true;
   }
   if (_isIgnoredTransaction(event, options.ignoreTransactions)) {
-    DEBUG_BUILD &&
+    DEBUG_BUILD$1 &&
       logger.warn(
         `Event dropped due to being matched by \`ignoreTransactions\` option.\nEvent: ${getEventDescription(event)}`,
       );
     return true;
   }
   if (_isDeniedUrl(event, options.denyUrls)) {
-    DEBUG_BUILD &&
+    DEBUG_BUILD$1 &&
       logger.warn(
         `Event dropped due to being matched by \`denyUrls\` option.\nEvent: ${getEventDescription(
           event,
@@ -9783,7 +8494,7 @@ function _shouldDropEvent$1(event, options) {
     return true;
   }
   if (!_isAllowedUrl(event, options.allowUrls)) {
-    DEBUG_BUILD &&
+    DEBUG_BUILD$1 &&
       logger.warn(
         `Event dropped due to not being matched by \`allowUrls\` option.\nEvent: ${getEventDescription(
           event,
@@ -9890,7 +8601,7 @@ function _getEventFilterUrl(event) {
     }
     return frames ? _getLastValidUrl(frames) : null;
   } catch (oO) {
-    DEBUG_BUILD && logger.error(`Cannot extract url for event ${getEventDescription(event)}`);
+    DEBUG_BUILD$1 && logger.error(`Cannot extract url for event ${getEventDescription(event)}`);
     return null;
   }
 }
@@ -9912,6 +8623,147 @@ function _isUselessError(event) {
     // There are no exception values that have a stacktrace, a non-generic-Error type or value
     !event.exception.values.some(value => value.stacktrace || (value.type && value.type !== 'Error') || value.value)
   );
+}
+
+/**
+ * Creates exceptions inside `event.exception.values` for errors that are nested on properties based on the `key` parameter.
+ */
+function applyAggregateErrorsToEvent(
+  exceptionFromErrorImplementation,
+  parser,
+  maxValueLimit = 250,
+  key,
+  limit,
+  event,
+  hint,
+) {
+  if (!event.exception || !event.exception.values || !hint || !isInstanceOf(hint.originalException, Error)) {
+    return;
+  }
+
+  // Generally speaking the last item in `event.exception.values` is the exception originating from the original Error
+  const originalException =
+    event.exception.values.length > 0 ? event.exception.values[event.exception.values.length - 1] : undefined;
+
+  // We only create exception grouping if there is an exception in the event.
+  if (originalException) {
+    event.exception.values = truncateAggregateExceptions(
+      aggregateExceptionsFromError(
+        exceptionFromErrorImplementation,
+        parser,
+        limit,
+        hint.originalException ,
+        key,
+        event.exception.values,
+        originalException,
+        0,
+      ),
+      maxValueLimit,
+    );
+  }
+}
+
+function aggregateExceptionsFromError(
+  exceptionFromErrorImplementation,
+  parser,
+  limit,
+  error,
+  key,
+  prevExceptions,
+  exception,
+  exceptionId,
+) {
+  if (prevExceptions.length >= limit + 1) {
+    return prevExceptions;
+  }
+
+  let newExceptions = [...prevExceptions];
+
+  // Recursively call this function in order to walk down a chain of errors
+  if (isInstanceOf(error[key], Error)) {
+    applyExceptionGroupFieldsForParentException(exception, exceptionId);
+    const newException = exceptionFromErrorImplementation(parser, error[key]);
+    const newExceptionId = newExceptions.length;
+    applyExceptionGroupFieldsForChildException(newException, key, newExceptionId, exceptionId);
+    newExceptions = aggregateExceptionsFromError(
+      exceptionFromErrorImplementation,
+      parser,
+      limit,
+      error[key],
+      key,
+      [newException, ...newExceptions],
+      newException,
+      newExceptionId,
+    );
+  }
+
+  // This will create exception grouping for AggregateErrors
+  // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AggregateError
+  if (Array.isArray(error.errors)) {
+    error.errors.forEach((childError, i) => {
+      if (isInstanceOf(childError, Error)) {
+        applyExceptionGroupFieldsForParentException(exception, exceptionId);
+        const newException = exceptionFromErrorImplementation(parser, childError);
+        const newExceptionId = newExceptions.length;
+        applyExceptionGroupFieldsForChildException(newException, `errors[${i}]`, newExceptionId, exceptionId);
+        newExceptions = aggregateExceptionsFromError(
+          exceptionFromErrorImplementation,
+          parser,
+          limit,
+          childError,
+          key,
+          [newException, ...newExceptions],
+          newException,
+          newExceptionId,
+        );
+      }
+    });
+  }
+
+  return newExceptions;
+}
+
+function applyExceptionGroupFieldsForParentException(exception, exceptionId) {
+  // Don't know if this default makes sense. The protocol requires us to set these values so we pick *some* default.
+  exception.mechanism = exception.mechanism || { type: 'generic', handled: true };
+
+  exception.mechanism = {
+    ...exception.mechanism,
+    ...(exception.type === 'AggregateError' && { is_exception_group: true }),
+    exception_id: exceptionId,
+  };
+}
+
+function applyExceptionGroupFieldsForChildException(
+  exception,
+  source,
+  exceptionId,
+  parentId,
+) {
+  // Don't know if this default makes sense. The protocol requires us to set these values so we pick *some* default.
+  exception.mechanism = exception.mechanism || { type: 'generic', handled: true };
+
+  exception.mechanism = {
+    ...exception.mechanism,
+    type: 'chained',
+    source,
+    exception_id: exceptionId,
+    parent_id: parentId,
+  };
+}
+
+/**
+ * Truncate the message (exception.value) of all exceptions in the event.
+ * Because this event processor is ran after `applyClientOptions`,
+ * we need to truncate the message of the added exceptions here.
+ */
+function truncateAggregateExceptions(exceptions, maxValueLength) {
+  return exceptions.map(exception => {
+    if (exception.value) {
+      exception.value = truncate(exception.value, maxValueLength);
+    }
+    return exception;
+  });
 }
 
 const DEFAULT_KEY = 'cause';
@@ -9942,6 +8794,553 @@ const _linkedErrorsIntegration = ((options = {}) => {
 }) ;
 
 const linkedErrorsIntegration = defineIntegration(_linkedErrorsIntegration);
+
+/**
+ * This code was originally copied from the 'cookie` module at v0.5.0 and was simplified for our use case.
+ * https://github.com/jshttp/cookie/blob/a0c84147aab6266bdb3996cf4062e93907c0b0fc/index.js
+ * It had the following license:
+ *
+ * (The MIT License)
+ *
+ * Copyright (c) 2012-2014 Roman Shtylman <shtylman@gmail.com>
+ * Copyright (c) 2015 Douglas Christopher Wilson <doug@somethingdoug.com>
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * 'Software'), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
+/**
+ * Parses a cookie string
+ */
+function parseCookie(str) {
+  const obj = {};
+  let index = 0;
+
+  while (index < str.length) {
+    const eqIdx = str.indexOf('=', index);
+
+    // no more cookie pairs
+    if (eqIdx === -1) {
+      break;
+    }
+
+    let endIdx = str.indexOf(';', index);
+
+    if (endIdx === -1) {
+      endIdx = str.length;
+    } else if (endIdx < eqIdx) {
+      // backtrack on prior semicolon
+      index = str.lastIndexOf(';', eqIdx - 1) + 1;
+      continue;
+    }
+
+    const key = str.slice(index, eqIdx).trim();
+
+    // only assign once
+    if (undefined === obj[key]) {
+      let val = str.slice(eqIdx + 1, endIdx).trim();
+
+      // quoted values
+      if (val.charCodeAt(0) === 0x22) {
+        val = val.slice(1, -1);
+      }
+
+      try {
+        obj[key] = val.indexOf('%') !== -1 ? decodeURIComponent(val) : val;
+      } catch (e) {
+        obj[key] = val;
+      }
+    }
+
+    index = endIdx + 1;
+  }
+
+  return obj;
+}
+
+// Vendored / modified from @sergiodxa/remix-utils
+
+// https://github.com/sergiodxa/remix-utils/blob/02af80e12829a53696bfa8f3c2363975cf59f55e/src/server/get-client-ip-address.ts
+// MIT License
+
+// Copyright (c) 2021 Sergio Xalambrí
+
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
+// The headers to check, in priority order
+const ipHeaderNames = [
+  'X-Client-IP',
+  'X-Forwarded-For',
+  'Fly-Client-IP',
+  'CF-Connecting-IP',
+  'Fastly-Client-Ip',
+  'True-Client-Ip',
+  'X-Real-IP',
+  'X-Cluster-Client-IP',
+  'X-Forwarded',
+  'Forwarded-For',
+  'Forwarded',
+  'X-Vercel-Forwarded-For',
+];
+
+/**
+ * Get the IP address of the client sending a request.
+ *
+ * It receives a Request headers object and use it to get the
+ * IP address from one of the following headers in order.
+ *
+ * If the IP address is valid, it will be returned. Otherwise, null will be
+ * returned.
+ *
+ * If the header values contains more than one IP address, the first valid one
+ * will be returned.
+ */
+function getClientIPAddress(headers) {
+  // This will end up being Array<string | string[] | undefined | null> because of the various possible values a header
+  // can take
+  const headerValues = ipHeaderNames.map((headerName) => {
+    const rawValue = headers[headerName];
+    const value = Array.isArray(rawValue) ? rawValue.join(';') : rawValue;
+
+    if (headerName === 'Forwarded') {
+      return parseForwardedHeader(value);
+    }
+
+    return value && value.split(',').map((v) => v.trim());
+  });
+
+  // Flatten the array and filter out any falsy entries
+  const flattenedHeaderValues = headerValues.reduce((acc, val) => {
+    if (!val) {
+      return acc;
+    }
+
+    return acc.concat(val);
+  }, []);
+
+  // Find the first value which is a valid IP address, if any
+  const ipAddress = flattenedHeaderValues.find(ip => ip !== null && isIP(ip));
+
+  return ipAddress || null;
+}
+
+function parseForwardedHeader(value) {
+  if (!value) {
+    return null;
+  }
+
+  for (const part of value.split(';')) {
+    if (part.startsWith('for=')) {
+      return part.slice(4);
+    }
+  }
+
+  return null;
+}
+
+//
+/**
+ * Custom method instead of importing this from `net` package, as this only exists in node
+ * Accepts:
+ * 127.0.0.1
+ * 192.168.1.1
+ * 192.168.1.255
+ * 255.255.255.255
+ * 10.1.1.1
+ * 0.0.0.0
+ * 2b01:cb19:8350:ed00:d0dd:fa5b:de31:8be5
+ *
+ * Rejects:
+ * 1.1.1.01
+ * 30.168.1.255.1
+ * 127.1
+ * 192.168.1.256
+ * -1.2.3.4
+ * 1.1.1.1.
+ * 3...3
+ * 192.168.1.099
+ */
+function isIP(str) {
+  const regex =
+    /(?:^(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)){3}$)|(?:^(?:(?:[a-fA-F\d]{1,4}:){7}(?:[a-fA-F\d]{1,4}|:)|(?:[a-fA-F\d]{1,4}:){6}(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)(?:\\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)){3}|:[a-fA-F\d]{1,4}|:)|(?:[a-fA-F\d]{1,4}:){5}(?::(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)(?:\\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)){3}|(?::[a-fA-F\d]{1,4}){1,2}|:)|(?:[a-fA-F\d]{1,4}:){4}(?:(?::[a-fA-F\d]{1,4}){0,1}:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)(?:\\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)){3}|(?::[a-fA-F\d]{1,4}){1,3}|:)|(?:[a-fA-F\d]{1,4}:){3}(?:(?::[a-fA-F\d]{1,4}){0,2}:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)(?:\\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)){3}|(?::[a-fA-F\d]{1,4}){1,4}|:)|(?:[a-fA-F\d]{1,4}:){2}(?:(?::[a-fA-F\d]{1,4}){0,3}:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)(?:\\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)){3}|(?::[a-fA-F\d]{1,4}){1,5}|:)|(?:[a-fA-F\d]{1,4}:){1}(?:(?::[a-fA-F\d]{1,4}){0,4}:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)(?:\\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)){3}|(?::[a-fA-F\d]{1,4}){1,6}|:)|(?::(?:(?::[a-fA-F\d]{1,4}){0,5}:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)(?:\\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)){3}|(?::[a-fA-F\d]{1,4}){1,7}|:)))(?:%[0-9a-zA-Z]{1,})?$)/;
+  return regex.test(str);
+}
+
+const DEFAULT_INCLUDES = {
+  ip: false,
+  request: true,
+  user: true,
+};
+const DEFAULT_REQUEST_INCLUDES = ['cookies', 'data', 'headers', 'method', 'query_string', 'url'];
+const DEFAULT_USER_INCLUDES = ['id', 'username', 'email'];
+
+function extractUserData(
+  user
+
+,
+  keys,
+) {
+  const extractedUser = {};
+  const attributes = Array.isArray(keys) ? keys : DEFAULT_USER_INCLUDES;
+
+  attributes.forEach(key => {
+    if (user && key in user) {
+      extractedUser[key] = user[key];
+    }
+  });
+
+  return extractedUser;
+}
+
+/**
+ * Normalize data from the request object, accounting for framework differences.
+ *
+ * @param req The request object from which to extract data
+ * @param options.include An optional array of keys to include in the normalized data. Defaults to
+ * DEFAULT_REQUEST_INCLUDES if not provided.
+ * @param options.deps Injected, platform-specific dependencies
+ * @returns An object containing normalized request data
+ */
+function extractRequestData(
+  req,
+  options
+
+ = {},
+) {
+  const { include = DEFAULT_REQUEST_INCLUDES } = options;
+  const requestData = {};
+
+  // headers:
+  //   node, express, koa, nextjs: req.headers
+  const headers = (req.headers || {})
+
+;
+  // method:
+  //   node, express, koa, nextjs: req.method
+  const method = req.method;
+  // host:
+  //   express: req.hostname in > 4 and req.host in < 4
+  //   koa: req.host
+  //   node, nextjs: req.headers.host
+  // Express 4 mistakenly strips off port number from req.host / req.hostname so we can't rely on them
+  // See: https://github.com/expressjs/express/issues/3047#issuecomment-236653223
+  // Also: https://github.com/getsentry/sentry-javascript/issues/1917
+  const host = headers.host || req.hostname || req.host || '<no host>';
+  // protocol:
+  //   node, nextjs: <n/a>
+  //   express, koa: req.protocol
+  const protocol = req.protocol === 'https' || (req.socket && req.socket.encrypted) ? 'https' : 'http';
+  // url (including path and query string):
+  //   node, express: req.originalUrl
+  //   koa, nextjs: req.url
+  const originalUrl = req.originalUrl || req.url || '';
+  // absolute url
+  const absoluteUrl = originalUrl.startsWith(protocol) ? originalUrl : `${protocol}://${host}${originalUrl}`;
+  include.forEach(key => {
+    switch (key) {
+      case 'headers': {
+        requestData.headers = headers;
+
+        // Remove the Cookie header in case cookie data should not be included in the event
+        if (!include.includes('cookies')) {
+          delete (requestData.headers ).cookie;
+        }
+
+        // Remove IP headers in case IP data should not be included in the event
+        if (!include.includes('ip')) {
+          ipHeaderNames.forEach(ipHeaderName => {
+            // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+            delete (requestData.headers )[ipHeaderName];
+          });
+        }
+
+        break;
+      }
+      case 'method': {
+        requestData.method = method;
+        break;
+      }
+      case 'url': {
+        requestData.url = absoluteUrl;
+        break;
+      }
+      case 'cookies': {
+        // cookies:
+        //   node, express, koa: req.headers.cookie
+        //   vercel, sails.js, express (w/ cookie middleware), nextjs: req.cookies
+        requestData.cookies =
+          // TODO (v8 / #5257): We're only sending the empty object for backwards compatibility, so the last bit can
+          // come off in v8
+          req.cookies || (headers.cookie && parseCookie(headers.cookie)) || {};
+        break;
+      }
+      case 'query_string': {
+        // query string:
+        //   node: req.url (raw)
+        //   express, koa, nextjs: req.query
+        requestData.query_string = extractQueryParams(req);
+        break;
+      }
+      case 'data': {
+        if (method === 'GET' || method === 'HEAD') {
+          break;
+        }
+        // NOTE: As of v8, request is (unless a user sets this manually) ALWAYS a http request
+        // Which does not have a body by default
+        // However, in our http instrumentation, we patch the request to capture the body and store it on the
+        // request as `.body` anyhow
+        // In v9, we may update requestData to only work with plain http requests
+        // body data:
+        //   express, koa, nextjs: req.body
+        //
+        //   when using node by itself, you have to read the incoming stream(see
+        //   https://nodejs.dev/learn/get-http-request-body-data-using-nodejs); if a user is doing that, we can't know
+        //   where they're going to store the final result, so they'll have to capture this data themselves
+        const body = req.body;
+        if (body !== undefined) {
+          const stringBody = isString(body)
+            ? body
+            : isPlainObject(body)
+              ? JSON.stringify(normalize(body))
+              : truncate(`${body}`, 1024);
+          if (stringBody) {
+            requestData.data = stringBody;
+          }
+        }
+        break;
+      }
+      default: {
+        if ({}.hasOwnProperty.call(req, key)) {
+          requestData[key] = (req )[key];
+        }
+      }
+    }
+  });
+
+  return requestData;
+}
+
+/**
+ * Add already normalized request data to an event.
+ * This mutates the passed in event.
+ */
+function addNormalizedRequestDataToEvent(
+  event,
+  req,
+  // This is non-standard data that is not part of the regular HTTP request
+  additionalData,
+  options,
+) {
+  const include = {
+    ...DEFAULT_INCLUDES,
+    ...(options && options.include),
+  };
+
+  if (include.request) {
+    const includeRequest = Array.isArray(include.request) ? [...include.request] : [...DEFAULT_REQUEST_INCLUDES];
+    if (include.ip) {
+      includeRequest.push('ip');
+    }
+
+    const extractedRequestData = extractNormalizedRequestData(req, { include: includeRequest });
+
+    event.request = {
+      ...event.request,
+      ...extractedRequestData,
+    };
+  }
+
+  if (include.user) {
+    const extractedUser =
+      additionalData.user && isPlainObject(additionalData.user)
+        ? extractUserData(additionalData.user, include.user)
+        : {};
+
+    if (Object.keys(extractedUser).length) {
+      event.user = {
+        ...event.user,
+        ...extractedUser,
+      };
+    }
+  }
+
+  if (include.ip) {
+    const ip = (req.headers && getClientIPAddress(req.headers)) || additionalData.ipAddress;
+    if (ip) {
+      event.user = {
+        ...event.user,
+        ip_address: ip,
+      };
+    }
+  }
+}
+
+/**
+ * Add data from the given request to the given event
+ *
+ * @param event The event to which the request data will be added
+ * @param req Request object
+ * @param options.include Flags to control what data is included
+ * @param options.deps Injected platform-specific dependencies
+ * @returns The mutated `Event` object
+ */
+function addRequestDataToEvent(
+  event,
+  req,
+  options,
+) {
+  const include = {
+    ...DEFAULT_INCLUDES,
+    ...(options && options.include),
+  };
+
+  if (include.request) {
+    const includeRequest = Array.isArray(include.request) ? [...include.request] : [...DEFAULT_REQUEST_INCLUDES];
+    if (include.ip) {
+      includeRequest.push('ip');
+    }
+
+    const extractedRequestData = extractRequestData(req, { include: includeRequest });
+
+    event.request = {
+      ...event.request,
+      ...extractedRequestData,
+    };
+  }
+
+  if (include.user) {
+    const extractedUser = req.user && isPlainObject(req.user) ? extractUserData(req.user, include.user) : {};
+
+    if (Object.keys(extractedUser).length) {
+      event.user = {
+        ...event.user,
+        ...extractedUser,
+      };
+    }
+  }
+
+  // client ip:
+  //   node, nextjs: req.socket.remoteAddress
+  //   express, koa: req.ip
+  //   It may also be sent by proxies as specified in X-Forwarded-For or similar headers
+  if (include.ip) {
+    const ip = (req.headers && getClientIPAddress(req.headers)) || req.ip || (req.socket && req.socket.remoteAddress);
+    if (ip) {
+      event.user = {
+        ...event.user,
+        ip_address: ip,
+      };
+    }
+  }
+
+  return event;
+}
+
+function extractQueryParams(req) {
+  // url (including path and query string):
+  //   node, express: req.originalUrl
+  //   koa, nextjs: req.url
+  let originalUrl = req.originalUrl || req.url || '';
+
+  if (!originalUrl) {
+    return;
+  }
+
+  // The `URL` constructor can't handle internal URLs of the form `/some/path/here`, so stick a dummy protocol and
+  // hostname on the beginning. Since the point here is just to grab the query string, it doesn't matter what we use.
+  if (originalUrl.startsWith('/')) {
+    originalUrl = `http://dogs.are.great${originalUrl}`;
+  }
+
+  try {
+    const queryParams = req.query || new URL(originalUrl).search.slice(1);
+    return queryParams.length ? queryParams : undefined;
+  } catch (e2) {
+    return undefined;
+  }
+}
+
+function extractNormalizedRequestData(
+  normalizedRequest,
+  { include },
+) {
+  const includeKeys = include ? (Array.isArray(include) ? include : DEFAULT_REQUEST_INCLUDES) : [];
+
+  const requestData = {};
+  const headers = { ...normalizedRequest.headers };
+
+  if (includeKeys.includes('headers')) {
+    requestData.headers = headers;
+
+    // Remove the Cookie header in case cookie data should not be included in the event
+    if (!include.includes('cookies')) {
+      delete (headers ).cookie;
+    }
+
+    // Remove IP headers in case IP data should not be included in the event
+    if (!include.includes('ip')) {
+      ipHeaderNames.forEach(ipHeaderName => {
+        // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+        delete (headers )[ipHeaderName];
+      });
+    }
+  }
+
+  if (includeKeys.includes('method')) {
+    requestData.method = normalizedRequest.method;
+  }
+
+  if (includeKeys.includes('url')) {
+    requestData.url = normalizedRequest.url;
+  }
+
+  if (includeKeys.includes('cookies')) {
+    const cookies = normalizedRequest.cookies || (headers && headers.cookie ? parseCookie(headers.cookie) : undefined);
+    requestData.cookies = cookies || {};
+  }
+
+  if (includeKeys.includes('query_string')) {
+    requestData.query_string = normalizedRequest.query_string;
+  }
+
+  if (includeKeys.includes('data')) {
+    requestData.data = normalizedRequest.data;
+  }
+
+  return requestData;
+}
 
 const DEFAULT_OPTIONS = {
   include: {
@@ -10062,6 +9461,64 @@ function convertReqDataIntegrationOptsToAddReqDataOpts(
   };
 }
 
+/**
+ * Add an instrumentation handler for when a console.xxx method is called.
+ *
+ * Use at your own risk, this might break without changelog notice, only used internally.
+ * @hidden
+ */
+function addConsoleInstrumentationHandler(handler) {
+  const type = 'console';
+  addHandler(type, handler);
+  maybeInstrument(type, instrumentConsole);
+}
+
+function instrumentConsole() {
+  if (!('console' in GLOBAL_OBJ)) {
+    return;
+  }
+
+  CONSOLE_LEVELS.forEach(function (level) {
+    if (!(level in GLOBAL_OBJ.console)) {
+      return;
+    }
+
+    fill(GLOBAL_OBJ.console, level, function (originalConsoleMethod) {
+      originalConsoleMethods[level] = originalConsoleMethod;
+
+      return function (...args) {
+        const handlerData = { args, level };
+        triggerHandlers('console', handlerData);
+
+        const log = originalConsoleMethods[level];
+        log && log.apply(GLOBAL_OBJ.console, args);
+      };
+    });
+  });
+}
+
+// Note: Ideally the `SeverityLevel` type would be derived from `validSeverityLevels`, but that would mean either
+//
+// a) moving `validSeverityLevels` to `@sentry/types`,
+// b) moving the`SeverityLevel` type here, or
+// c) importing `validSeverityLevels` from here into `@sentry/types`.
+//
+// Option A would make `@sentry/types` a runtime dependency of `@sentry/core` (not good), and options B and C would
+// create a circular dependency between `@sentry/types` and `@sentry/core` (also not good). So a TODO accompanying the
+// type, reminding anyone who changes it to change this list also, will have to do.
+
+const validSeverityLevels = ['fatal', 'error', 'warning', 'log', 'info', 'debug'];
+
+/**
+ * Converts a string-based level into a `SeverityLevel`, normalizing it along the way.
+ *
+ * @param level String representation of desired `SeverityLevel`.
+ * @returns The `SeverityLevel` corresponding to the given string, or 'log' if the string isn't a valid level.
+ */
+function severityLevelFromString(level) {
+  return (level === 'warn' ? 'warning' : validSeverityLevels.includes(level) ? level : 'log') ;
+}
+
 const INTEGRATION_NAME$c = 'CaptureConsole';
 
 const _captureConsoleIntegration = ((options = {}) => {
@@ -10132,10 +9589,6 @@ function consoleHandler(args, level) {
 
 const INTEGRATION_NAME$b = 'Debug';
 
-/**
- * Integration to debug sent Sentry events.
- * This integration should not be used in production.
- */
 const _debugIntegration = ((options = {}) => {
   const _options = {
     debugger: false,
@@ -10172,6 +9625,13 @@ const _debugIntegration = ((options = {}) => {
   };
 }) ;
 
+/**
+ * Integration to debug sent Sentry events.
+ * This integration should not be used in production.
+ *
+ * @deprecated This integration is deprecated and will be removed in the next major version of the SDK.
+ * To log outgoing events, use [Hook Options](https://docs.sentry.io/platforms/javascript/configuration/options/#hooks) (`beforeSend`, `beforeSendTransaction`, ...).
+ */
 const debugIntegration = defineIntegration(_debugIntegration);
 
 const INTEGRATION_NAME$a = 'Dedupe';
@@ -10191,7 +9651,7 @@ const _dedupeIntegration = (() => {
       // Juuust in case something goes wrong
       try {
         if (_shouldDropEvent(currentEvent, previousEvent)) {
-          DEBUG_BUILD && logger.warn('Event dropped due to being a duplicate of previously captured event.');
+          DEBUG_BUILD$1 && logger.warn('Event dropped due to being a duplicate of previously captured event.');
           return null;
         }
       } catch (_oO) {} // eslint-disable-line no-empty
@@ -10452,10 +9912,182 @@ function _extractErrorData(
 
     return extraErrorInfo;
   } catch (oO) {
-    DEBUG_BUILD && logger.error('Unable to extract extra data from the Error object:', oO);
+    DEBUG_BUILD$1 && logger.error('Unable to extract extra data from the Error object:', oO);
   }
 
   return null;
+}
+
+// Slightly modified (no IE8 support, ES6) and transcribed to TypeScript
+// https://github.com/calvinmetcalf/rollup-plugin-node-builtins/blob/63ab8aacd013767445ca299e468d9a60a95328d7/src/es6/path.js
+//
+// Copyright Joyent, Inc.and other Node contributors.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the
+// "Software"), to deal in the Software without restriction, including
+// without limitation the rights to use, copy, modify, merge, publish,
+// distribute, sublicense, and/or sell copies of the Software, and to permit
+// persons to whom the Software is furnished to do so, subject to the
+// following conditions:
+//
+// The above copyright notice and this permission notice shall be included
+// in all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+// USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+/** JSDoc */
+function normalizeArray(parts, allowAboveRoot) {
+  // if the path tries to go above the root, `up` ends up > 0
+  let up = 0;
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const last = parts[i];
+    if (last === '.') {
+      parts.splice(i, 1);
+    } else if (last === '..') {
+      parts.splice(i, 1);
+      up++;
+    } else if (up) {
+      parts.splice(i, 1);
+      up--;
+    }
+  }
+
+  // if the path is allowed to go above the root, restore leading ..s
+  if (allowAboveRoot) {
+    for (; up--; up) {
+      parts.unshift('..');
+    }
+  }
+
+  return parts;
+}
+
+// Split a filename into [root, dir, basename, ext], unix version
+// 'root' is just a slash, or nothing.
+const splitPathRe = /^(\S+:\\|\/?)([\s\S]*?)((?:\.{1,2}|[^/\\]+?|)(\.[^./\\]*|))(?:[/\\]*)$/;
+/** JSDoc */
+function splitPath(filename) {
+  // Truncate files names greater than 1024 characters to avoid regex dos
+  // https://github.com/getsentry/sentry-javascript/pull/8737#discussion_r1285719172
+  const truncated = filename.length > 1024 ? `<truncated>${filename.slice(-1024)}` : filename;
+  const parts = splitPathRe.exec(truncated);
+  return parts ? parts.slice(1) : [];
+}
+
+// path.resolve([from ...], to)
+// posix version
+/** JSDoc */
+function resolve(...args) {
+  let resolvedPath = '';
+  let resolvedAbsolute = false;
+
+  for (let i = args.length - 1; i >= -1 && !resolvedAbsolute; i--) {
+    const path = i >= 0 ? args[i] : '/';
+
+    // Skip empty entries
+    if (!path) {
+      continue;
+    }
+
+    resolvedPath = `${path}/${resolvedPath}`;
+    resolvedAbsolute = path.charAt(0) === '/';
+  }
+
+  // At this point the path should be resolved to a full absolute path, but
+  // handle relative paths to be safe (might happen when process.cwd() fails)
+
+  // Normalize the path
+  resolvedPath = normalizeArray(
+    resolvedPath.split('/').filter(p => !!p),
+    !resolvedAbsolute,
+  ).join('/');
+
+  return (resolvedAbsolute ? '/' : '') + resolvedPath || '.';
+}
+
+/** JSDoc */
+function trim(arr) {
+  let start = 0;
+  for (; start < arr.length; start++) {
+    if (arr[start] !== '') {
+      break;
+    }
+  }
+
+  let end = arr.length - 1;
+  for (; end >= 0; end--) {
+    if (arr[end] !== '') {
+      break;
+    }
+  }
+
+  if (start > end) {
+    return [];
+  }
+  return arr.slice(start, end - start + 1);
+}
+
+// path.relative(from, to)
+// posix version
+/** JSDoc */
+function relative(from, to) {
+  /* eslint-disable no-param-reassign */
+  from = resolve(from).slice(1);
+  to = resolve(to).slice(1);
+  /* eslint-enable no-param-reassign */
+
+  const fromParts = trim(from.split('/'));
+  const toParts = trim(to.split('/'));
+
+  const length = Math.min(fromParts.length, toParts.length);
+  let samePartsLength = length;
+  for (let i = 0; i < length; i++) {
+    if (fromParts[i] !== toParts[i]) {
+      samePartsLength = i;
+      break;
+    }
+  }
+
+  let outputParts = [];
+  for (let i = samePartsLength; i < fromParts.length; i++) {
+    outputParts.push('..');
+  }
+
+  outputParts = outputParts.concat(toParts.slice(samePartsLength));
+
+  return outputParts.join('/');
+}
+
+/** JSDoc */
+function dirname(path) {
+  const result = splitPath(path);
+  const root = result[0] || '';
+  let dir = result[1];
+
+  if (!root && !dir) {
+    // No dirname whatsoever
+    return '.';
+  }
+
+  if (dir) {
+    // It has a dirname, strip trailing slash
+    dir = dir.slice(0, dir.length - 1);
+  }
+
+  return root + dir;
+}
+
+/** JSDoc */
+function basename(path, ext) {
+  let f = splitPath(path)[2] || '';
+  return f;
 }
 
 const INTEGRATION_NAME$8 = 'RewriteFrames';
@@ -10586,6 +10218,9 @@ const _sessionTimingIntegration = (() => {
 /**
  * This function adds duration since the sessionTimingIntegration was initialized
  * till the time event was sent.
+ *
+ * @deprecated This integration is deprecated and will be removed in the next major version of the SDK.
+ * To capture session durations alongside events, use [Context](https://docs.sentry.io/platforms/javascript/enriching-events/context/) (`Sentry.setContext()`).
  */
 const sessionTimingIntegration = defineIntegration(_sessionTimingIntegration);
 
@@ -10752,7 +10387,7 @@ function addToMetricsAggregator(
     metricTags.transaction = transactionName;
   }
 
-  DEBUG_BUILD && logger.log(`Adding value of ${value} to ${metricType} metric ${name}`);
+  DEBUG_BUILD$1 && logger.log(`Adding value of ${value} to ${metricType} metric ${name}`);
 
   const aggregator = getMetricsAggregatorForClient$1(client, Aggregator);
   aggregator.add(metricType, name, value, unit, { ...metricTags, ...tags }, timestamp);
@@ -11448,6 +11083,416 @@ function captureFeedback(
   return eventId;
 }
 
+/**
+ * Determine a breadcrumb's log level (only `warning` or `error`) based on an HTTP status code.
+ */
+function getBreadcrumbLogLevelFromHttpStatusCode(statusCode) {
+  // NOTE: undefined defaults to 'info' in Sentry
+  if (statusCode === undefined) {
+    return undefined;
+  } else if (statusCode >= 400 && statusCode < 500) {
+    return 'warning';
+  } else if (statusCode >= 500) {
+    return 'error';
+  } else {
+    return undefined;
+  }
+}
+
+const WINDOW = GLOBAL_OBJ ;
+
+/**
+ * Tells whether current environment supports Fetch API
+ * {@link supportsFetch}.
+ *
+ * @returns Answer to the given question.
+ */
+function supportsFetch() {
+  if (!('fetch' in WINDOW)) {
+    return false;
+  }
+
+  try {
+    new Headers();
+    new Request('http://www.example.com');
+    new Response();
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
+ * isNative checks if the given function is a native implementation
+ */
+// eslint-disable-next-line @typescript-eslint/ban-types
+function isNativeFunction(func) {
+  return func && /^function\s+\w+\(\)\s+\{\s+\[native code\]\s+\}$/.test(func.toString());
+}
+
+/**
+ * Tells whether current environment supports Fetch API natively
+ * {@link supportsNativeFetch}.
+ *
+ * @returns true if `window.fetch` is natively implemented, false otherwise
+ */
+function supportsNativeFetch() {
+  if (typeof EdgeRuntime === 'string') {
+    return true;
+  }
+
+  if (!supportsFetch()) {
+    return false;
+  }
+
+  // Fast path to avoid DOM I/O
+  // eslint-disable-next-line @typescript-eslint/unbound-method
+  if (isNativeFunction(WINDOW.fetch)) {
+    return true;
+  }
+
+  // window.fetch is implemented, but is polyfilled or already wrapped (e.g: by a chrome extension)
+  // so create a "pure" iframe to see if that has native fetch
+  let result = false;
+  const doc = WINDOW.document;
+  // eslint-disable-next-line deprecation/deprecation
+  if (doc && typeof (doc.createElement ) === 'function') {
+    try {
+      const sandbox = doc.createElement('iframe');
+      sandbox.hidden = true;
+      doc.head.appendChild(sandbox);
+      if (sandbox.contentWindow && sandbox.contentWindow.fetch) {
+        // eslint-disable-next-line @typescript-eslint/unbound-method
+        result = isNativeFunction(sandbox.contentWindow.fetch);
+      }
+      doc.head.removeChild(sandbox);
+    } catch (err) {
+      DEBUG_BUILD &&
+        logger.warn('Could not create sandbox iframe for pure fetch check, bailing to window.fetch: ', err);
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Add an instrumentation handler for when a fetch request happens.
+ * The handler function is called once when the request starts and once when it ends,
+ * which can be identified by checking if it has an `endTimestamp`.
+ *
+ * Use at your own risk, this might break without changelog notice, only used internally.
+ * @hidden
+ */
+function addFetchInstrumentationHandler(
+  handler,
+  skipNativeFetchCheck,
+) {
+  const type = 'fetch';
+  addHandler(type, handler);
+  maybeInstrument(type, () => instrumentFetch(undefined, skipNativeFetchCheck));
+}
+
+function instrumentFetch(onFetchResolved, skipNativeFetchCheck = false) {
+  if (skipNativeFetchCheck && !supportsNativeFetch()) {
+    return;
+  }
+
+  fill(GLOBAL_OBJ, 'fetch', function (originalFetch) {
+    return function (...args) {
+      const { method, url } = parseFetchArgs(args);
+      const handlerData = {
+        args,
+        fetchData: {
+          method,
+          url,
+        },
+        startTimestamp: timestampInSeconds() * 1000,
+      };
+
+      // if there is no callback, fetch is instrumented directly
+      {
+        triggerHandlers('fetch', {
+          ...handlerData,
+        });
+      }
+
+      // We capture the stack right here and not in the Promise error callback because Safari (and probably other
+      // browsers too) will wipe the stack trace up to this point, only leaving us with this file which is useless.
+
+      // NOTE: If you are a Sentry user, and you are seeing this stack frame,
+      //       it means the error, that was caused by your fetch call did not
+      //       have a stack trace, so the SDK backfilled the stack trace so
+      //       you can see which fetch call failed.
+      const virtualStackTrace = new Error().stack;
+
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      return originalFetch.apply(GLOBAL_OBJ, args).then(
+        async (response) => {
+          {
+            triggerHandlers('fetch', {
+              ...handlerData,
+              endTimestamp: timestampInSeconds() * 1000,
+              response,
+            });
+          }
+
+          return response;
+        },
+        (error) => {
+          triggerHandlers('fetch', {
+            ...handlerData,
+            endTimestamp: timestampInSeconds() * 1000,
+            error,
+          });
+
+          if (isError(error) && error.stack === undefined) {
+            // NOTE: If you are a Sentry user, and you are seeing this stack frame,
+            //       it means the error, that was caused by your fetch call did not
+            //       have a stack trace, so the SDK backfilled the stack trace so
+            //       you can see which fetch call failed.
+            error.stack = virtualStackTrace;
+            addNonEnumerableProperty(error, 'framesToPop', 1);
+          }
+
+          // NOTE: If you are a Sentry user, and you are seeing this stack frame,
+          //       it means the sentry.javascript SDK caught an error invoking your application code.
+          //       This is expected behavior and NOT indicative of a bug with sentry.javascript.
+          throw error;
+        },
+      );
+    };
+  });
+}
+
+function hasProp(obj, prop) {
+  return !!obj && typeof obj === 'object' && !!(obj )[prop];
+}
+
+function getUrlFromResource(resource) {
+  if (typeof resource === 'string') {
+    return resource;
+  }
+
+  if (!resource) {
+    return '';
+  }
+
+  if (hasProp(resource, 'url')) {
+    return resource.url;
+  }
+
+  if (resource.toString) {
+    return resource.toString();
+  }
+
+  return '';
+}
+
+/**
+ * Parses the fetch arguments to find the used Http method and the url of the request.
+ * Exported for tests only.
+ */
+function parseFetchArgs(fetchArgs) {
+  if (fetchArgs.length === 0) {
+    return { method: 'GET', url: '' };
+  }
+
+  if (fetchArgs.length === 2) {
+    const [url, options] = fetchArgs ;
+
+    return {
+      url: getUrlFromResource(url),
+      method: hasProp(options, 'method') ? String(options.method).toUpperCase() : 'GET',
+    };
+  }
+
+  const arg = fetchArgs[0];
+  return {
+    url: getUrlFromResource(arg ),
+    method: hasProp(arg, 'method') ? String(arg.method).toUpperCase() : 'GET',
+  };
+}
+
+/**
+ * Does this filename look like it's part of the app code?
+ */
+function filenameIsInApp(filename, isNative = false) {
+  const isInternal =
+    isNative ||
+    (filename &&
+      // It's not internal if it's an absolute linux path
+      !filename.startsWith('/') &&
+      // It's not internal if it's an absolute windows path
+      !filename.match(/^[A-Z]:/) &&
+      // It's not internal if the path is starting with a dot
+      !filename.startsWith('.') &&
+      // It's not internal if the frame has a protocol. In node, this is usually the case if the file got pre-processed with a bundler like webpack
+      !filename.match(/^[a-zA-Z]([a-zA-Z0-9.\-+])*:\/\//)); // Schema from: https://stackoverflow.com/a/3641782
+
+  // in_app is all that's not an internal Node function or a module within node_modules
+  // note that isNative appears to return true even for node core libraries
+  // see https://github.com/getsentry/raven-node/issues/176
+
+  return !isInternal && filename !== undefined && !filename.includes('node_modules/');
+}
+
+/** Node Stack line parser */
+function node(getModule) {
+  const FILENAME_MATCH = /^\s*[-]{4,}$/;
+  const FULL_MATCH = /at (?:async )?(?:(.+?)\s+\()?(?:(.+):(\d+):(\d+)?|([^)]+))\)?/;
+
+  // eslint-disable-next-line complexity
+  return (line) => {
+    const lineMatch = line.match(FULL_MATCH);
+
+    if (lineMatch) {
+      let object;
+      let method;
+      let functionName;
+      let typeName;
+      let methodName;
+
+      if (lineMatch[1]) {
+        functionName = lineMatch[1];
+
+        let methodStart = functionName.lastIndexOf('.');
+        if (functionName[methodStart - 1] === '.') {
+          methodStart--;
+        }
+
+        if (methodStart > 0) {
+          object = functionName.slice(0, methodStart);
+          method = functionName.slice(methodStart + 1);
+          const objectEnd = object.indexOf('.Module');
+          if (objectEnd > 0) {
+            functionName = functionName.slice(objectEnd + 1);
+            object = object.slice(0, objectEnd);
+          }
+        }
+        typeName = undefined;
+      }
+
+      if (method) {
+        typeName = object;
+        methodName = method;
+      }
+
+      if (method === '<anonymous>') {
+        methodName = undefined;
+        functionName = undefined;
+      }
+
+      if (functionName === undefined) {
+        methodName = methodName || UNKNOWN_FUNCTION;
+        functionName = typeName ? `${typeName}.${methodName}` : methodName;
+      }
+
+      let filename = lineMatch[2] && lineMatch[2].startsWith('file://') ? lineMatch[2].slice(7) : lineMatch[2];
+      const isNative = lineMatch[5] === 'native';
+
+      // If it's a Windows path, trim the leading slash so that `/C:/foo` becomes `C:/foo`
+      if (filename && filename.match(/\/[A-Z]:/)) {
+        filename = filename.slice(1);
+      }
+
+      if (!filename && lineMatch[5] && !isNative) {
+        filename = lineMatch[5];
+      }
+
+      return {
+        filename,
+        module: getModule ? getModule(filename) : undefined,
+        function: functionName,
+        lineno: _parseIntOrUndefined(lineMatch[3]),
+        colno: _parseIntOrUndefined(lineMatch[4]),
+        in_app: filenameIsInApp(filename || '', isNative),
+      };
+    }
+
+    if (line.match(FILENAME_MATCH)) {
+      return {
+        filename: line,
+      };
+    }
+
+    return undefined;
+  };
+}
+
+/**
+ * Node.js stack line parser
+ *
+ * This is in @sentry/core so it can be used from the Electron SDK in the browser for when `nodeIntegration == true`.
+ * This allows it to be used without referencing or importing any node specific code which causes bundlers to complain
+ */
+function nodeStackLineParser(getModule) {
+  return [90, node(getModule)];
+}
+
+function _parseIntOrUndefined(input) {
+  return parseInt(input || '', 10) || undefined;
+}
+
+/** A simple Least Recently Used map */
+class LRUMap {
+
+   constructor(  _maxSize) {this._maxSize = _maxSize;
+    this._cache = new Map();
+  }
+
+  /** Get the current size of the cache */
+   get size() {
+    return this._cache.size;
+  }
+
+  /** Get an entry or undefined if it was not in the cache. Re-inserts to update the recently used order */
+   get(key) {
+    const value = this._cache.get(key);
+    if (value === undefined) {
+      return undefined;
+    }
+    // Remove and re-insert to update the order
+    this._cache.delete(key);
+    this._cache.set(key, value);
+    return value;
+  }
+
+  /** Insert an entry and evict an older entry if we've reached maxSize */
+   set(key, value) {
+    if (this._cache.size >= this._maxSize) {
+      // keys() returns an iterator in insertion order so keys().next() gives us the oldest key
+      this._cache.delete(this._cache.keys().next().value);
+    }
+    this._cache.set(key, value);
+  }
+
+  /** Remove an entry and return the entry if it was in the cache */
+   remove(key) {
+    const value = this._cache.get(key);
+    if (value) {
+      this._cache.delete(key);
+    }
+    return value;
+  }
+
+  /** Clear all entries */
+   clear() {
+    this._cache.clear();
+  }
+
+  /** Get all the keys */
+   keys() {
+    return Array.from(this._cache.keys());
+  }
+
+  /** Get all the values */
+   values() {
+    const values = [];
+    this._cache.forEach(value => values.push(value));
+    return values;
+  }
+}
+
 function getHostName() {
   // Deno.permissions.querySync is not available on Deno Deploy
   if (!Deno.permissions.querySync) {
@@ -11999,6 +12044,7 @@ function getStackParser() {
 }
 
 function _optionalChain(ops) { let lastAccessLHS = undefined; let value = ops[0]; let i = 1; while (i < ops.length) { const op = ops[i]; const fn = ops[i + 1]; i += 2; if ((op === 'optionalAccess' || op === 'optionalCall') && value == null) { return undefined; } if (op === 'access' || op === 'optionalAccess') { lastAccessLHS = value; value = fn(value); } else if (op === 'call' || op === 'optionalCall') { value = fn((...args) => value.call(lastAccessLHS, ...args)); lastAccessLHS = undefined; } } return value; }
+
 const INTEGRATION_NAME$1 = 'NormalizePaths';
 
 function appRootFromErrorStack(error) {

@@ -97,6 +97,11 @@ interface BreadcrumbHint {
     [key: string]: any;
 }
 
+type FeatureFlag = {
+    readonly flag: string;
+    readonly result: boolean;
+};
+
 /**
  * Request data included in an event as sent to Sentry.
  */
@@ -465,6 +470,7 @@ interface Contexts extends Record<string, Context | undefined> {
     cloud_resource?: CloudResourceContext;
     state?: StateContext;
     profile?: ProfileContext;
+    flags?: FeatureFlagContext;
 }
 interface StateContext extends Record<string, unknown> {
     state: {
@@ -565,6 +571,14 @@ interface CloudResourceContext extends Record<string, unknown> {
 }
 interface ProfileContext extends Record<string, unknown> {
     profile_id: string;
+}
+/**
+ * Used to buffer flag evaluation data on the current scope and attach it to
+ * error events. `values` should be initialized as empty ([]), and it should
+ * only be modified by @sentry/util "FlagBuffer" functions.
+ */
+interface FeatureFlagContext extends Record<string, unknown> {
+    values: FeatureFlag[];
 }
 
 interface CrontabSchedule {
@@ -1211,7 +1225,9 @@ interface Scope$1 {
      */
     clearAttachments(): this;
     /**
-     * Add data which will be accessible during event processing but won't get sent to Sentry
+     * Add data which will be accessible during event processing but won't get sent to Sentry.
+     *
+     * TODO(v9): We should type this stricter, so that e.g. `normalizedRequest` is strictly typed.
      */
     setSDKProcessingMetadata(newData: {
         [key: string]: unknown;
@@ -2498,94 +2514,6 @@ interface Metrics {
     timing<T>(name: string, callback: () => T, unit?: DurationUnit, data?: Omit<MetricData, 'unit'>): T;
 }
 
-interface PromiseBuffer<T> {
-    $: Array<PromiseLike<T>>;
-    add(taskProducer: () => PromiseLike<T>): PromiseLike<T>;
-    drain(timeout?: number): PromiseLike<boolean>;
-}
-
-declare const DEFAULT_REQUEST_INCLUDES: string[];
-declare const DEFAULT_USER_INCLUDES: string[];
-/**
- * Options deciding what parts of the request to use when enhancing an event
- */
-type AddRequestDataToEventOptions = {
-    /** Flags controlling whether each type of data should be added to the event */
-    include?: {
-        ip?: boolean;
-        request?: boolean | Array<(typeof DEFAULT_REQUEST_INCLUDES)[number]>;
-        /** @deprecated This option will be removed in v9. It does not do anything anymore, the `transcation` is set in other places. */
-        transaction?: boolean | TransactionNamingScheme;
-        user?: boolean | Array<(typeof DEFAULT_USER_INCLUDES)[number]>;
-    };
-    /** Injected platform-specific dependencies */
-    deps?: {
-        cookie: {
-            parse: (cookieStr: string) => Record<string, string>;
-        };
-        url: {
-            parse: (urlStr: string) => {
-                query: string | null;
-            };
-        };
-    };
-};
-/**
- * @deprecated This type will be removed in v9. It is not in use anymore.
- */
-type TransactionNamingScheme = 'path' | 'methodPath' | 'handler';
-
-/**
- * Create a propagation context from incoming headers or
- * creates a minimal new one if the headers are undefined.
- */
-declare function propagationContextFromHeaders(sentryTrace: string | undefined, baggage: string | number | boolean | string[] | null | undefined): PropagationContext;
-
-declare const SDK_VERSION: string;
-
-interface DenoTransportOptions extends BaseTransportOptions {
-    /** Custom headers for the transport. Used by the XHRTransport and FetchTransport */
-    headers?: {
-        [key: string]: string;
-    };
-}
-
-interface BaseDenoOptions {
-    /**
-     * List of strings/regex controlling to which outgoing requests
-     * the SDK will attach tracing headers.
-     *
-     * By default the SDK will attach those headers to all outgoing
-     * requests. If this option is provided, the SDK will match the
-     * request URL of outgoing requests against the items in this
-     * array, and only attach tracing headers if a match was found.
-     *
-     * @example
-     * ```js
-     * Sentry.init({
-     *   tracePropagationTargets: ['api.site.com'],
-     * });
-     * ```
-     */
-    tracePropagationTargets?: TracePropagationTargets;
-    /** Sets an optional server name (device name) */
-    serverName?: string;
-    /** Callback that is executed when a fatal global error occurs. */
-    onFatalError?(this: void, error: Error): void;
-}
-/**
- * Configuration options for the Sentry Deno SDK
- * @see @sentry/types Options for more information.
- */
-interface DenoOptions extends Options<DenoTransportOptions>, BaseDenoOptions {
-}
-/**
- * Configuration options for the Sentry Deno SDK Client class
- * @see DenoClient for more information.
- */
-interface DenoClientOptions extends ClientOptions<DenoTransportOptions>, BaseDenoOptions {
-}
-
 /**
  * Make the given client the current client.
  */
@@ -2603,6 +2531,12 @@ declare function setCurrentClient(client: Client): void;
  * or meta tag name.
  */
 declare function getTraceData(): SerializedTraceData;
+
+/**
+ * Create a propagation context from incoming headers or
+ * creates a minimal new one if the headers are undefined.
+ */
+declare function propagationContextFromHeaders(sentryTrace: string | undefined, baggage: string | number | boolean | string[] | null | undefined): PropagationContext;
 
 /**
  * Wraps a function with a transaction/span and finishes the span after the function is done.
@@ -3312,7 +3246,7 @@ type RequestDataIntegrationOptions = {
      * Whether to identify transactions by parameterized path, parameterized path with method, or handler name.
      * @deprecated This option does not do anything anymore, and will be removed in v9.
      */
-    transactionNamingScheme?: TransactionNamingScheme;
+    transactionNamingScheme?: 'path' | 'methodPath' | 'handler';
 };
 /**
  * Add data about a request to an event. Primarily for use in Node-based SDKs, but included in `@sentry/core`
@@ -3568,6 +3502,12 @@ declare function withIsolationScope<T>(isolationScope: Scope$1 | undefined, call
  */
 declare function getClient<C extends Client>(): C | undefined;
 
+interface PromiseBuffer<T> {
+    $: Array<PromiseLike<T>>;
+    add(taskProducer: () => PromiseLike<T>): PromiseLike<T>;
+    drain(timeout?: number): PromiseLike<boolean>;
+}
+
 /**
  * Creates an instance of a Sentry `Transport`
  *
@@ -3651,6 +3591,13 @@ interface DebugOptions {
     /** Controls whether a debugger should be launched before an event is sent. Default: `false` */
     debugger?: boolean;
 }
+/**
+ * Integration to debug sent Sentry events.
+ * This integration should not be used in production.
+ *
+ * @deprecated This integration is deprecated and will be removed in the next major version of the SDK.
+ * To log outgoing events, use [Hook Options](https://docs.sentry.io/platforms/javascript/configuration/options/#hooks) (`beforeSend`, `beforeSendTransaction`, ...).
+ */
 declare const debugIntegration: (options?: DebugOptions | undefined) => Integration;
 
 /**
@@ -3718,6 +3665,9 @@ declare const rewriteFramesIntegration: (options?: RewriteFramesOptions | undefi
 /**
  * This function adds duration since the sessionTimingIntegration was initialized
  * till the time event was sent.
+ *
+ * @deprecated This integration is deprecated and will be removed in the next major version of the SDK.
+ * To capture session durations alongside events, use [Context](https://docs.sentry.io/platforms/javascript/enriching-events/context/) (`Sentry.setContext()`).
  */
 declare const sessionTimingIntegration: () => Integration;
 
@@ -3746,6 +3696,82 @@ declare const metricsDefault: Metrics & {
 declare function captureFeedback(params: SendFeedbackParams, hint?: EventHint & {
     includeReplay?: boolean;
 }, scope?: Scope$1): string;
+
+declare const DEFAULT_REQUEST_INCLUDES: string[];
+declare const DEFAULT_USER_INCLUDES: string[];
+/**
+ * Options deciding what parts of the request to use when enhancing an event
+ */
+type AddRequestDataToEventOptions = {
+    /** Flags controlling whether each type of data should be added to the event */
+    include?: {
+        ip?: boolean;
+        request?: boolean | Array<(typeof DEFAULT_REQUEST_INCLUDES)[number]>;
+        /** @deprecated This option will be removed in v9. It does not do anything anymore, the `transcation` is set in other places. */
+        transaction?: boolean | TransactionNamingScheme;
+        user?: boolean | Array<(typeof DEFAULT_USER_INCLUDES)[number]>;
+    };
+    /** Injected platform-specific dependencies */
+    deps?: {
+        cookie: {
+            parse: (cookieStr: string) => Record<string, string>;
+        };
+        url: {
+            parse: (urlStr: string) => {
+                query: string | null;
+            };
+        };
+    };
+};
+/**
+ * @deprecated This type will be removed in v9. It is not in use anymore.
+ */
+type TransactionNamingScheme = 'path' | 'methodPath' | 'handler';
+
+declare const SDK_VERSION: string;
+
+interface DenoTransportOptions extends BaseTransportOptions {
+    /** Custom headers for the transport. Used by the XHRTransport and FetchTransport */
+    headers?: {
+        [key: string]: string;
+    };
+}
+
+interface BaseDenoOptions {
+    /**
+     * List of strings/regex controlling to which outgoing requests
+     * the SDK will attach tracing headers.
+     *
+     * By default the SDK will attach those headers to all outgoing
+     * requests. If this option is provided, the SDK will match the
+     * request URL of outgoing requests against the items in this
+     * array, and only attach tracing headers if a match was found.
+     *
+     * @example
+     * ```js
+     * Sentry.init({
+     *   tracePropagationTargets: ['api.site.com'],
+     * });
+     * ```
+     */
+    tracePropagationTargets?: TracePropagationTargets;
+    /** Sets an optional server name (device name) */
+    serverName?: string;
+    /** Callback that is executed when a fatal global error occurs. */
+    onFatalError?(this: void, error: Error): void;
+}
+/**
+ * Configuration options for the Sentry Deno SDK
+ * @see @sentry/types Options for more information.
+ */
+interface DenoOptions extends Options<DenoTransportOptions>, BaseDenoOptions {
+}
+/**
+ * Configuration options for the Sentry Deno SDK Client class
+ * @see DenoClient for more information.
+ */
+interface DenoClientOptions extends ClientOptions<DenoTransportOptions>, BaseDenoOptions {
+}
 
 /**
  * The Sentry Deno SDK Client.
