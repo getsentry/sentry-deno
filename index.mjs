@@ -8,7 +8,7 @@ const DEBUG_BUILD$1 = (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG
 
 // This is a magic string replaced by rollup
 
-const SDK_VERSION = "8.41.0-beta.0" ;
+const SDK_VERSION = "8.40.0" ;
 
 /** Get's the global object for the current JavaScript runtime */
 const GLOBAL_OBJ = globalThis ;
@@ -1894,14 +1894,6 @@ class ScopeClass  {
     newScope._tags = { ...this._tags };
     newScope._extra = { ...this._extra };
     newScope._contexts = { ...this._contexts };
-    if (this._contexts.flags) {
-      // We need to copy the `values` array so insertions on a cloned scope
-      // won't affect the original array.
-      newScope._contexts.flags = {
-        values: [...this._contexts.flags.values],
-      };
-    }
-
     newScope._user = this._user;
     newScope._level = this._level;
     newScope._session = this._session;
@@ -5881,14 +5873,6 @@ function normalizeEvent(event, depth, maxBreadth) {
         }),
       };
     });
-  }
-
-  // event.contexts.flags (FeatureFlagContext) stores context for our feature
-  // flag integrations. It has a greater nesting depth than our other typed
-  // Contexts, so we re-normalize with a fixed depth of 3 here. We do not want
-  // to skip this in case of conflicting, user-provided context.
-  if (event.contexts && event.contexts.flags && normalized.contexts) {
-    normalized.contexts.flags = normalize(event.contexts.flags, 3, maxBreadth);
   }
 
   return normalized;

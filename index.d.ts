@@ -97,11 +97,6 @@ interface BreadcrumbHint {
     [key: string]: any;
 }
 
-type FeatureFlag = {
-    readonly flag: string;
-    readonly result: boolean;
-};
-
 /**
  * Request data included in an event as sent to Sentry.
  */
@@ -470,7 +465,6 @@ interface Contexts extends Record<string, Context | undefined> {
     cloud_resource?: CloudResourceContext;
     state?: StateContext;
     profile?: ProfileContext;
-    flags?: FeatureFlagContext;
 }
 interface StateContext extends Record<string, unknown> {
     state: {
@@ -571,14 +565,6 @@ interface CloudResourceContext extends Record<string, unknown> {
 }
 interface ProfileContext extends Record<string, unknown> {
     profile_id: string;
-}
-/**
- * Used to buffer flag evaluation data on the current scope and attach it to
- * error events. `values` should be initialized as empty ([]), and it should
- * only be modified by @sentry/util "FlagBuffer" functions.
- */
-interface FeatureFlagContext extends Record<string, unknown> {
-    values: FeatureFlag[];
 }
 
 interface CrontabSchedule {
