@@ -8,7 +8,7 @@ const DEBUG_BUILD$1 = (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG
 
 // This is a magic string replaced by rollup
 
-const SDK_VERSION = "8.40.0" ;
+const SDK_VERSION = "8.41.0-beta.1" ;
 
 /** Get's the global object for the current JavaScript runtime */
 const GLOBAL_OBJ = globalThis ;
@@ -951,18 +951,6 @@ function getOriginalFunction(func) {
 }
 
 /**
- * Encodes given object into url-friendly format
- *
- * @param object An object that contains serializable values
- * @returns string Encoded
- */
-function urlEncode(object) {
-  return Object.keys(object)
-    .map(key => `${encodeURIComponent(key)}=${encodeURIComponent(object[key])}`)
-    .join('&');
-}
-
-/**
  * Transforms any `Error` or `Event` into a plain object with all of their enumerable properties, and some of their
  * non-enumerable properties attached.
  *
@@ -1894,6 +1882,14 @@ class ScopeClass  {
     newScope._tags = { ...this._tags };
     newScope._extra = { ...this._extra };
     newScope._contexts = { ...this._contexts };
+    if (this._contexts.flags) {
+      // We need to copy the `values` array so insertions on a cloned scope
+      // won't affect the original array.
+      newScope._contexts.flags = {
+        values: [...this._contexts.flags.values],
+      };
+    }
+
     newScope._user = this._user;
     newScope._level = this._level;
     newScope._session = this._session;
@@ -3050,6 +3046,9 @@ function generateSentryTraceHeader(
 const TRACE_FLAG_NONE = 0x0;
 const TRACE_FLAG_SAMPLED = 0x1;
 
+// todo(v9): Remove this once we've stopped dropping spans via `beforeSendSpan`
+let hasShownSpanDropWarning = false;
+
 /**
  * Convert a span to a trace context, which can be sent as the `trace` context in an event.
  * By default, this will only include trace_id, span_id & parent_span_id.
@@ -3282,6 +3281,23 @@ function updateMetricSummaryOnActiveSpan(
   const span = getActiveSpan();
   if (span) {
     updateMetricSummaryOnSpan(span, metricType, sanitizedName, value, unit, tags, bucketKey);
+  }
+}
+
+/**
+ * Logs a warning once if `beforeSendSpan` is used to drop spans.
+ *
+ * todo(v9): Remove this once we've stopped dropping spans via `beforeSendSpan`.
+ */
+function showSpanDropWarning() {
+  if (!hasShownSpanDropWarning) {
+    consoleSandbox(() => {
+      // eslint-disable-next-line no-console
+      console.warn(
+        '[Sentry] Deprecation warning: Returning null from `beforeSendSpan` will be disallowed from SDK version 9.0.0 onwards. The callback will only support mutating spans. To drop certain spans, configure the respective integrations directly.',
+      );
+    });
+    hasShownSpanDropWarning = true;
   }
 }
 
@@ -3895,7 +3911,10 @@ function makeDsn(from) {
 
 /**
  * Helper to decycle json objects
+ *
+ * @deprecated This function is deprecated and will be removed in the next major version.
  */
+// TODO(v9): Move this function into normalize() directly
 function memoBuilder() {
   const hasWeakSet = typeof WeakSet === 'function';
   const inner = hasWeakSet ? new WeakSet() : [];
@@ -3994,6 +4013,7 @@ function visit(
   value,
   depth = +Infinity,
   maxProperties = +Infinity,
+  // eslint-disable-next-line deprecation/deprecation
   memo = memoBuilder(),
 ) {
   const [memoize, unmemoize] = memo;
@@ -4481,7 +4501,13 @@ function createSpanEnvelope(spans, client) {
 
   const beforeSendSpan = client && client.getOptions().beforeSendSpan;
   const convertToSpanJSON = beforeSendSpan
-    ? (span) => beforeSendSpan(spanToJSON(span) )
+    ? (span) => {
+        const spanJson = beforeSendSpan(spanToJSON(span) );
+        if (!spanJson) {
+          showSpanDropWarning();
+        }
+        return spanJson;
+      }
     : (span) => spanToJSON(span);
 
   const items = [];
@@ -5701,23 +5727,26 @@ function prepareEvent(
 }
 
 /**
- *  Enhances event using the client configuration.
- *  It takes care of all "static" values like environment, release and `dist`,
- *  as well as truncating overly long values.
+ * Enhances event using the client configuration.
+ * It takes care of all "static" values like environment, release and `dist`,
+ * as well as truncating overly long values.
+ *
+ * Only exported for tests.
+ *
  * @param event event instance to be enhanced
  */
 function applyClientOptions(event, options) {
   const { environment, release, dist, maxValueLength = 250 } = options;
 
-  if (!('environment' in event)) {
-    event.environment = 'environment' in options ? environment : DEFAULT_ENVIRONMENT;
-  }
+  // empty strings do not make sense for environment, release, and dist
+  // so we handle them the same as if they were not provided
+  event.environment = event.environment || environment || DEFAULT_ENVIRONMENT;
 
-  if (event.release === undefined && release !== undefined) {
+  if (!event.release && release) {
     event.release = release;
   }
 
-  if (event.dist === undefined && dist !== undefined) {
+  if (!event.dist && dist) {
     event.dist = dist;
   }
 
@@ -5873,6 +5902,14 @@ function normalizeEvent(event, depth, maxBreadth) {
         }),
       };
     });
+  }
+
+  // event.contexts.flags (FeatureFlagContext) stores context for our feature
+  // flag integrations. It has a greater nesting depth than our other typed
+  // Contexts, so we re-normalize with a fixed depth of 3 here. We do not want
+  // to skip this in case of conflicting, user-provided context.
+  if (event.contexts && event.contexts.flags && normalized.contexts) {
+    normalized.contexts.flags = normalize(event.contexts.flags, 3, maxBreadth);
   }
 
   return normalized;
@@ -6387,13 +6424,21 @@ function _getIngestEndpoint(dsn) {
 
 /** Returns a URL-encoded string with auth config suitable for a query string. */
 function _encodedAuth(dsn, sdkInfo) {
-  return urlEncode({
+  const params = {
+    sentry_version: SENTRY_API_VERSION,
+  };
+
+  if (dsn.publicKey) {
     // We send only the minimum set of required information. See
     // https://github.com/getsentry/sentry-javascript/issues/2572.
-    sentry_key: dsn.publicKey,
-    sentry_version: SENTRY_API_VERSION,
-    ...(sdkInfo && { sentry_client: `${sdkInfo.name}/${sdkInfo.version}` }),
-  });
+    params.sentry_key = dsn.publicKey;
+  }
+
+  if (sdkInfo) {
+    params.sentry_client = `${sdkInfo.name}/${sdkInfo.version}`;
+  }
+
+  return new URLSearchParams(params).toString();
 }
 
 /**
@@ -6658,6 +6703,18 @@ class BaseClient {
         recordDroppedEvent: this.recordDroppedEvent.bind(this),
         ...options.transportOptions,
         url,
+      });
+    }
+
+    // TODO(v9): Remove this deprecation warning
+    const tracingOptions = ['enableTracing', 'tracesSampleRate', 'tracesSampler'] ;
+    const undefinedOption = tracingOptions.find(option => option in options && options[option] == undefined);
+    if (undefinedOption) {
+      consoleSandbox(() => {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[Sentry] Deprecation warning: \`${undefinedOption}\` is set to undefined, which leads to tracing being enabled. In v9, a value of \`undefined\` will result in tracing being disabled.`,
+        );
       });
     }
   }
@@ -7362,6 +7419,7 @@ function processBeforeSend(
         if (processedSpan) {
           processedSpans.push(processedSpan);
         } else {
+          showSpanDropWarning();
           client.recordDroppedEvent('before_send', 'span');
         }
       }
@@ -9016,6 +9074,8 @@ function extractUserData(
  * DEFAULT_REQUEST_INCLUDES if not provided.
  * @param options.deps Injected, platform-specific dependencies
  * @returns An object containing normalized request data
+ *
+ * @deprecated Instead manually normalize the request data into a format that fits `addNormalizedRequestDataToEvent`.
  */
 function extractRequestData(
   req,
@@ -9199,6 +9259,8 @@ function addNormalizedRequestDataToEvent(
  * @param options.include Flags to control what data is included
  * @param options.deps Injected platform-specific dependencies
  * @returns The mutated `Event` object
+ *
+ * @deprecated Use `addNormalizedRequestDataToEvent` instead.
  */
 function addRequestDataToEvent(
   event,
@@ -9216,6 +9278,7 @@ function addRequestDataToEvent(
       includeRequest.push('ip');
     }
 
+    // eslint-disable-next-line deprecation/deprecation
     const extractedRequestData = extractRequestData(req, { include: includeRequest });
 
     event.request = {
@@ -9391,6 +9454,7 @@ const _requestDataIntegration = ((options = {}) => {
         return event;
       }
 
+      // eslint-disable-next-line deprecation/deprecation
       return addRequestDataToEvent(event, request, addRequestDataOptions);
     },
   };
@@ -9481,17 +9545,9 @@ function instrumentConsole() {
   });
 }
 
-// Note: Ideally the `SeverityLevel` type would be derived from `validSeverityLevels`, but that would mean either
-//
-// a) moving `validSeverityLevels` to `@sentry/types`,
-// b) moving the`SeverityLevel` type here, or
-// c) importing `validSeverityLevels` from here into `@sentry/types`.
-//
-// Option A would make `@sentry/types` a runtime dependency of `@sentry/core` (not good), and options B and C would
-// create a circular dependency between `@sentry/types` and `@sentry/core` (also not good). So a TODO accompanying the
-// type, reminding anyone who changes it to change this list also, will have to do.
-
-const validSeverityLevels = ['fatal', 'error', 'warning', 'log', 'info', 'debug'];
+/**
+ * @deprecated This variable has been deprecated and will be removed in the next major version.
+ */
 
 /**
  * Converts a string-based level into a `SeverityLevel`, normalizing it along the way.
@@ -9500,7 +9556,9 @@ const validSeverityLevels = ['fatal', 'error', 'warning', 'log', 'info', 'debug'
  * @returns The `SeverityLevel` corresponding to the given string, or 'log' if the string isn't a valid level.
  */
 function severityLevelFromString(level) {
-  return (level === 'warn' ? 'warning' : validSeverityLevels.includes(level) ? level : 'log') ;
+  return (
+    level === 'warn' ? 'warning' : ['fatal', 'error', 'warning', 'log', 'info', 'debug'].includes(level) ? level : 'log'
+  ) ;
 }
 
 const INTEGRATION_NAME$c = 'CaptureConsole';
