@@ -8,7 +8,7 @@ const DEBUG_BUILD$1 = (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG
 
 // This is a magic string replaced by rollup
 
-const SDK_VERSION = "8.41.0-beta.1" ;
+const SDK_VERSION = "8.41.0" ;
 
 /** Get's the global object for the current JavaScript runtime */
 const GLOBAL_OBJ = globalThis ;
@@ -1882,14 +1882,6 @@ class ScopeClass  {
     newScope._tags = { ...this._tags };
     newScope._extra = { ...this._extra };
     newScope._contexts = { ...this._contexts };
-    if (this._contexts.flags) {
-      // We need to copy the `values` array so insertions on a cloned scope
-      // won't affect the original array.
-      newScope._contexts.flags = {
-        values: [...this._contexts.flags.values],
-      };
-    }
-
     newScope._user = this._user;
     newScope._level = this._level;
     newScope._session = this._session;
@@ -2639,6 +2631,23 @@ function getClient() {
 }
 
 /**
+ * Get a trace context for the given scope.
+ */
+function getTraceContextFromScope(scope) {
+  const propagationContext = scope.getPropagationContext();
+
+  const { traceId, spanId, parentSpanId } = propagationContext;
+
+  const traceContext = dropUndefinedKeys({
+    trace_id: traceId,
+    span_id: spanId,
+    parent_span_id: parentSpanId,
+  });
+
+  return traceContext;
+}
+
+/**
  * key: bucketKey
  * value: [exportKey, MetricSummary]
  */
@@ -3009,22 +3018,21 @@ function propagationContextFromHeaders(
   const traceparentData = extractTraceparentData(sentryTrace);
   const dynamicSamplingContext = baggageHeaderToDynamicSamplingContext(baggage);
 
-  const { traceId, parentSpanId, parentSampled } = traceparentData || {};
-
-  if (!traceparentData) {
-    return {
-      traceId: traceId || uuid4(),
-      spanId: uuid4().substring(16),
-    };
-  } else {
-    return {
-      traceId: traceId || uuid4(),
-      parentSpanId: parentSpanId || uuid4().substring(16),
-      spanId: uuid4().substring(16),
-      sampled: parentSampled,
-      dsc: dynamicSamplingContext || {}, // If we have traceparent data but no DSC it means we are not head of trace and we must freeze it
-    };
+  if (!traceparentData || !traceparentData.traceId) {
+    return generatePropagationContext();
   }
+
+  const { traceId, parentSpanId, parentSampled } = traceparentData;
+
+  const virtualSpanId = uuid4().substring(16);
+
+  return {
+    traceId,
+    parentSpanId,
+    spanId: virtualSpanId,
+    sampled: parentSampled,
+    dsc: dynamicSamplingContext || {}, // If we have traceparent data but no DSC it means we are not head of trace and we must freeze it
+  };
 }
 
 /**
@@ -3565,6 +3573,14 @@ function getDynamicSamplingContextFromClient(trace_id, client) {
 }
 
 /**
+ * Get the dynamic sampling context for the currently active scopes.
+ */
+function getDynamicSamplingContextFromScope(client, scope) {
+  const propagationContext = scope.getPropagationContext();
+  return propagationContext.dsc || getDynamicSamplingContextFromClient(propagationContext.traceId, client);
+}
+
+/**
  * Creates a dynamic sampling context from a span (and client and scope)
  *
  * @param span the span from which a few values like the root span name and sample rate are extracted.
@@ -3576,8 +3592,6 @@ function getDynamicSamplingContextFromSpan(span) {
   if (!client) {
     return {};
   }
-
-  const dsc = getDynamicSamplingContextFromClient(spanToJSON(span).trace_id || '', client);
 
   const rootSpan = getRootSpan(span);
 
@@ -3599,6 +3613,7 @@ function getDynamicSamplingContextFromSpan(span) {
   }
 
   // Else, we generate it from the span
+  const dsc = getDynamicSamplingContextFromClient(span.spanContext().traceId, client);
   const jsonSpan = spanToJSON(rootSpan);
   const attributes = jsonSpan.data || {};
   const maybeSampleRate = attributes[SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE];
@@ -4529,6 +4544,7 @@ function setMeasurement(name, value, unit, activeSpan = getActiveSpan()) {
   const rootSpan = activeSpan && getRootSpan(activeSpan);
 
   if (rootSpan) {
+    DEBUG_BUILD$1 && logger.log(`[Measurement] Setting measurement on root span: ${name} = ${value} ${unit}`);
     rootSpan.addEvent(name, {
       [SEMANTIC_ATTRIBUTE_SENTRY_MEASUREMENT_VALUE]: value,
       [SEMANTIC_ATTRIBUTE_SENTRY_MEASUREMENT_UNIT]: unit ,
@@ -5403,7 +5419,9 @@ function notifyEventProcessors(
   });
 }
 
-const debugIdStackParserCache = new WeakMap();
+let parsedStackResults;
+let lastKeysCount;
+let cachedFilenameDebugIds;
 
 /**
  * Returns a map of filenames to debug identifiers.
@@ -5414,38 +5432,46 @@ function getFilenameToDebugIdMap(stackParser) {
     return {};
   }
 
-  let debugIdStackFramesCache;
-  const cachedDebugIdStackFrameCache = debugIdStackParserCache.get(stackParser);
-  if (cachedDebugIdStackFrameCache) {
-    debugIdStackFramesCache = cachedDebugIdStackFrameCache;
-  } else {
-    debugIdStackFramesCache = new Map();
-    debugIdStackParserCache.set(stackParser, debugIdStackFramesCache);
+  const debugIdKeys = Object.keys(debugIdMap);
+
+  // If the count of registered globals hasn't changed since the last call, we
+  // can just return the cached result.
+  if (cachedFilenameDebugIds && debugIdKeys.length === lastKeysCount) {
+    return cachedFilenameDebugIds;
   }
 
-  // Build a map of filename -> debug_id.
-  return Object.keys(debugIdMap).reduce((acc, debugIdStackTrace) => {
-    let parsedStack;
+  lastKeysCount = debugIdKeys.length;
 
-    const cachedParsedStack = debugIdStackFramesCache.get(debugIdStackTrace);
-    if (cachedParsedStack) {
-      parsedStack = cachedParsedStack;
-    } else {
-      parsedStack = stackParser(debugIdStackTrace);
-      debugIdStackFramesCache.set(debugIdStackTrace, parsedStack);
+  // Build a map of filename -> debug_id.
+  cachedFilenameDebugIds = debugIdKeys.reduce((acc, stackKey) => {
+    if (!parsedStackResults) {
+      parsedStackResults = {};
     }
 
-    for (let i = parsedStack.length - 1; i >= 0; i--) {
-      const stackFrame = parsedStack[i];
-      const file = stackFrame && stackFrame.filename;
+    const result = parsedStackResults[stackKey];
 
-      if (stackFrame && file) {
-        acc[file] = debugIdMap[debugIdStackTrace] ;
-        break;
+    if (result) {
+      acc[result[0]] = result[1];
+    } else {
+      const parsedStack = stackParser(stackKey);
+
+      for (let i = parsedStack.length - 1; i >= 0; i--) {
+        const stackFrame = parsedStack[i];
+        const filename = stackFrame && stackFrame.filename;
+        const debugId = debugIdMap[stackKey];
+
+        if (filename && debugId) {
+          acc[filename] = debugId;
+          parsedStackResults[stackKey] = [filename, debugId];
+          break;
+        }
       }
     }
+
     return acc;
   }, {});
+
+  return cachedFilenameDebugIds;
 }
 
 /**
@@ -5777,7 +5803,7 @@ function applyDebugIds(event, stackParser) {
     event.exception.values.forEach(exception => {
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
       exception.stacktrace.frames.forEach(frame => {
-        if (frame.filename) {
+        if (filenameDebugIdMap && frame.filename) {
           frame.debug_id = filenameDebugIdMap[frame.filename];
         }
       });
@@ -5902,14 +5928,6 @@ function normalizeEvent(event, depth, maxBreadth) {
         }),
       };
     });
-  }
-
-  // event.contexts.flags (FeatureFlagContext) stores context for our feature
-  // flag integrations. It has a greater nesting depth than our other typed
-  // Contexts, so we re-normalize with a fixed depth of 3 here. We do not want
-  // to skip this in case of conflicting, user-provided context.
-  if (event.contexts && event.contexts.flags && normalized.contexts) {
-    normalized.contexts.flags = normalize(event.contexts.flags, 3, maxBreadth);
   }
 
   return normalized;
@@ -7110,7 +7128,7 @@ class BaseClient {
    _prepareEvent(
     event,
     hint,
-    currentScope,
+    currentScope = getCurrentScope(),
     isolationScope = getIsolationScope(),
   ) {
     const options = this.getOptions();
@@ -7130,30 +7148,18 @@ class BaseClient {
         return evt;
       }
 
-      const propagationContext = {
-        ...isolationScope.getPropagationContext(),
-        ...(currentScope ? currentScope.getPropagationContext() : undefined),
+      evt.contexts = {
+        trace: getTraceContextFromScope(currentScope),
+        ...evt.contexts,
       };
 
-      const trace = evt.contexts && evt.contexts.trace;
-      if (!trace && propagationContext) {
-        const { traceId: trace_id, spanId, parentSpanId, dsc } = propagationContext;
-        evt.contexts = {
-          trace: dropUndefinedKeys({
-            trace_id,
-            span_id: spanId,
-            parent_span_id: parentSpanId,
-          }),
-          ...evt.contexts,
-        };
+      const dynamicSamplingContext = getDynamicSamplingContextFromScope(this, currentScope);
 
-        const dynamicSamplingContext = dsc ? dsc : getDynamicSamplingContextFromClient(trace_id, this);
+      evt.sdkProcessingMetadata = {
+        dynamicSamplingContext,
+        ...evt.sdkProcessingMetadata,
+      };
 
-        evt.sdkProcessingMetadata = {
-          dynamicSamplingContext,
-          ...evt.sdkProcessingMetadata,
-        };
-      }
       return evt;
     });
   }
@@ -7907,23 +7913,12 @@ class ServerRuntimeClient
     }
 
     const span = _getSpanForScope(scope);
-    if (span) {
-      const rootSpan = getRootSpan(span);
-      const samplingContext = getDynamicSamplingContextFromSpan(rootSpan);
-      return [samplingContext, spanToTraceContext(rootSpan)];
-    }
 
-    const { traceId, spanId, parentSpanId, dsc } = scope.getPropagationContext();
-    const traceContext = {
-      trace_id: traceId,
-      span_id: spanId,
-      parent_span_id: parentSpanId,
-    };
-    if (dsc) {
-      return [dsc, traceContext];
-    }
-
-    return [getDynamicSamplingContextFromClient(traceId, this), traceContext];
+    const traceContext = span ? spanToTraceContext(span) : getTraceContextFromScope(scope);
+    const dynamicSamplingContext = span
+      ? getDynamicSamplingContextFromSpan(span)
+      : getDynamicSamplingContextFromScope(this, scope);
+    return [dynamicSamplingContext, traceContext];
   }
 }
 
@@ -8272,35 +8267,23 @@ function getEventForEnvelopeItem(item, type) {
  * @returns an object with the tracing data values. The object keys are the name of the tracing key to be used as header
  * or meta tag name.
  */
-function getTraceData() {
-  if (!isEnabled()) {
+function getTraceData(options = {}) {
+  const client = getClient();
+  if (!isEnabled() || !client) {
     return {};
   }
 
   const carrier = getMainCarrier();
   const acs = getAsyncContextStrategy(carrier);
   if (acs.getTraceData) {
-    return acs.getTraceData();
+    return acs.getTraceData(options);
   }
 
-  const client = getClient();
   const scope = getCurrentScope();
-  const span = getActiveSpan();
-
-  const { dsc, sampled, traceId } = scope.getPropagationContext();
-  const rootSpan = span && getRootSpan(span);
-
-  const sentryTrace = span ? spanToTraceHeader(span) : generateSentryTraceHeader(traceId, undefined, sampled);
-
-  const dynamicSamplingContext = rootSpan
-    ? getDynamicSamplingContextFromSpan(rootSpan)
-    : dsc
-      ? dsc
-      : client
-        ? getDynamicSamplingContextFromClient(traceId, client)
-        : undefined;
-
-  const baggage = dynamicSamplingContextToSentryBaggageHeader(dynamicSamplingContext);
+  const span = options.span || getActiveSpan();
+  const sentryTrace = span ? spanToTraceHeader(span) : scopeToTraceHeader(scope);
+  const dsc = span ? getDynamicSamplingContextFromSpan(span) : getDynamicSamplingContextFromScope(client, scope);
+  const baggage = dynamicSamplingContextToSentryBaggageHeader(dsc);
 
   const isValidSentryTraceHeader = TRACEPARENT_REGEXP.test(sentryTrace);
   if (!isValidSentryTraceHeader) {
@@ -8308,37 +8291,18 @@ function getTraceData() {
     return {};
   }
 
-  const validBaggage = isValidBaggageString(baggage);
-  if (!validBaggage) {
-    logger.warn('Invalid baggage data. Not returning "baggage" value');
-  }
-
   return {
     'sentry-trace': sentryTrace,
-    ...(validBaggage && { baggage }),
+    baggage,
   };
 }
 
 /**
- * Tests string against baggage spec as defined in:
- *
- * - W3C Baggage grammar: https://www.w3.org/TR/baggage/#definition
- * - RFC7230 token definition: https://datatracker.ietf.org/doc/html/rfc7230#section-3.2.6
- *
- * exported for testing
+ * Get a sentry-trace header value for the given scope.
  */
-function isValidBaggageString(baggage) {
-  if (!baggage || !baggage.length) {
-    return false;
-  }
-  const keyRegex = "[-!#$%&'*+.^_`|~A-Za-z0-9]+";
-  const valueRegex = '[!#-+-./0-9:<=>?@A-Z\\[\\]a-z{-}]+';
-  const spaces = '\\s*';
-  // eslint-disable-next-line @sentry-internal/sdk/no-regexp-constructor -- RegExp for readability, no user input
-  const baggageRegex = new RegExp(
-    `^${keyRegex}${spaces}=${spaces}${valueRegex}(${spaces},${spaces}${keyRegex}${spaces}=${spaces}${valueRegex})*$`,
-  );
-  return baggageRegex.test(baggage);
+function scopeToTraceHeader(scope) {
+  const { traceId, sampled, spanId } = scope.getPropagationContext();
+  return generateSentryTraceHeader(traceId, spanId, sampled);
 }
 
 /**

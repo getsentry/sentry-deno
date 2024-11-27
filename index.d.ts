@@ -97,11 +97,6 @@ interface BreadcrumbHint {
     [key: string]: any;
 }
 
-type FeatureFlag = {
-    readonly flag: string;
-    readonly result: boolean;
-};
-
 /**
  * Request data included in an event as sent to Sentry.
  */
@@ -470,7 +465,6 @@ interface Contexts extends Record<string, Context | undefined> {
     cloud_resource?: CloudResourceContext;
     state?: StateContext;
     profile?: ProfileContext;
-    flags?: FeatureFlagContext;
 }
 interface StateContext extends Record<string, unknown> {
     state: {
@@ -571,14 +565,6 @@ interface CloudResourceContext extends Record<string, unknown> {
 }
 interface ProfileContext extends Record<string, unknown> {
     profile_id: string;
-}
-/**
- * Used to buffer flag evaluation data on the current scope and attach it to
- * error events. `values` should be initialized as empty ([]), and it should
- * only be modified by @sentry/util "FlagBuffer" functions.
- */
-interface FeatureFlagContext extends Record<string, unknown> {
-    values: FeatureFlag[];
 }
 
 interface CrontabSchedule {
@@ -2530,7 +2516,9 @@ declare function setCurrentClient(client: Client): void;
  * @returns an object with the tracing data values. The object keys are the name of the tracing key to be used as header
  * or meta tag name.
  */
-declare function getTraceData(): SerializedTraceData;
+declare function getTraceData(options?: {
+    span?: Span;
+}): SerializedTraceData;
 
 /**
  * Create a propagation context from incoming headers or
@@ -3085,7 +3073,7 @@ declare abstract class BaseClient<O extends ClientOptions> implements Client<O> 
      * @param currentScope A scope containing event metadata.
      * @returns A new event with more information.
      */
-    protected _prepareEvent(event: Event, hint: EventHint, currentScope?: Scope, isolationScope?: Scope$1): PromiseLike<Event | null>;
+    protected _prepareEvent(event: Event, hint: EventHint, currentScope?: Scope$1, isolationScope?: Scope$1): PromiseLike<Event | null>;
     /**
      * Processes the event and logs an error in case of rejection
      * @param event
@@ -3222,7 +3210,7 @@ declare class ServerRuntimeClient<O extends ClientOptions & ServerRuntimeClientO
      */
     protected _prepareEvent(event: Event, hint: EventHint, scope?: Scope, isolationScope?: Scope): PromiseLike<Event | null>;
     /** Extract trace information from scope */
-    private _getTraceInfoFromScope;
+    protected _getTraceInfoFromScope(scope: Scope | undefined): [dynamicSamplingContext: Partial<DynamicSamplingContext> | undefined, traceContext: TraceContext | undefined];
 }
 
 type RequestDataIntegrationOptions = {
