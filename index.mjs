@@ -8,7 +8,7 @@ const DEBUG_BUILD$1 = (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG
 
 // This is a magic string replaced by rollup
 
-const SDK_VERSION = "8.41.0" ;
+const SDK_VERSION = "8.42.0" ;
 
 /** Get's the global object for the current JavaScript runtime */
 const GLOBAL_OBJ = globalThis ;
@@ -946,6 +946,7 @@ function markFunctionWrapped(wrapped, original) {
  * @param func the function to unwrap
  * @returns the unwrapped version of the function if available.
  */
+// eslint-disable-next-line @typescript-eslint/ban-types
 function getOriginalFunction(func) {
   return func.__sentry_original__;
 }
@@ -1381,8 +1382,7 @@ function addContextToFrame(lines, frame, linesOfContext = 5) {
  * @returns `true` if the exception has already been captured, `false` if not (with the side effect of marking it seen)
  */
 function checkOrSetAlreadyCaught(exception) {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-  if (exception && (exception ).__sentry_captured__) {
+  if (isAlreadyCaptured(exception)) {
     return true;
   }
 
@@ -1395,6 +1395,12 @@ function checkOrSetAlreadyCaught(exception) {
   }
 
   return false;
+}
+
+function isAlreadyCaptured(exception) {
+  try {
+    return (exception ).__sentry_captured__;
+  } catch (e) {} // eslint-disable-line no-empty
 }
 
 /* eslint-disable @typescript-eslint/explicit-function-return-type */
@@ -1740,13 +1746,17 @@ function sessionToJSON(session) {
 }
 
 /**
- * Returns a new minimal propagation context
+ * Generate a random, valid trace ID.
  */
-function generatePropagationContext() {
-  return {
-    traceId: uuid4(),
-    spanId: uuid4().substring(16),
-  };
+function generateTraceId() {
+  return uuid4();
+}
+
+/**
+ * Generate a random, valid span ID.
+ */
+function generateSpanId() {
+  return uuid4().substring(16);
 }
 
 /**
@@ -1870,7 +1880,10 @@ class ScopeClass  {
     this._extra = {};
     this._contexts = {};
     this._sdkProcessingMetadata = {};
-    this._propagationContext = generatePropagationContext();
+    this._propagationContext = {
+      traceId: generateTraceId(),
+      spanId: generateSpanId(),
+    };
   }
 
   /**
@@ -2153,7 +2166,7 @@ class ScopeClass  {
     this._session = undefined;
     _setSpanForScope(this, undefined);
     this._attachments = [];
-    this._propagationContext = generatePropagationContext();
+    this.setPropagationContext({ traceId: generateTraceId() });
 
     this._notifyScopeListeners();
     return this;
@@ -2246,8 +2259,14 @@ class ScopeClass  {
   /**
    * @inheritDoc
    */
-   setPropagationContext(context) {
-    this._propagationContext = context;
+   setPropagationContext(
+    context,
+  ) {
+    this._propagationContext = {
+      // eslint-disable-next-line deprecation/deprecation
+      spanId: generateSpanId(),
+      ...context,
+    };
     return this;
   }
 
@@ -2345,10 +2364,6 @@ class ScopeClass  {
     }
   }
 }
-
-// NOTE: By exporting this here as const & type, instead of doing `export class`,
-// We can get the correct class when importing from `@sentry/core`, but the original type (from `@sentry/types`)
-// This is helpful for interop, e.g. when doing `import type { Scope } from '@sentry/node';` (which re-exports this)
 
 /**
  * Holds additional event information.
@@ -2636,6 +2651,8 @@ function getClient() {
 function getTraceContextFromScope(scope) {
   const propagationContext = scope.getPropagationContext();
 
+  // TODO(v9): Use generateSpanId() instead of spanId
+  // eslint-disable-next-line deprecation/deprecation
   const { traceId, spanId, parentSpanId } = propagationContext;
 
   const traceContext = dropUndefinedKeys({
@@ -3019,12 +3036,12 @@ function propagationContextFromHeaders(
   const dynamicSamplingContext = baggageHeaderToDynamicSamplingContext(baggage);
 
   if (!traceparentData || !traceparentData.traceId) {
-    return generatePropagationContext();
+    return { traceId: generateTraceId(), spanId: generateSpanId() };
   }
 
   const { traceId, parentSpanId, parentSampled } = traceparentData;
 
-  const virtualSpanId = uuid4().substring(16);
+  const virtualSpanId = generateSpanId();
 
   return {
     traceId,
@@ -5196,7 +5213,7 @@ function suppressTracing(callback) {
  */
 function startNewTrace(callback) {
   return withScope(scope => {
-    scope.setPropagationContext(generatePropagationContext());
+    scope.setPropagationContext({ traceId: generateTraceId() });
     DEBUG_BUILD$1 && logger.info(`Starting a new trace with id ${scope.getPropagationContext().traceId}`);
     return withActiveSpan(null, callback);
   });
@@ -6481,7 +6498,7 @@ const installedIntegrations = [];
 function filterDuplicates(integrations) {
   const integrationsByName = {};
 
-  integrations.forEach(currentInstance => {
+  integrations.forEach((currentInstance) => {
     const { name } = currentInstance;
 
     const existingInstance = integrationsByName[name];
@@ -6504,7 +6521,7 @@ function getIntegrationsToSetup(options) {
   const userIntegrations = options.integrations;
 
   // We flag default instances, so that later we can tell them apart from any user-created instances of the same class
-  defaultIntegrations.forEach(integration => {
+  defaultIntegrations.forEach((integration) => {
     integration.isDefaultInstance = true;
   });
 
@@ -6842,7 +6859,7 @@ class BaseClient {
   }
 
   /**
-   * @see SdkMetadata in @sentry/types
+   * @see SdkMetadata
    *
    * @return The metadata of the SDK
    */
@@ -8200,7 +8217,6 @@ function createTransport(
       return resolvedSyncPromise({});
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const filteredEnvelope = createEnvelope(envelope[0], filteredEnvelopeItems );
 
     // Creates client report for each item in an envelope
@@ -8301,6 +8317,8 @@ function getTraceData(options = {}) {
  * Get a sentry-trace header value for the given scope.
  */
 function scopeToTraceHeader(scope) {
+  // TODO(v9): Use generateSpanId() instead of spanId
+  // eslint-disable-next-line deprecation/deprecation
   const { traceId, sampled, spanId } = scope.getPropagationContext();
   return generateSentryTraceHeader(traceId, spanId, sampled);
 }
@@ -10811,8 +10829,7 @@ class MetricsAggregator  {
   // Different metrics have different weights. We use this to limit the number of metrics
   // that we store in memory.
 
-  // Cast to any so that it can use Node.js timeout
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // We adjust the type here to add the `unref()` part, as setInterval can technically return a number of a NodeJS.Timer.
 
   // SDKs are required to shift the flush interval by random() * rollup_in_seconds.
   // That shift is determined once per startup to create jittering.
@@ -10828,11 +10845,8 @@ class MetricsAggregator  {
     this._buckets = new Map();
     this._bucketsTotalWeight = 0;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    this._interval = setInterval(() => this._flush(), DEFAULT_FLUSH_INTERVAL) ;
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    this._interval = setInterval(() => this._flush(), DEFAULT_FLUSH_INTERVAL);
     if (this._interval.unref) {
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
       this._interval.unref();
     }
 

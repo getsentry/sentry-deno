@@ -998,6 +998,8 @@ interface PropagationContext {
      * particular execution context when performance monitoring is disabled.
      *
      * The ID of a current span (if one exists) should have precedence over this value when propagating trace data.
+     *
+     * @deprecated This value will not be used anymore in the future, and should not be set or read anymore.
      */
     spanId: string;
     /**
@@ -1221,7 +1223,7 @@ interface Scope$1 {
     /**
      * Add propagation context to the scope, used for distributed tracing
      */
-    setPropagationContext(context: PropagationContext): this;
+    setPropagationContext(context: Omit<PropagationContext, 'spanId'> & Partial<Pick<PropagationContext, 'spanId'>>): this;
     /**
      * Get propagation context from the scope, used for distributed tracing
      */
@@ -2613,11 +2615,6 @@ declare function getRootSpan(span: SpanWithPotentialChildren): Span;
  */
 declare function getActiveSpan(): Span | undefined;
 
-declare module '@sentry/types' {
-    interface Integration {
-        isDefaultInstance?: boolean;
-    }
-}
 /** Map of integrations assigned to a client */
 type IntegrationIndex = {
     [key: string]: Integration;
@@ -2801,7 +2798,7 @@ declare class ScopeClass implements Scope$1 {
     /**
      * @inheritDoc
      */
-    setPropagationContext(context: PropagationContext): this;
+    setPropagationContext(context: Omit<PropagationContext, 'spanId'> & Partial<Pick<PropagationContext, 'spanId'>>): this;
     /**
      * @inheritDoc
      */
@@ -2908,7 +2905,7 @@ declare abstract class BaseClient<O extends ClientOptions> implements Client<O> 
      */
     getOptions(): O;
     /**
-     * @see SdkMetadata in @sentry/types
+     * @see SdkMetadata
      *
      * @return The metadata of the SDK
      */
@@ -3750,7 +3747,7 @@ interface BaseDenoOptions {
 }
 /**
  * Configuration options for the Sentry Deno SDK
- * @see @sentry/types Options for more information.
+ * @see @sentry/core Options for more information.
  */
 interface DenoOptions extends Options<DenoTransportOptions>, BaseDenoOptions {
 }
