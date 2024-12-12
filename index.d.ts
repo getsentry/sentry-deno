@@ -1844,7 +1844,11 @@ interface ClientOptions<TO extends BaseTransportOptions = BaseTransportOptions> 
     attachStacktrace?: boolean;
     /**
      * A flag enabling Sessions Tracking feature.
-     * By default, Sessions Tracking is enabled.
+     * By default, Session Tracking is enabled.
+     *
+     * @deprecated Setting the `autoSessionTracking` option is deprecated.
+     * To enable session tracking, it is recommended to unset `autoSessionTracking` and ensure that either, in browser environments the `browserSessionIntegration` is added, or in server environments the `httpIntegration` is added.
+     * To disable session tracking, it is recommended unset `autoSessionTracking` and to remove the `browserSessionIntegration` in browser environments, or in server environments configure the `httpIntegration` with the `trackIncomingRequestsAsSessions` option set to `false`.
      */
     autoSessionTracking?: boolean;
     /**
