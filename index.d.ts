@@ -434,6 +434,16 @@ interface Span {
     setStatus(status: SpanStatus): this;
     /**
      * Update the name of the span.
+     *
+     * **Important:** You most likely want to use `Sentry.updateSpanName(span, name)` instead!
+     *
+     * This method will update the current span name but cannot guarantee that the new name will be
+     * the final name of the span. Instrumentation might still overwrite the name with an automatically
+     * computed name, for example in `http.server` or `db` spans.
+     *
+     * You can ensure that your name is kept and not overwritten by calling `Sentry.updateSpanName(span, name)`
+     *
+     * @param name the new name of the span
      */
     updateName(name: string): this;
     /**
@@ -2669,6 +2679,23 @@ declare function getRootSpan(span: SpanWithPotentialChildren): Span;
  * Returns the currently active span.
  */
 declare function getActiveSpan(): Span | undefined;
+/**
+ * Updates the name of the given span and ensures that the span name is not
+ * overwritten by the Sentry SDK.
+ *
+ * Use this function instead of `span.updateName()` if you want to make sure that
+ * your name is kept. For some spans, for example root `http.server` spans the
+ * Sentry SDK would otherwise overwrite the span name with a high-quality name
+ * it infers when the span ends.
+ *
+ * Use this function in server code or when your span is started on the server
+ * and on the client (browser). If you only update a span name on the client,
+ * you can also use `span.updateName()` the SDK does not overwrite the name.
+ *
+ * @param span - The span to update the name of.
+ * @param name - The name to set on the span.
+ */
+declare function updateSpanName(span: Span, name: string): void;
 
 /** Map of integrations assigned to a client */
 type IntegrationIndex = {
@@ -3997,4 +4024,4 @@ interface BreadcrumbsOptions {
  */
 declare const breadcrumbsIntegration: (options?: Partial<BreadcrumbsOptions> | undefined) => Integration;
 
-export { type AddRequestDataToEventOptions, type Breadcrumb, type BreadcrumbHint, DenoClient, type DenoOptions, type ErrorEvent, type Event, type EventHint, type Exception, type PolymorphicRequest, type Request, type RequestEventData, SDK_VERSION, SEMANTIC_ATTRIBUTE_SENTRY_OP, SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE, SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, Scope, type SdkInfo, type Session, type SeverityLevel, type Span, type StackFrame, type Stacktrace, type Thread, type User, addBreadcrumb, addEventProcessor, breadcrumbsIntegration, captureCheckIn, captureConsoleIntegration, captureEvent, captureException, captureFeedback, captureMessage, captureSession, close, contextLinesIntegration, continueTrace, createTransport, debugIntegration, dedupeIntegration, denoContextIntegration, denoCronIntegration, endSession, extraErrorDataIntegration, flush, functionToStringIntegration, getActiveSpan, getClient, getCurrentScope, getDefaultIntegrations, getGlobalScope, getIsolationScope, getRootSpan, getSpanStatusFromHttpCode, getTraceData, getTraceMetaTags, globalHandlersIntegration, inboundFiltersIntegration, init, isInitialized, lastEventId, linkedErrorsIntegration, metricsDefault as metrics, normalizePathsIntegration, requestDataIntegration, rewriteFramesIntegration, sessionTimingIntegration, setContext, setCurrentClient, setExtra, setExtras, setHttpStatus, setMeasurement, setTag, setTags, setUser, spanToBaggageHeader, spanToJSON, spanToTraceHeader, startInactiveSpan, startNewTrace, startSession, startSpan, startSpanManual, suppressTracing, withIsolationScope, withMonitor, withScope, zodErrorsIntegration };
+export { type AddRequestDataToEventOptions, type Breadcrumb, type BreadcrumbHint, DenoClient, type DenoOptions, type ErrorEvent, type Event, type EventHint, type Exception, type PolymorphicRequest, type Request, type RequestEventData, SDK_VERSION, SEMANTIC_ATTRIBUTE_SENTRY_OP, SEMANTIC_ATTRIBUTE_SENTRY_ORIGIN, SEMANTIC_ATTRIBUTE_SENTRY_SAMPLE_RATE, SEMANTIC_ATTRIBUTE_SENTRY_SOURCE, Scope, type SdkInfo, type Session, type SeverityLevel, type Span, type StackFrame, type Stacktrace, type Thread, type User, addBreadcrumb, addEventProcessor, breadcrumbsIntegration, captureCheckIn, captureConsoleIntegration, captureEvent, captureException, captureFeedback, captureMessage, captureSession, close, contextLinesIntegration, continueTrace, createTransport, debugIntegration, dedupeIntegration, denoContextIntegration, denoCronIntegration, endSession, extraErrorDataIntegration, flush, functionToStringIntegration, getActiveSpan, getClient, getCurrentScope, getDefaultIntegrations, getGlobalScope, getIsolationScope, getRootSpan, getSpanStatusFromHttpCode, getTraceData, getTraceMetaTags, globalHandlersIntegration, inboundFiltersIntegration, init, isInitialized, lastEventId, linkedErrorsIntegration, metricsDefault as metrics, normalizePathsIntegration, requestDataIntegration, rewriteFramesIntegration, sessionTimingIntegration, setContext, setCurrentClient, setExtra, setExtras, setHttpStatus, setMeasurement, setTag, setTags, setUser, spanToBaggageHeader, spanToJSON, spanToTraceHeader, startInactiveSpan, startNewTrace, startSession, startSpan, startSpanManual, suppressTracing, updateSpanName, withIsolationScope, withMonitor, withScope, zodErrorsIntegration };
