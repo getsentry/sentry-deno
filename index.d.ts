@@ -1797,9 +1797,14 @@ interface SamplingContext extends CustomSamplingContext {
      */
     location?: WorkerLocation;
     /**
-     * Object representing the incoming request to a node server. Passed by default when using the TracingHandler.
+     * Object representing the incoming request to a node server.
+     * @deprecated This attribute is currently never defined and will be removed in v9. Use `normalizedRequest` instead
      */
     request?: ExtractedNodeRequestData;
+    /**
+     * Object representing the incoming request to a node server in a normalized format.
+     */
+    normalizedRequest?: RequestEventData;
     /** The name of the span being sampled. */
     name: string;
     /** Initial attributes that have been passed to the span being sampled. */
@@ -2633,7 +2638,7 @@ declare function startInactiveSpan(options: StartSpanOptions): Span;
  * Spans started with `startSpan`, `startSpanManual` and `startInactiveSpan`, within the callback will automatically
  * be attached to the incoming trace.
  */
-declare const continueTrace: <V>({ sentryTrace, baggage, }: {
+declare const continueTrace: <V>(options: {
     sentryTrace: Parameters<typeof propagationContextFromHeaders>[0];
     baggage: Parameters<typeof propagationContextFromHeaders>[1];
 }, callback: () => V) => V;

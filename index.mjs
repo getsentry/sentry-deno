@@ -8,7 +8,7 @@ const DEBUG_BUILD$1 = (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG
 
 // This is a magic string replaced by rollup
 
-const SDK_VERSION = "8.47.0" ;
+const SDK_VERSION = "8.48.0" ;
 
 /** Get's the global object for the current JavaScript runtime */
 const GLOBAL_OBJ = globalThis ;
@@ -3813,13 +3813,22 @@ function sampleSpan(
     return [false];
   }
 
+  // Casting this from unknown, as the type of `sdkProcessingMetadata` is only changed in v9 and `normalizedRequest` is set in SentryHttpInstrumentation
+  const normalizedRequest = getIsolationScope().getScopeData().sdkProcessingMetadata
+    .normalizedRequest ;
+
+  const enhancedSamplingContext = {
+    ...samplingContext,
+    normalizedRequest: samplingContext.normalizedRequest || normalizedRequest,
+  };
+
   // we would have bailed already if neither `tracesSampler` nor `tracesSampleRate` nor `enableTracing` were defined, so one of these should
   // work; prefer the hook if so
   let sampleRate;
   if (typeof options.tracesSampler === 'function') {
-    sampleRate = options.tracesSampler(samplingContext);
-  } else if (samplingContext.parentSampled !== undefined) {
-    sampleRate = samplingContext.parentSampled;
+    sampleRate = options.tracesSampler(enhancedSamplingContext);
+  } else if (enhancedSamplingContext.parentSampled !== undefined) {
+    sampleRate = enhancedSamplingContext.parentSampled;
   } else if (typeof options.tracesSampleRate !== 'undefined') {
     sampleRate = options.tracesSampleRate;
   } else {
@@ -5207,14 +5216,19 @@ function startInactiveSpan(options) {
  * be attached to the incoming trace.
  */
 const continueTrace = (
-  {
-    sentryTrace,
-    baggage,
-  }
+  options
 
 ,
   callback,
 ) => {
+  const carrier = getMainCarrier();
+  const acs = getAsyncContextStrategy(carrier);
+  if (acs.continueTrace) {
+    return acs.continueTrace(options, callback);
+  }
+
+  const { sentryTrace, baggage } = options;
+
   return withScope(scope => {
     const propagationContext = propagationContextFromHeaders(sentryTrace, baggage);
     scope.setPropagationContext(propagationContext);
@@ -9303,8 +9317,8 @@ function addNormalizedRequestDataToEvent(
 
     if (Object.keys(extractedUser).length) {
       event.user = {
-        ...event.user,
         ...extractedUser,
+        ...event.user,
       };
     }
   }
