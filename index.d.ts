@@ -2831,7 +2831,15 @@ declare class ScopeClass implements Scope$1 {
      */
     setLevel(level: SeverityLevel): this;
     /**
-     * @inheritDoc
+     * Sets the transaction name on the scope so that the name of e.g. taken server route or
+     * the page location is attached to future events.
+     *
+     * IMPORTANT: Calling this function does NOT change the name of the currently active
+     * root span. If you want to change the name of the active root span, use
+     * `Sentry.updateSpanName(rootSpan, 'new name')` instead.
+     *
+     * By default, the SDK updates the scope's transaction name automatically on sensible
+     * occasions, such as a page navigation or when handling a new request on the server.
      */
     setTransactionName(name?: string): this;
     /**

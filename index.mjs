@@ -8,7 +8,7 @@ const DEBUG_BUILD$1 = (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG
 
 // This is a magic string replaced by rollup
 
-const SDK_VERSION = "8.50.0" ;
+const SDK_VERSION = "8.51.0" ;
 
 /** Get's the global object for the current JavaScript runtime */
 const GLOBAL_OBJ = globalThis ;
@@ -2071,7 +2071,15 @@ class ScopeClass  {
   }
 
   /**
-   * @inheritDoc
+   * Sets the transaction name on the scope so that the name of e.g. taken server route or
+   * the page location is attached to future events.
+   *
+   * IMPORTANT: Calling this function does NOT change the name of the currently active
+   * root span. If you want to change the name of the active root span, use
+   * `Sentry.updateSpanName(rootSpan, 'new name')` instead.
+   *
+   * By default, the SDK updates the scope's transaction name automatically on sensible
+   * occasions, such as a page navigation or when handling a new request on the server.
    */
    setTransactionName(name) {
     this._transactionName = name;
@@ -7145,7 +7153,7 @@ class BaseClient {
 
   /** Updates existing session based on the provided event */
    _updateSessionFromEvent(session, event) {
-    let crashed = false;
+    let crashed = event.level === 'fatal';
     let errored = false;
     const exceptions = event.exception && event.exception.values;
 
