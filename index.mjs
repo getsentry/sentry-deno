@@ -8,7 +8,7 @@ const DEBUG_BUILD$1 = (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG
 
 // This is a magic string replaced by rollup
 
-const SDK_VERSION = "8.51.0" ;
+const SDK_VERSION = "8.52.0" ;
 
 /** Get's the global object for the current JavaScript runtime */
 const GLOBAL_OBJ = globalThis ;
@@ -2208,9 +2208,13 @@ class ScopeClass  {
       ...breadcrumb,
     };
 
-    const breadcrumbs = this._breadcrumbs;
-    breadcrumbs.push(mergedBreadcrumb);
-    this._breadcrumbs = breadcrumbs.length > maxCrumbs ? breadcrumbs.slice(-maxCrumbs) : breadcrumbs;
+    this._breadcrumbs.push(mergedBreadcrumb);
+    if (this._breadcrumbs.length > maxCrumbs) {
+      this._breadcrumbs = this._breadcrumbs.slice(-maxCrumbs);
+      if (this._client) {
+        this._client.recordDroppedEvent('buffer_overflow', 'log_item');
+      }
+    }
 
     this._notifyScopeListeners();
 
@@ -10362,21 +10366,32 @@ const sessionTimingIntegration = defineIntegration(_sessionTimingIntegration);
 const DEFAULT_LIMIT = 10;
 const INTEGRATION_NAME$6 = 'ZodErrors';
 
-// Simplified ZodIssue type definition
+/**
+ * Simplified ZodIssue type definition
+ */
 
 function originalExceptionIsZodError(originalException) {
   return (
     isError(originalException) &&
     originalException.name === 'ZodError' &&
-    Array.isArray((originalException ).errors)
+    Array.isArray((originalException ).issues)
   );
 }
 
 /**
  * Formats child objects or arrays to a string
- * That is preserved when sent to Sentry
+ * that is preserved when sent to Sentry.
+ *
+ * Without this, we end up with something like this in Sentry:
+ *
+ * [
+ *  [Object],
+ *  [Object],
+ *  [Object],
+ *  [Object]
+ * ]
  */
-function formatIssueTitle(issue) {
+function flattenIssue(issue) {
   return {
     ...issue,
     path: 'path' in issue && Array.isArray(issue.path) ? issue.path.join('.') : undefined,
@@ -10386,25 +10401,69 @@ function formatIssueTitle(issue) {
 }
 
 /**
+ * Takes ZodError issue path array and returns a flattened version as a string.
+ * This makes it easier to display paths within a Sentry error message.
+ *
+ * Array indexes are normalized to reduce duplicate entries
+ *
+ * @param path ZodError issue path
+ * @returns flattened path
+ *
+ * @example
+ * flattenIssuePath([0, 'foo', 1, 'bar']) // -> '<array>.foo.<array>.bar'
+ */
+function flattenIssuePath(path) {
+  return path
+    .map(p => {
+      if (typeof p === 'number') {
+        return '<array>';
+      } else {
+        return p;
+      }
+    })
+    .join('.');
+}
+
+/**
  * Zod error message is a stringified version of ZodError.issues
  * This doesn't display well in the Sentry UI. Replace it with something shorter.
  */
 function formatIssueMessage(zodError) {
   const errorKeyMap = new Set();
   for (const iss of zodError.issues) {
-    if (iss.path && iss.path[0]) {
-      errorKeyMap.add(iss.path[0]);
+    const issuePath = flattenIssuePath(iss.path);
+    if (issuePath.length > 0) {
+      errorKeyMap.add(issuePath);
     }
   }
-  const errorKeys = Array.from(errorKeyMap);
 
+  const errorKeys = Array.from(errorKeyMap);
+  if (errorKeys.length === 0) {
+    // If there are no keys, then we're likely validating the root
+    // variable rather than a key within an object. This attempts
+    // to extract what type it was that failed to validate.
+    // For example, z.string().parse(123) would return "string" here.
+    let rootExpectedType = 'variable';
+    if (zodError.issues.length > 0) {
+      const iss = zodError.issues[0];
+      if (iss !== undefined && 'expected' in iss && typeof iss.expected === 'string') {
+        rootExpectedType = iss.expected;
+      }
+    }
+    return `Failed to validate ${rootExpectedType}`;
+  }
   return `Failed to validate keys: ${truncate(errorKeys.join(', '), 100)}`;
 }
 
 /**
- * Applies ZodError issues to an event extras and replaces the error message
+ * Applies ZodError issues to an event extra and replaces the error message
  */
-function applyZodErrorsToEvent(limit, event, hint) {
+function applyZodErrorsToEvent(
+  limit,
+  saveZodIssuesAsAttachment = false,
+  event,
+  hint,
+) {
   if (
     !event.exception ||
     !event.exception.values ||
@@ -10416,37 +10475,74 @@ function applyZodErrorsToEvent(limit, event, hint) {
     return event;
   }
 
-  return {
-    ...event,
-    exception: {
-      ...event.exception,
-      values: [
-        {
-          ...event.exception.values[0],
-          value: formatIssueMessage(hint.originalException),
+  try {
+    const issuesToFlatten = saveZodIssuesAsAttachment
+      ? hint.originalException.issues
+      : hint.originalException.issues.slice(0, limit);
+    const flattenedIssues = issuesToFlatten.map(flattenIssue);
+
+    if (saveZodIssuesAsAttachment) {
+      // Sometimes having the full error details can be helpful.
+      // Attachments have much higher limits, so we can include the full list of issues.
+      if (!Array.isArray(hint.attachments)) {
+        hint.attachments = [];
+      }
+      hint.attachments.push({
+        filename: 'zod_issues.json',
+        data: JSON.stringify({
+          issues: flattenedIssues,
+        }),
+      });
+    }
+
+    return {
+      ...event,
+      exception: {
+        ...event.exception,
+        values: [
+          {
+            ...event.exception.values[0],
+            value: formatIssueMessage(hint.originalException),
+          },
+          ...event.exception.values.slice(1),
+        ],
+      },
+      extra: {
+        ...event.extra,
+        'zoderror.issues': flattenedIssues.slice(0, limit),
+      },
+    };
+  } catch (e) {
+    // Hopefully we never throw errors here, but record it
+    // with the event just in case.
+    return {
+      ...event,
+      extra: {
+        ...event.extra,
+        'zoderrors sentry integration parse error': {
+          message: 'an exception was thrown while processing ZodError within applyZodErrorsToEvent()',
+          error: e instanceof Error ? `${e.name}: ${e.message}\n${e.stack}` : 'unknown',
         },
-        ...event.exception.values.slice(1),
-      ],
-    },
-    extra: {
-      ...event.extra,
-      'zoderror.issues': hint.originalException.errors.slice(0, limit).map(formatIssueTitle),
-    },
-  };
+      },
+    };
+  }
 }
 
 const _zodErrorsIntegration = ((options = {}) => {
-  const limit = options.limit || DEFAULT_LIMIT;
+  const limit = typeof options.limit === 'undefined' ? DEFAULT_LIMIT : options.limit;
 
   return {
     name: INTEGRATION_NAME$6,
     processEvent(originalEvent, hint) {
-      const processedEvent = applyZodErrorsToEvent(limit, originalEvent, hint);
+      const processedEvent = applyZodErrorsToEvent(limit, options.saveZodIssuesAsAttachment, originalEvent, hint);
       return processedEvent;
     },
   };
 }) ;
 
+/**
+ * Sentry integration to process Zod errors, making them easier to work with in Sentry.
+ */
 const zodErrorsIntegration = defineIntegration(_zodErrorsIntegration);
 
 const COUNTER_METRIC_TYPE = 'c' ;

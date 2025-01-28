@@ -690,9 +690,9 @@ interface MonitorConfig {
     recoveryThreshold?: SerializedMonitorConfig['recovery_threshold'];
 }
 
-type DataCategory = 'default' | 'error' | 'transaction' | 'replay' | 'security' | 'attachment' | 'session' | 'internal' | 'profile' | 'monitor' | 'feedback' | 'metric_bucket' | 'span' | 'unknown';
+type DataCategory = 'default' | 'error' | 'transaction' | 'replay' | 'security' | 'attachment' | 'session' | 'internal' | 'profile' | 'monitor' | 'feedback' | 'metric_bucket' | 'span' | 'log_item' | 'log_byte' | 'unknown';
 
-type EventDropReason = 'before_send' | 'event_processor' | 'network_error' | 'queue_overflow' | 'ratelimit_backoff' | 'sample_rate' | 'send_error' | 'internal_sdk_error';
+type EventDropReason = 'before_send' | 'event_processor' | 'network_error' | 'queue_overflow' | 'ratelimit_backoff' | 'sample_rate' | 'send_error' | 'internal_sdk_error' | 'buffer_overflow';
 type Outcome = {
     reason: EventDropReason;
     category: DataCategory;
@@ -3769,8 +3769,22 @@ declare const sessionTimingIntegration: () => Integration;
 
 interface ZodErrorsOptions {
     key?: string;
+    /**
+     * Limits the number of Zod errors inlined in each Sentry event.
+     *
+     * @default 10
+     */
     limit?: number;
+    /**
+     * Save full list of Zod issues as an attachment in Sentry
+     *
+     * @default false
+     */
+    saveZodIssuesAsAttachment?: boolean;
 }
+/**
+ * Sentry integration to process Zod errors, making them easier to work with in Sentry.
+ */
 declare const zodErrorsIntegration: (options?: ZodErrorsOptions | undefined) => Integration;
 
 /**
