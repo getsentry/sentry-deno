@@ -8,7 +8,7 @@ const DEBUG_BUILD$1 = (typeof __SENTRY_DEBUG__ === 'undefined' || __SENTRY_DEBUG
 
 // This is a magic string replaced by rollup
 
-const SDK_VERSION = "8.52.0" ;
+const SDK_VERSION = "8.52.1" ;
 
 /** Get's the global object for the current JavaScript runtime */
 const GLOBAL_OBJ = globalThis ;
@@ -6742,18 +6742,12 @@ function createClientReportEnvelope(
 
 /** An error emitted by Sentry SDKs and related utilities. */
 class SentryError extends Error {
-  /** Display name of this error instance. */
 
    constructor(
      message,
     logLevel = 'warn',
   ) {
     super(message);this.message = message;
-    this.name = new.target.prototype.constructor.name;
-    // This sets the prototype to be `Error`, not `SentryError`. It's unclear why we do this, but commenting this line
-    // out causes various (seemingly totally unrelated) playwright tests consistently time out. FYI, this makes
-    // instances of `SentryError` fail `obj instanceof SentryError` checks.
-    Object.setPrototypeOf(this, new.target.prototype);
     this.logLevel = logLevel;
   }
 }
@@ -7291,11 +7285,10 @@ class BaseClient {
         if (DEBUG_BUILD$1) {
           // If something's gone wrong, log the error as a warning. If it's just us having used a `SentryError` for
           // control flow, log just the message (no stack) as a log-level log.
-          const sentryError = reason ;
-          if (sentryError.logLevel === 'log') {
-            logger.log(sentryError.message);
+          if (reason instanceof SentryError && reason.logLevel === 'log') {
+            logger.log(reason.message);
           } else {
-            logger.warn(sentryError);
+            logger.warn(reason);
           }
         }
         return undefined;
