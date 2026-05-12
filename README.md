@@ -6,6 +6,12 @@
 
 # Official Sentry SDK for Deno (Beta)
 
+> [!IMPORTANT]
+> This repository is a legacy mirror for the Deno registry and is no longer updated with current SDK releases.
+> The Sentry Deno SDK now lives in the
+> [`getsentry/sentry-javascript`](https://github.com/getsentry/sentry-javascript/tree/develop/packages/deno)
+> monorepo and should be imported from npm with `npm:@sentry/deno`.
+
 [![npm version](https://img.shields.io/npm/v/@sentry/deno.svg)](https://www.npmjs.com/package/@sentry/deno)
 [![npm dm](https://img.shields.io/npm/dm/@sentry/deno.svg)](https://www.npmjs.com/package/@sentry/deno)
 [![npm dt](https://img.shields.io/npm/dt/@sentry/deno.svg)](https://www.npmjs.com/package/@sentry/deno)
@@ -19,9 +25,6 @@ The Sentry Deno SDK is in beta. Please help us improve the SDK by
 [reporting any issues or giving us feedback](https://github.com/getsentry/sentry-javascript/issues).
 
 ## Usage
-
-> DEPRECATION NOTICE: The Sentry Deno SDK as published on the Deno registry (deno.land) is deprecated.
-> Import the package from the npm registry instead.
 
 To use this SDK, call `Sentry.init(options)` as early as possible in the main entry module. This will initialize the SDK
 and hook into the environment. Note that you can turn off almost all side effects using the respective options.
